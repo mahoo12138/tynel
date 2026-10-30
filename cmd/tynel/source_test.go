@@ -65,12 +65,28 @@ func (p *fakeProgram) Run(path string, _, _ io.Writer) (int, error) {
 // 调用外部工具那一步。
 func newBackendProject(t *testing.T) string {
 	t.Helper()
-	root, _ := newFakeProject(t)
+	root, tools := newFakeProject(t)
+	goTool := tools["go"]
+	if err := os.MkdirAll(filepath.Dir(goTool), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(goTool, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	compiler := filepath.Join(root, ".work", "bridge", "compile")
 	if err := os.MkdirAll(filepath.Dir(compiler), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(compiler, []byte("fake compiler"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "bridge", "go", "support"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "bridge", "go", "toolexec"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "bridge", "go", "support", "support.go"), []byte("package support\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256([]byte("fake compiler"))

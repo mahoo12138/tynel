@@ -350,6 +350,10 @@ func (a *app) build(args []string) error {
 	if err != nil {
 		return err
 	}
+	projectRoot, err := a.projectRoot(parsed)
+	if err != nil {
+		return err
+	}
 	g, err := a.loadGraph(parsed)
 	if err != nil {
 		return err
@@ -379,11 +383,14 @@ func (a *app) build(args []string) error {
 		return diagnostic.New(diagnostic.Internal, "cli.encode-failed", "无法序列化降低结果").WithDetail(err.Error())
 	}
 	record, err := build.Run(build.Options{
-		Root:      a.root,
-		InputData: data,
-		Output:    parsed.output,
-		Source:    sourceOf(a.root, result),
-		GraphHash: graphHash(g),
+		Root:        a.root,
+		ProjectRoot: projectRoot,
+		InputData:   data,
+		Output:      parsed.output,
+		Source:      sourceOf(projectRoot, result),
+		Entry:       entryPath(g),
+		GraphHash:   graphHash(g),
+		Files:       graphFiles(g),
 	}, a.runner)
 	if err != nil {
 		return err
@@ -393,6 +400,7 @@ func (a *app) build(args []string) error {
 		fmt.Fprintf(a.stdout, "  源码     %s（%s）\n", record.Source.Path, shortSHA(record.Source.SHA256))
 	}
 	fmt.Fprintf(a.stdout, "  输入     %s\n", shortSHA(record.Input.SHA256))
+	fmt.Fprintf(a.stdout, "  身份     %s\n", shortSHA(record.Identity.Hash))
 	fmt.Fprintf(a.stdout, "  编译器   %s\n", shortSHA(record.Tools.CompilerSHA256))
 	fmt.Fprintf(a.stdout, "  构建记录 %s\n", build.RecordPath(record.Output.Path))
 	return nil
@@ -406,6 +414,10 @@ func (a *app) run(args []string) error {
 		return err
 	}
 	file, err := a.resolveSource(parsed)
+	if err != nil {
+		return err
+	}
+	projectRoot, err := a.projectRoot(parsed)
 	if err != nil {
 		return err
 	}
@@ -439,11 +451,14 @@ func (a *app) run(args []string) error {
 	}
 	output := filepath.Join(a.root, ".work", "run", "app")
 	record, err := build.Run(build.Options{
-		Root:      a.root,
-		InputData: data,
-		Output:    output,
-		Source:    sourceOf(a.root, result),
-		GraphHash: graphHash(g),
+		Root:        a.root,
+		ProjectRoot: projectRoot,
+		InputData:   data,
+		Output:      output,
+		Source:      sourceOf(projectRoot, result),
+		Entry:       entryPath(g),
+		GraphHash:   graphHash(g),
+		Files:       graphFiles(g),
 	}, a.runner)
 	if err != nil {
 		return err
@@ -595,6 +610,45 @@ func graphHash(g *graph.Graph) string {
 		return ""
 	}
 	return g.Hash
+}
+
+// graphFiles 把依赖图里的固定快照转成构建身份。入口和类型/值依赖都在里面；
+// 构建会在启动后端前重新核对磁盘内容。路径保持相对项目根（--root），与图
+// 哈希使用同一套身份。
+func graphFiles(g *graph.Graph) []build.File {
+	if g == nil {
+		return nil
+	}
+	files := make([]build.File, 0, len(g.Files))
+	for _, file := range g.Files {
+		files = append(files, build.File{Path: file.Path, SHA256: file.SHA256})
+	}
+	return files
+}
+
+// entryPath 返回依赖图里的入口身份；从 NIR 回放时没有入口。
+func entryPath(g *graph.Graph) string {
+	if g == nil {
+		return ""
+	}
+	return g.Entry.Path
+}
+
+// projectRoot 返回源码根。显式 --root 时按那个目录的规范化路径复核文件；
+// 省略时沿用仓库根。构建身份里的路径都相对它。
+func (a *app) projectRoot(parsed sourceArgs) (string, error) {
+	root := a.root
+	if parsed.root != "" {
+		root = parsed.root
+	}
+	if root == "" {
+		return "", diagnostic.New(diagnostic.Environment, "project.not-found", "找不到项目根；用 --root 指定目录")
+	}
+	p, err := project.Open(root)
+	if err != nil {
+		return "", err
+	}
+	return p.Path(), nil
 }
 
 // sourceOf 把结果里的源码身份转成构建记录的一项。路径尽量写成项目内相对

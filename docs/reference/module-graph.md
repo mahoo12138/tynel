@@ -55,7 +55,7 @@ main.ts
 5. 已经完成的文件不重复载入；正在访问的文件再次出现就是环，直接报 `graph.cycle`。
 6. 全部文件固定后计算图哈希。检查、降低和构建记录都引用这一版快照。
 
-失败不返回半个图：缺失目标报 `project.missing`，环报 `graph.cycle`，tsgo 与项目解析不一致报 `graph.resolution-mismatch`。
+失败不返回半个图：缺失目标报 `project.missing`，环报 `graph.cycle`，tsgo 与项目解析不一致报 `graph.resolution-mismatch`。图建好之后，05.07 的构建身份会带上入口和每个文件的路径与哈希，再与这里的图哈希核对；规则见[构建身份与依赖变化](build-identity.md)。
 
 ## 检查器文件访问
 

@@ -120,7 +120,11 @@ func Load(root *project.Root, entry project.File, scan Scanner) (*Graph, error) 
 	if err := visit(entry); err != nil {
 		return nil, err
 	}
-	g.Hash = hashFiles(g.Files)
+	infos := make([]FileInfo, 0, len(g.Files))
+	for _, file := range g.Files {
+		infos = append(infos, FileInfo{Path: file.Path, SHA256: file.SHA256})
+	}
+	g.Hash = HashFiles(infos)
 	return g, nil
 }
 
@@ -144,7 +148,9 @@ func cycleText(stack []string, repeated string) string {
 	return out
 }
 
-func hashFiles(files []project.File) string {
+// HashFiles 计算稳定的图哈希：把「项目内相对路径 + 内容哈希」排序后串联。
+// 同一组文件换一个发现顺序，哈希不变；构建身份也复用这套算法核对图身份。
+func HashFiles(files []FileInfo) string {
 	lines := make([]string, 0, len(files))
 	for _, file := range files {
 		lines = append(lines, file.Path+"\x00"+file.SHA256)

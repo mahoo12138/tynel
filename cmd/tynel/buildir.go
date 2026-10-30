@@ -49,6 +49,7 @@ func (a *app) buildIR(args []string) error {
 	}
 	fmt.Fprintf(a.stdout, "已生成 %s（%d 字节）\n", record.Output.Path, record.Output.Bytes)
 	fmt.Fprintf(a.stdout, "  输入     %s\n", shortSHA(record.Input.SHA256))
+	fmt.Fprintf(a.stdout, "  身份     %s\n", shortSHA(record.Identity.Hash))
 	fmt.Fprintf(a.stdout, "  编译器   %s\n", shortSHA(record.Tools.CompilerSHA256))
 	fmt.Fprintf(a.stdout, "  构建记录 %s\n", build.RecordPath(record.Output.Path))
 	return nil

@@ -82,6 +82,9 @@ func newProject(t *testing.T) (string, *fakeRunner) {
 	patchSrc := filepath.Join(root, "bridge", "go", "patches", "0001-inject.patch")
 	writeFile(t, bridgeSrc, "package gc\n")
 	writeFile(t, patchSrc, "patch\n")
+	// 构建身份会读取工具包装和固定支持目录；单元测试也要准备这两项。
+	writeFile(t, filepath.Join(root, filepath.FromSlash(ToolexecPath)), "#!/bin/sh\nexec \"$@\"\n")
+	writeFile(t, filepath.Join(root, filepath.FromSlash(SupportDir), "support.go"), "package support\n")
 
 	compiler := filepath.Join(root, filepath.FromSlash(CompilerPath))
 	writeFile(t, compiler, "compiler-binary")

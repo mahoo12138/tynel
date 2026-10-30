@@ -34,12 +34,15 @@ const (
 // TypeScript 构建时降低结果在内存里，没必要先落一份用户可见的文件；快照仍会
 // 写到 .work 下，编译器读的始终是快照。
 type Options struct {
-	Root      string  // 项目根
-	Input     string  // NIR 文件
-	InputData []byte  // 内存中的 NIR；非空时忽略 Input
-	Output    string  // 产物路径
-	Source    *Source // 可选：源码身份，写进构建记录
-	GraphHash string  // 可选：依赖图内容哈希，写进构建记录
+	Root        string  // 构建根：工具链、支持目录和快照都在它下面
+	ProjectRoot string  // 源码根；Files 与 Source.Path 相对它，默认等于 Root
+	Input       string  // NIR 文件
+	InputData   []byte  // 内存中的 NIR；非空时忽略 Input
+	Output      string  // 产物路径
+	Source      *Source // 可选：源码身份，写进构建记录
+	Entry       string  // 可选：入口在项目内的相对路径，写进构建身份
+	GraphHash   string  // 可选：依赖图内容哈希；给 Files 时必须同时给出
+	Files       []File  // 可选：入口与全部类型/值依赖的身份；从 NIR 构建时没有
 }
 
 // Source 是产生这份 NIR 的源码。从 NIR 文件构建时没有这一项。
@@ -51,11 +54,12 @@ type Source struct {
 
 // Record 是构建记录，成功后写到 <产物>.build.json。
 type Record struct {
-	SchemaVersion  int     `json:"schemaVersion"`
-	StartedAt      string  `json:"startedAt"`
-	DurationMillis int64   `json:"durationMillis"`
-	Source         *Source `json:"source,omitempty"`
-	GraphHash      string  `json:"graphHash,omitempty"`
+	SchemaVersion  int      `json:"schemaVersion"`
+	StartedAt      string   `json:"startedAt"`
+	DurationMillis int64    `json:"durationMillis"`
+	Source         *Source  `json:"source,omitempty"`
+	GraphHash      string   `json:"graphHash,omitempty"`
+	Identity       Identity `json:"identity"`
 	Input          struct {
 		Path   string `json:"path"`
 		SHA256 string `json:"sha256"`
@@ -124,8 +128,87 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 	if err := checkStamp(opts.Root, sdk.Dir, compilerSHA); err != nil {
 		return nil, err
 	}
+	goSHA, err := hashFile(goTool)
+	if err != nil {
+		return nil, diagnostic.New(diagnostic.Environment, "build.no-go", "无法读取工具链里的 go：%s", goTool).WithDetail(err.Error())
+	}
+	toolexec := filepath.Join(opts.Root, filepath.FromSlash(ToolexecPath))
+	toolexecSHA, err := hashFile(toolexec)
+	if err != nil {
+		return nil, diagnostic.New(diagnostic.Environment, "build.no-toolexec", "无法读取工具包装 %s", ToolexecPath).WithDetail(err.Error())
+	}
+	supportDir := filepath.Join(opts.Root, filepath.FromSlash(SupportDir))
+	supportSHA, err := hashTree(supportDir)
+	if err != nil {
+		return nil, diagnostic.New(diagnostic.Environment, "build.no-support", "无法读取固定支持目录 %s", SupportDir).WithDetail(err.Error())
+	}
 
-	// 3. 快照落盘：编译器读的是这份文件，不是用户路径。
+	// 3. 构建身份：入口、全部依赖、NIR、配置和工具内容必须一起成立。
+	// Files 为空表示这是一次 NIR 回放；有 Files 时必须有同一张图的聚合哈希。
+	if len(opts.Files) == 0 && opts.GraphHash != "" {
+		return nil, diagnostic.New(diagnostic.Internal, "build.identity-mismatch", "有依赖图哈希但没有逐文件身份")
+	}
+	if len(opts.Files) > 0 {
+		if opts.GraphHash == "" {
+			return nil, diagnostic.New(diagnostic.Internal, "build.identity-mismatch", "有逐文件身份但没有依赖图哈希")
+		}
+		if opts.Source == nil {
+			return nil, diagnostic.New(diagnostic.Internal, "build.identity-mismatch", "有依赖文件但没有入口身份")
+		}
+	}
+	projectRoot := opts.ProjectRoot
+	if projectRoot == "" {
+		projectRoot = opts.Root
+	}
+	files, err := normalizeFiles(opts.Files)
+	if err != nil {
+		return nil, err
+	}
+	if err := verifyFiles(projectRoot, files); err != nil {
+		return nil, err
+	}
+	if err := checkGraphIdentity(files, opts.GraphHash); err != nil {
+		return nil, err
+	}
+	entry := opts.Entry
+	if entry == "" && opts.Source != nil {
+		entry = opts.Source.Path
+	}
+	if len(files) > 0 {
+		if opts.Source == nil || opts.Source.Path != entry {
+			return nil, diagnostic.New(diagnostic.Internal, "build.identity-mismatch",
+				"入口身份 %q 与源码记录不一致", entry)
+		}
+		found := false
+		for _, file := range files {
+			if file.Path == entry {
+				found = true
+				if file.SHA256 != opts.Source.SHA256 {
+					return nil, diagnostic.New(diagnostic.Internal, "build.identity-mismatch",
+						"入口 %s 的内容哈希与依赖图不一致", file.Path)
+				}
+			}
+		}
+		if !found {
+			return nil, diagnostic.New(diagnostic.Internal, "build.identity-mismatch",
+				"入口 %s 不在依赖文件列表里", entry)
+		}
+	}
+	identity, err := newIdentity(entry, files, inputSHA, Config{
+		Target:     report.Target,
+		SupportDir: SupportDir,
+	}, Toolchain{
+		GoVersion:      report.LockedVersion,
+		GoSHA256:       goSHA,
+		CompilerSHA256: compilerSHA,
+		ToolexecSHA256: toolexecSHA,
+		SupportSHA256:  supportSHA,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// 4. 快照落盘：编译器读的是这份文件，不是用户路径。
 	snapshotDir := filepath.Join(opts.Root, filepath.FromSlash(SnapshotDir))
 	if err := os.MkdirAll(snapshotDir, 0o755); err != nil {
 		return nil, diagnostic.New(diagnostic.Environment, "build.snapshot-failed", "无法创建快照目录").WithDetail(err.Error())
@@ -148,7 +231,7 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 		inputPath = snapshot
 	}
 
-	// 4. 输出先写到同目录临时文件。
+	// 5. 输出先写到同目录临时文件。
 	outDir := filepath.Dir(opts.Output)
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return nil, diagnostic.New(diagnostic.Environment, "build.output-unwritable", "无法创建输出目录 %s", outDir).WithDetail(err.Error())
@@ -161,8 +244,10 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 	tmpFile.Close()
 	os.Remove(tmpPath)
 
-	// 5. 构建：Go 缓存键不含 NIR 与 bridge 身份，用 build tag 区分。
-	tag := "tynel_" + inputSHA[:8] + "_" + compilerSHA[:8]
+	// 6. 构建：Go 缓存键不含 NIR、配置和 bridge 身份，用产物输入身份作为
+	// build tag。NIR、配置或工具链变化都会换标签；源码文件清单只影响完整
+	// 身份，不改变同一份 NIR 的产物，因此不参与标签。
+	tag := "tynel_" + identity.ArtifactSHA256
 	env := append(os.Environ(),
 		"TYNEL_NIR="+snapshot,
 		"TYNEL_COMPILE="+compiler,
@@ -170,7 +255,7 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 	args := []string{
 		"-C", opts.Root,
 		"build",
-		"-toolexec=" + filepath.Join(opts.Root, filepath.FromSlash(ToolexecPath)),
+		"-toolexec=" + toolexec,
 		"-tags", "tynelapp " + tag,
 		"-o", tmpPath,
 		"./" + SupportDir,
@@ -185,7 +270,13 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 		return nil, out.Failure("go", args)
 	}
 
-	// 6. 产物存在才发布。改名是原子的，失败时旧产物保持原样。
+	// 7. 发布前复核关键输入没有被替换。
+	if err := verifyPostBuildInputs(snapshot, inputSHA, compiler, compilerSHA, toolexec, toolexecSHA, supportDir, supportSHA); err != nil {
+		os.Remove(tmpPath)
+		return nil, err
+	}
+
+	// 8. 产物存在才发布。改名是原子的，失败时旧产物保持原样。
 	info, err := os.Stat(tmpPath)
 	if err != nil {
 		return nil, diagnostic.New(diagnostic.Internal, "build.no-output", "构建报告成功但没有产出文件").WithDetail(err.Error())
@@ -200,11 +291,12 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 		return nil, diagnostic.New(diagnostic.Environment, "build.output-unwritable", "无法发布到 %s", opts.Output).WithDetail(err.Error())
 	}
 
-	// 7. 构建记录。
+	// 9. 构建记录。
 	record := &Record{SchemaVersion: 1, StartedAt: started.Format(time.RFC3339)}
 	record.DurationMillis = time.Since(started).Milliseconds()
 	record.Source = opts.Source
 	record.GraphHash = opts.GraphHash
+	record.Identity = identity
 	record.Input.Path = inputPath
 	record.Input.SHA256 = inputSHA
 	record.Input.Bytes = len(data)
@@ -213,7 +305,7 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 	record.Tools.Go = goTool
 	record.Tools.Compiler = compiler
 	record.Tools.CompilerSHA256 = compilerSHA
-	record.Tools.Toolexec = filepath.Join(opts.Root, filepath.FromSlash(ToolexecPath))
+	record.Tools.Toolexec = toolexec
 	record.Tools.BuildTag = tag
 	record.Tools.Snapshot = snapshot
 	record.Output.Path = opts.Output
