@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
@@ -129,8 +130,19 @@ func TestLoadRejectsCycle(t *testing.T) {
 		"a.ts":    {{Specifier: "./b.ts"}},
 		"b.ts":    {{Specifier: "./a.ts"}},
 	}
-	if _, err := Load(root, entry, scan); codeOf(err) != "graph.cycle" {
+	_, err := Load(root, entry, scan)
+	if codeOf(err) != "graph.cycle" {
 		t.Fatalf("应拒绝依赖环，实际 %v", err)
+	}
+	var d *diagnostic.Diagnostic
+	if !errors.As(err, &d) {
+		t.Fatalf("依赖环错误缺少诊断结构：%v", err)
+	}
+	for _, name := range []string{"a.ts", "b.ts"} {
+		path := filepath.Join(root.Path(), name)
+		if !strings.Contains(d.Message, path) {
+			t.Errorf("依赖环应给出完整路径 %s，实际 %q", path, d.Message)
+		}
 	}
 }
 

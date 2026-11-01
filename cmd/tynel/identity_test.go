@@ -94,6 +94,25 @@ func cliBuild(t *testing.T, a *app, entry, output string) (*build.Record, string
 	return &record, stderr.String(), nil
 }
 
+// TestMissingExportReportsFullPaths 直接调用真实命令行，确认 module.missing-export
+// 同时给出导出模块和导入模块的完整路径。导出改名通常先被 TypeScript 的
+// TS2724 拦住，那条诊断不包含导出文件路径，不能拿来覆盖这里的错误码。
+func TestMissingExportReportsFullPaths(t *testing.T) {
+	root := realRepoRoot(t)
+	projectRoot := filepath.Join(root, "compiler", "graph", "testdata", "modules")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"check", "--root", projectRoot, "missing.ts"}, &stdout, &stderr)
+	if code != diagnostic.ExitSource {
+		t.Fatalf("缺导出退出状态为 %d，期望 %d；stderr=%s", code, diagnostic.ExitSource, stderr.String())
+	}
+	for _, name := range []string{"a.ts", "missing.ts"} {
+		path := filepath.Join(projectRoot, name)
+		if !strings.Contains(stderr.String(), path) {
+			t.Errorf("缺导出诊断应给出完整路径 %s：%s", path, stderr.String())
+		}
+	}
+}
+
 func TestBuildIdentityTracksDependencyChanges(t *testing.T) {
 	root := realRepoRoot(t)
 	dir, err := os.MkdirTemp(filepath.Join(root, ".work"), "identity-")

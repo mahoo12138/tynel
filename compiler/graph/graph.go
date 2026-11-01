@@ -74,18 +74,18 @@ func Load(root *project.Root, entry project.File, scan Scanner) (*Graph, error) 
 	}
 	g := &Graph{Entry: entry}
 	state := make(map[string]int) // 0 未访问，1 正在访问，2 完成
-	var stack []string
+	var stack []project.File
 
 	var visit func(project.File) error
 	visit = func(file project.File) error {
 		switch state[file.Path] {
 		case 1:
-			return diagnostic.New(diagnostic.Source, "graph.cycle", "依赖环：%s", cycleText(stack, file.Path))
+			return diagnostic.New(diagnostic.Source, "graph.cycle", "依赖环：%s", cycleText(stack, file))
 		case 2:
 			return nil
 		}
 		state[file.Path] = 1
-		stack = append(stack, file.Path)
+		stack = append(stack, file)
 		g.Files = append(g.Files, file)
 
 		imports, err := scan.Imports(file)
@@ -128,22 +128,24 @@ func Load(root *project.Root, entry project.File, scan Scanner) (*Graph, error) 
 	return g, nil
 }
 
-func cycleText(stack []string, repeated string) string {
+// cycleText 从第一次进入环的位置开始列出完整文件路径。只用文件名会在
+// 不同目录存在同名模块时指向不明，所以这里使用依赖图里的绝对路径。
+func cycleText(stack []project.File, repeated project.File) string {
 	start := 0
-	for i, path := range stack {
-		if path == repeated {
+	for i, file := range stack {
+		if file.Path == repeated.Path {
 			start = i
 			break
 		}
 	}
-	parts := append([]string{}, stack[start:]...)
+	parts := append([]project.File{}, stack[start:]...)
 	parts = append(parts, repeated)
 	out := ""
-	for i, part := range parts {
+	for i, file := range parts {
 		if i > 0 {
 			out += " -> "
 		}
-		out += part
+		out += file.Abs
 	}
 	return out
 }

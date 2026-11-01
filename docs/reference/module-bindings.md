@@ -79,7 +79,7 @@ console.log(h2(base));
 ## 当前边界
 
 - 只支持命名导出、命名导入和导入重命名；默认导入、命名空间导入仍不在子集内。
-- `dump modules` 只建立符号表；`dump init` 规定初始化顺序；跨模块函数调用和 NIR 合并留到 05.06。
-- 值导入在 `check` / `build` 的能力检查里仍会被拒绝；`dump modules` 可以先查看绑定是否正确。
+- `dump modules` 只看符号表；`dump init` 看初始化顺序；`build` / `run` 会把模块合并成一个 NIR。
+- 命名值导入从 05.06 起可以构建和运行；函数读取模块级 `const` 仍由 `module.captured-variable` 拒绝。
 
 验收记录见[05.04 验收记录](../validation/05-04-bindings.md)。

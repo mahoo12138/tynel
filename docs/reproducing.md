@@ -1,10 +1,10 @@
 # 复现与工具准备
 
-本页记录从仓库取得代码、准备隔离工具链并运行实验的步骤。当前覆盖 01.01 的工具链准备、01.02 的构建与测试入口、01.05 的 bridge、02.01 的前端源码准备、02.02 的源码快照、02.03 的声明事实、02.04 的能力检查、02.05 的降低、02.06 的 void 与输出、02.07 的主命令行、02.09 的真实源码实验、03.08 的选择实验、04.01 的局部 let、04.02 的简单赋值、04.03 的 while 循环、04.04 的 break / continue、04.05 的直接与相互递归、04.06 的状态与控制组合，04.07 的 Collatz 真实源码实验，05.01 的项目根与路径解析，05.02 的依赖图与源码快照，05.03 的类型别名与纯类型导入，05.04 的跨模块名称绑定，05.05 的模块初始化顺序，以及 05.06 的合并模块原生程序；后续节点在同一页追加各自的实验命令。已经发布过的步骤按标签复测，不随最新代码改写。
+本页记录从仓库取得代码、准备隔离工具链并运行实验的步骤。当前覆盖 01.01 的工具链准备、01.02 的构建与测试入口、01.05 的 bridge、02.01 的前端源码准备、02.02 的源码快照、02.03 的声明事实、02.04 的能力检查、02.05 的降低、02.06 的 void 与输出、02.07 的主命令行、02.09 的真实源码实验、03.08 的选择实验、04.01 的局部 let、04.02 的简单赋值、04.03 的 while 循环、04.04 的 break / continue、04.05 的直接与相互递归、04.06 的状态与控制组合、04.07 的 Collatz 真实源码实验、05.01 的项目根与路径解析、05.02 的依赖图与源码快照、05.03 的类型别名与纯类型导入、05.04 的跨模块名称绑定、05.05 的模块初始化顺序、05.06 的合并模块原生程序、05.07 的依赖变化与构建身份，以及 05.08 的多文件报价实验；后续节点在同一页追加各自的实验命令。已经发布过的步骤按标签复测，不随最新代码改写。
 
 ## 现在能做什么
 
-`tools/toolchain` 能按锁文件在 `.work/` 内准备 go1.27.3 的 SDK 与源码，以及 TypeScript 前端的源码树。`./tools/build` 生成的 `bin/tynel` 是主入口：`check` 做类型检查、能力判断与 NIR 验证，`build` 生成原生程序，`run` 编译并运行，`dump` 输出事实或 NIR。
+`tools/toolchain` 能按锁文件在 `.work/` 内准备 go1.27.3 的 SDK 与源码，以及 TypeScript 前端的源码树。`./tools/build` 生成的 `bin/tynel` 是主入口：`check` 做类型检查、能力判断与 NIR 验证，`build` 生成原生程序，`run` 编译并运行，`dump` 输出事实、NIR、依赖图、模块符号表或初始化计划。
 
 ```zsh
 # 一条命令从 TypeScript 得到原生程序；示例在 examples/add.ts。
@@ -133,7 +133,7 @@ shasum -a 256 out/choices out/choices-replay
 
 ## Collatz 真实源码实验
 
-04.08 的 `examples/collatz.ts` 同时用循环和递归计算 Collatz 步数：
+04.07 的 `examples/collatz.ts` 同时用循环和递归计算 Collatz 步数：
 
 ```zsh
 # 预期 111、111、8、8、0。
@@ -263,6 +263,42 @@ cd /tmp
 ```
 
 函数前缀、初始化入口和回放方式见[合并模块与入口调度](reference/merged-program.md)，验收记录见[05.06 验收记录](validation/05-06-merge.md)。
+
+## 依赖变化与构建身份
+
+05.07 的身份回归走真实的依赖图、合并降低和 Go 后端，夹具在测试运行时创建：
+
+```zsh
+# 改辅助函数、改类型、改导出和移动文件的回归。
+./.work/toolchain/go1.27.3-sdk-darwin-arm64/bin/go test -count=1 -v \
+  -run TestBuildIdentityTracksDependencyChanges ./cmd/tynel
+```
+
+构建记录里的 `identity` 覆盖入口、全部类型和值依赖、NIR、配置和工具链；改辅助函数后输出从 `55` 变为 `56`，改类型或导出按源码错误拒绝并保留旧产物。规则见[构建身份与依赖变化](reference/build-identity.md)，验收记录见[05.07 验收记录](validation/05-07-identity.md)。
+
+## 多文件报价实验
+
+05.08 的四文件示例在 `examples/quote`：
+
+```zsh
+# 构建入口，成功后再运行产物；预期 90、10、100。
+./bin/tynel build --root examples/quote main.ts -o out/quote
+./out/quote
+
+# 查看初始化顺序：discount.ts、shipping.ts、main.ts；types.ts 只走类型边。
+./bin/tynel dump init --root examples/quote main.ts
+
+# 把 shipping.ts 的每件运费从 5 改成 6，重新构建；预期 90、12、102。
+# 实验后把 6 改回 5，保持仓库里的示例可重复。
+
+# 导出合并 NIR，再单独回放；两次产物应逐字节相同。
+./bin/tynel dump nir --root examples/quote main.ts > out/quote.nir.json
+./bin/tynel build-ir out/quote.nir.json -o out/quote-replay
+./out/quote-replay
+shasum -a 256 out/quote out/quote-replay
+```
+
+查找、绑定、初始化和身份的解释见第五篇笔记[把一个报价程序拆成四个文件](notes/05-modules.md)，查询表见[多文件程序参考](reference/modules.md)，验收记录见[05.08 验收记录](validation/05-modules.md)。
 
 ## 前置条件
 
@@ -468,4 +504,4 @@ go env GOROOT
 
 ## 尚未覆盖
 
-控制流、字符串、对象、数组和模块导入都还没有实现，`check` 会按能力限制拒绝；节点 02 的阶段笔记与完成标签已经就位，03.01 的 `boolean` 已可用，下一步从 03.02 的比较与严格相等开始。Windows 目标保留在 `deferredTargets` 中，没有可执行的准备命令。本页不提供这些步骤的命令，避免把计划写成已经可用。
+字符串、对象和数组仍不在子集内，`check` 会按能力限制拒绝。模块只支持显式相对 `.ts` 的命名导入导出和类型导入；默认导入、命名空间导入、再导出、裸模块、CommonJS、动态导入和 `tsconfig.json` 路径仍不支持。`for` 等语法尚未排入当前 6 个节点，命令集合在 06.01 才固定。Windows 目标保留在 `deferredTargets` 中，没有可执行的准备命令。本页不提供这些步骤的命令，避免把计划写成已经可用。
