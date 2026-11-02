@@ -9,8 +9,8 @@ import (
 	"github.com/Mahoo12138/tynel/internal/toolchain"
 )
 
-// toolchainCommand 实现开发用的工具链检查。它不属于用户命令，
-// 用户命令集合在 06.01 固定。
+// toolchainCommand 实现开发用的工具链检查。它不属于用户命令；
+// 用户命令与开发调试接口的划分见 docs/reference/cli.md。
 func (a *app) toolchainCommand(args []string) error {
 	if len(args) == 0 {
 		return a.showToolchain()

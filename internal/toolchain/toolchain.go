@@ -34,9 +34,16 @@ type Lock struct {
 		License      string `json:"license"`
 	} `json:"go"`
 	Targets struct {
-		Host    string `json:"host"`
-		Primary string `json:"primary"`
+		Host     string   `json:"host"`
+		Primary  string   `json:"primary"`
+		Deferred []string `json:"deferred"`
 	} `json:"targets"`
+	Frontend struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+		Commit  string `json:"commit"`
+		License string `json:"license"`
+	} `json:"frontend"`
 }
 
 // Install 是一次已完成的准备。

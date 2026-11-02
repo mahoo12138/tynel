@@ -63,52 +63,136 @@ func (a *app) programRunner() programRunner {
 	return execProgram{}
 }
 
-// sourceArgs 是 check、build、run 共用的参数形状。
+// sourceArgs 是 check、build、run、dump 和 build-ir 共用的参数形状。
+// 每个命令只打开自己接受的选项，解析与帮助使用同一份语义。
 type sourceArgs struct {
 	file   string
 	output string
 	root   string
+	target string
 	json   bool
 }
 
-func parseSourceArgs(command string, args []string, allowOutput, allowJSON bool) (sourceArgs, error) {
+type optionSet struct {
+	root   bool
+	output bool
+	json   bool
+	target bool
+}
+
+func parseSourceArgs(command, inputLabel string, args []string, allow optionSet, requireOutput bool) (sourceArgs, error) {
 	var parsed sourceArgs
+	var seenRoot, seenOutput, seenJSON, seenTarget bool
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
-		case allowOutput && arg == "-o":
-			if i+1 >= len(args) {
-				return parsed, diagnostic.New(diagnostic.Usage, "cli.missing-argument", "%s 的 -o 需要输出路径", command)
+		case arg == "--root" || strings.HasPrefix(arg, "--root="):
+			if !allow.root {
+				return parsed, optionNotAllowed(command, "--root")
 			}
-			parsed.output = args[i+1]
-			i++
-		case allowOutput && strings.HasPrefix(arg, "-o="):
-			parsed.output = strings.TrimPrefix(arg, "-o=")
-		case allowJSON && arg == "--json":
+			if seenRoot {
+				return parsed, duplicateOption(command, "--root")
+			}
+			seenRoot = true
+			value, used, err := optionValue(command, "--root", arg, args, i)
+			if err != nil {
+				return parsed, err
+			}
+			parsed.root = value
+			i += used
+		case arg == "-o" || strings.HasPrefix(arg, "-o="):
+			if !allow.output {
+				return parsed, optionNotAllowed(command, "-o")
+			}
+			if seenOutput {
+				return parsed, duplicateOption(command, "-o")
+			}
+			seenOutput = true
+			value, used, err := optionValue(command, "-o", arg, args, i)
+			if err != nil {
+				return parsed, err
+			}
+			parsed.output = value
+			i += used
+		case arg == "--json":
+			if !allow.json {
+				return parsed, optionNotAllowed(command, "--json")
+			}
+			if seenJSON {
+				return parsed, duplicateOption(command, "--json")
+			}
+			seenJSON = true
 			parsed.json = true
-		case arg == "--root":
-			if i+1 >= len(args) {
-				return parsed, diagnostic.New(diagnostic.Usage, "cli.missing-argument", "%s 的 --root 需要目录", command)
+		case arg == "--target" || strings.HasPrefix(arg, "--target="):
+			if !allow.target {
+				return parsed, optionNotAllowed(command, "--target")
 			}
-			parsed.root = args[i+1]
-			i++
-		case strings.HasPrefix(arg, "--root="):
-			parsed.root = strings.TrimPrefix(arg, "--root=")
+			if seenTarget {
+				return parsed, duplicateOption(command, "--target")
+			}
+			seenTarget = true
+			value, used, err := optionValue(command, "--target", arg, args, i)
+			if err != nil {
+				return parsed, err
+			}
+			parsed.target = value
+			i += used
 		case strings.HasPrefix(arg, "-"):
-			return parsed, diagnostic.New(diagnostic.Usage, "cli.bad-flag", "%s 不认识选项 %q", command, arg)
+			return parsed, diagnostic.New(diagnostic.Usage, "cli.bad-flag", "%s 不认识选项 %q；用 tynel help %s 查看参数", command, arg, command)
 		case parsed.file == "":
 			parsed.file = arg
 		default:
-			return parsed, diagnostic.New(diagnostic.Usage, "cli.unexpected-argument", "%s 只接受一个源文件：%q", command, arg)
+			return parsed, diagnostic.New(diagnostic.Usage, "cli.unexpected-argument", "%s 只接受一份%s：%q", command, inputLabel, arg)
 		}
 	}
 	if parsed.file == "" {
-		return parsed, diagnostic.New(diagnostic.Usage, "cli.missing-argument", "%s 需要一份 TypeScript 文件", command)
+		return parsed, diagnostic.New(diagnostic.Usage, "cli.missing-argument", "%s 需要一份%s", command, inputLabel)
 	}
-	if allowOutput && parsed.output == "" {
+	if requireOutput && parsed.output == "" {
 		return parsed, diagnostic.New(diagnostic.Usage, "cli.missing-argument", "%s 需要 -o 指定输出路径", command)
 	}
 	return parsed, nil
+}
+
+// optionValue 读取 `--name value` 或 `--name=value`。空值和看起来像下一个
+// 选项的值都按用法错误处理，避免把 --json 之类静默当成目录名。
+func optionValue(command, name, arg string, args []string, i int) (string, int, error) {
+	if eq := strings.IndexByte(arg, '='); eq >= 0 {
+		value := arg[eq+1:]
+		if value == "" {
+			return "", 0, diagnostic.New(diagnostic.Usage, "cli.missing-argument", "%s 的 %s 需要一个非空值", command, name)
+		}
+		return value, 0, nil
+	}
+	if i+1 >= len(args) {
+		return "", 0, diagnostic.New(diagnostic.Usage, "cli.missing-argument", "%s 的 %s 需要一个值", command, name)
+	}
+	value := args[i+1]
+	if value == "" || strings.HasPrefix(value, "-") {
+		return "", 0, diagnostic.New(diagnostic.Usage, "cli.missing-argument", "%s 的 %s 需要一个值，收到 %q", command, name, value)
+	}
+	return value, 1, nil
+}
+
+func duplicateOption(command, name string) error {
+	return diagnostic.New(diagnostic.Usage, "cli.duplicate-option", "%s 的 %s 只能出现一次", command, name)
+}
+
+// optionNotAllowed 对「这个命令不接受这个选项」给出具体原因，而不是只说
+// 选项名不认识；帮助和错误因此能指向正确的命令。
+func optionNotAllowed(command, name string) error {
+	reason := "这个命令不使用该选项"
+	switch name {
+	case "-o":
+		reason = "只有 build 和 build-ir 接受输出路径"
+	case "--root":
+		reason = "只有 check、build、run 和 dump 接受用户项目根"
+	case "--json":
+		reason = "机器可读结果只由 check --json 和 dump 提供"
+	case "--target":
+		reason = "目标只影响 build、run 和 build-ir"
+	}
+	return diagnostic.New(diagnostic.Usage, "cli.bad-flag", "%s 不接受 %s；%s", command, name, reason)
 }
 
 // resolveSource 把入口固定到项目根下，并返回给前端宿主的绝对路径。
@@ -302,7 +386,7 @@ func exitFor(result *pipeline.Result) error {
 
 // check 只做源级检查与 NIR 验证，不生成机器码，也不要求后端工具可用。
 func (a *app) check(args []string) error {
-	parsed, err := parseSourceArgs("check", args, false, true)
+	parsed, err := parseSourceArgs("check", "TypeScript 文件", args, optionSet{root: true, json: true}, false)
 	if err != nil {
 		return err
 	}
@@ -342,8 +426,11 @@ func (a *app) check(args []string) error {
 
 // build 从一份 TypeScript 源文件生成原生程序。构建成功也不运行它。
 func (a *app) build(args []string) error {
-	parsed, err := parseSourceArgs("build", args, true, false)
+	parsed, err := parseSourceArgs("build", "TypeScript 文件", args, optionSet{root: true, output: true, target: true}, true)
 	if err != nil {
+		return err
+	}
+	if err := a.checkTarget(parsed.target); err != nil {
 		return err
 	}
 	file, err := a.resolveSource(parsed)
@@ -409,8 +496,11 @@ func (a *app) build(args []string) error {
 // run 编译并立即执行本次产物。它不执行任何先前存在的文件：构建失败就直接
 // 返回，目标位置即使留着上一次的产物也不会被运行。
 func (a *app) run(args []string) error {
-	parsed, err := parseSourceArgs("run", args, false, false)
+	parsed, err := parseSourceArgs("run", "TypeScript 文件", args, optionSet{root: true, target: true}, false)
 	if err != nil {
+		return err
+	}
+	if err := a.checkTarget(parsed.target); err != nil {
 		return err
 	}
 	file, err := a.resolveSource(parsed)
@@ -478,7 +568,7 @@ func (a *app) run(args []string) error {
 // dump 输出前端事实或 NIR，只写 JSON。
 func (a *app) dump(args []string) error {
 	if len(args) < 2 {
-		return diagnostic.New(diagnostic.Usage, "cli.missing-argument", "dump 需要一份内容和一份源文件：dump facts <file.ts> 或 dump nir <file.ts>")
+		return diagnostic.New(diagnostic.Usage, "cli.missing-argument", "dump 需要内容名和一份源文件：dump facts|nir|graph|modules|init <file.ts>")
 	}
 	what := args[0]
 	switch what {
@@ -486,7 +576,7 @@ func (a *app) dump(args []string) error {
 	default:
 		return diagnostic.New(diagnostic.Usage, "cli.unknown-topic", "dump 只接受 facts、nir、graph、modules 或 init，收到 %q", what)
 	}
-	parsed, err := parseSourceArgs("dump", args[1:], false, false)
+	parsed, err := parseSourceArgs("dump", "TypeScript 文件", args[1:], optionSet{root: true}, false)
 	if err != nil {
 		return err
 	}
@@ -649,6 +739,29 @@ func (a *app) projectRoot(parsed sourceArgs) (string, error) {
 		return "", err
 	}
 	return p.Path(), nil
+}
+
+// checkTarget 只接受锁文件的主目标。显式请求其他平台时直接失败，不尝试
+// 交叉编译，也不退回宿主默认后端或解释器；省略 --target 时使用锁定的目标。
+func (a *app) checkTarget(target string) error {
+	if target == "" {
+		return nil
+	}
+	if !a.hasRoot {
+		return diagnostic.New(diagnostic.Environment, "project.not-found", "不在项目目录内：向上找不到 %s", toolchain.LockPath)
+	}
+	lock, err := toolchain.LoadLock(filepath.Join(a.root, filepath.FromSlash(toolchain.LockPath)))
+	if err != nil {
+		return err
+	}
+	supported := lock.Targets.Primary
+	if supported == "" {
+		supported = lock.Targets.Host
+	}
+	if target != supported {
+		return diagnostic.New(diagnostic.Capability, "target.unsupported", "首版只支持 %s；请求的目标是 %q，不交叉编译，也不会改用其他后端或解释器", supported, target)
+	}
+	return nil
 }
 
 // sourceOf 把结果里的源码身份转成构建记录的一项。路径尽量写成项目内相对

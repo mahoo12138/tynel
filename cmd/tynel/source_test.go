@@ -382,3 +382,25 @@ func TestResolveSourceRejectsMissing(t *testing.T) {
 		t.Fatalf("错误为 %v，期望 project.missing", err)
 	}
 }
+
+// TestBuildOutputIsRelativeToWorkingDirectory 固定 -o 的路径基准：它相对当前
+// 工作目录，而不是 --root 指定的用户项目。换目录构建不应把产物写回项目根。
+func TestBuildOutputIsRelativeToWorkingDirectory(t *testing.T) {
+	root := newBackendProject(t)
+	work := t.TempDir()
+	t.Chdir(work)
+
+	a := &app{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, runner: &fileRunner{}, root: root, hasRoot: true}
+	a.frontend = func(file, want string) (*pipeline.Result, error) {
+		return okResult(file), nil
+	}
+	if err := a.build([]string{"add.ts", "--root", root, "-o", "out/app"}); err != nil {
+		t.Fatalf("build 失败：%v\n%s", err, a.stderr)
+	}
+	if _, err := os.Stat(filepath.Join(work, "out", "app")); err != nil {
+		t.Fatalf("产物应按工作目录写到 %s：%v", filepath.Join(work, "out", "app"), err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "out", "app")); !os.IsNotExist(err) {
+		t.Errorf("产物不应写进用户项目根：%v", err)
+	}
+}

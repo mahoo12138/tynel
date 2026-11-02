@@ -32,6 +32,11 @@ func (a *app) version(args []string) error {
 	}
 	fmt.Fprintf(a.stdout, "  目标平台    %s\n", lock.Targets.Host)
 	fmt.Fprintf(a.stdout, "  工具链      %s（提交 %s，%s）\n", lock.Go.Version, shortSHA(lock.Go.SourceCommit), lock.Go.License)
+	if lock.Frontend.Name != "" {
+		fmt.Fprintf(a.stdout, "  前端        %s %s（提交 %s，%s）\n", lock.Frontend.Name, lock.Frontend.Version, shortSHA(lock.Frontend.Commit), lock.Frontend.License)
+	} else {
+		fmt.Fprintln(a.stdout, "  前端        未记录")
+	}
 	fmt.Fprintf(a.stdout, "  锁文件      %s\n", toolchain.LockPath)
 	if report, err := toolchain.LoadReport(filepath.Join(a.root, filepath.FromSlash(toolchain.ReportPath))); err == nil {
 		if sdk, ok := report.SDK(); ok {

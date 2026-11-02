@@ -231,8 +231,14 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 		inputPath = snapshot
 	}
 
-	// 5. 输出先写到同目录临时文件。
-	outDir := filepath.Dir(opts.Output)
+	// 5. 输出先写到同目录临时文件。输出路径按调用时的工作目录解析；
+	// 临时路径必须是绝对的，因为下面的 go build 会用 -C 切换目录，
+	// 相对路径会在错误的位置解析。
+	output, err := filepath.Abs(opts.Output)
+	if err != nil {
+		return nil, diagnostic.New(diagnostic.Environment, "build.output-unwritable", "无法解析输出路径 %s", opts.Output).WithDetail(err.Error())
+	}
+	outDir := filepath.Dir(output)
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return nil, diagnostic.New(diagnostic.Environment, "build.output-unwritable", "无法创建输出目录 %s", outDir).WithDetail(err.Error())
 	}
@@ -286,9 +292,9 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 		os.Remove(tmpPath)
 		return nil, diagnostic.New(diagnostic.Environment, "build.output-unreadable", "无法读取构建产物").WithDetail(err.Error())
 	}
-	if err := os.Rename(tmpPath, opts.Output); err != nil {
+	if err := os.Rename(tmpPath, output); err != nil {
 		os.Remove(tmpPath)
-		return nil, diagnostic.New(diagnostic.Environment, "build.output-unwritable", "无法发布到 %s", opts.Output).WithDetail(err.Error())
+		return nil, diagnostic.New(diagnostic.Environment, "build.output-unwritable", "无法发布到 %s", output).WithDetail(err.Error())
 	}
 
 	// 9. 构建记录。

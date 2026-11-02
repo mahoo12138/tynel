@@ -70,4 +70,6 @@ MVP 的交付物是编译器本身：通过 `tynel build input.ts -o out/program
 
 05.08 已完成：多文件实验与第五篇。`examples/quote` 把报价程序拆成入口、折扣、运费和共享类型四个文件；`tynel build --root examples/quote main.ts -o out/quote` 得到一个 exe，输出 `90`、`10`、`100`。`dump init` 的执行顺序是 `discount.ts`、`shipping.ts`、`main.ts`，纯类型模块 `types.ts` 只出现在类型边里。把运费从 `5` 改成 `6` 后输出 `90`、`12`、`102`，完整身份从 `b0eb…` 变为 `605c…`；改回后身份恢复。合并 NIR 可以脱离源码回放，产物逐字节相同。缺导出和依赖环的诊断现在都给出完整文件路径。叙述见[把一个报价程序拆成四个文件](docs/notes/05-modules.md)，查询表见[多文件程序参考](docs/reference/modules.md)，阶段验收见[05.08 验收记录](docs/validation/05-modules.md)。节点 05 建立完成标签 `mvp/05-modules`。
 
-下一步进入 06.01：固定用户命令与帮助契约。节点 01 至 05 的全部子节点已通过正常、错误和边界验收，06 仍为计划状态。
+06.01 已完成：固定用户命令与帮助契约。用户命令是 `version`、`check`、`build`、`run`；`dump`、`build-ir`、`toolchain` 是开发调试接口。`--root` 决定源文件根，`-o` 相对当前工作目录，`--target` 只接受 `darwin/arm64`，其他目标明确退出 3。`version` 现在同时显示 Go 和 typescript-go 身份；重复或未知选项按用法错误退出 2。`build` 从 `.work/validation/06-01/cwd` 用绝对项目根构建成功，产物和记录落在该工作目录。规则见[命令行参考](docs/reference/cli.md)，验收见[06.01 验收记录](docs/validation/06-01-cli.md)。
+
+下一步进入 06.02：统一诊断与外部进程故障。节点 01 至 05 已全部验收，06.01 也通过正常、错误和边界检查。

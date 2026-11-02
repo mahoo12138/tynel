@@ -3,7 +3,7 @@
   "track": "mvp",
   "deliverable": "typescript-to-native-compiler",
   "phase": "implementation",
-  "currentImplementationNode": "05.08",
+  "currentImplementationNode": "06.01",
   "target": "darwin/arm64",
   "deferredTargets": [
     "windows/amd64"
@@ -688,7 +688,7 @@
       "dependsOn": [
         "05"
       ],
-      "status": "planned",
+      "status": "active",
       "plannedNote": "docs/notes/06-compiler-mvp.md",
       "goal": "稳定命令、错误诊断、干净构建和二进制独立运行",
       "gateSubnode": "06.08",
@@ -700,9 +700,16 @@
             "05.08"
           ],
           "planSection": "PLAN.md#task-06-01",
-          "status": "planned",
+          "status": "verified",
           "implementationCommits": [],
-          "evidence": []
+          "evidence": [
+            "docs/reference/cli.md",
+            "docs/validation/06-01-cli.md",
+            "docs/reference/support.md",
+            "cmd/tynel/help.go",
+            "cmd/tynel/main_test.go",
+            "internal/build/build.go"
+          ]
         },
         {
           "id": "06.02",

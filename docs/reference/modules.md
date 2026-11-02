@@ -105,13 +105,13 @@ main.ts 先导入 discount.ts，再导入 shipping.ts
 | 命令 | 用途 |
 | --- | --- |
 | `tynel check <入口> --root <根>` | 类型检查、能力检查、降低并验证合并 NIR，不生成机器码 |
-| `tynel build <入口> -o <路径> --root <根>` | 生成一个原生程序和构建记录 |
-| `tynel run <入口> --root <根>` | 构建并运行本次产物 |
+| `tynel build <入口> -o <路径> --root <根> [--target <平台>]` | 生成一个原生程序和构建记录 |
+| `tynel run <入口> --root <根> [--target <平台>]` | 构建并运行本次产物 |
 | `tynel dump graph <入口> --root <根>` | 文件、边、类型边和图哈希 |
 | `tynel dump modules <入口> --root <根>` | 导出、导入和跨模块绑定 |
 | `tynel dump init <入口> --root <根>` | 初始化顺序、值边、类型边和可识别的字面量打印 |
 | `tynel dump nir <入口> --root <根>` | 合并后的 NIR |
-| `tynel build-ir <NIR> -o <路径>` | 从固定 NIR 回放，不读源码 |
+| `tynel build-ir <NIR> -o <路径> [--target <平台>]` | 从固定 NIR 回放，不读源码；不接受 `--root` |
 
 `dump` 只输出 JSON；失败时不输出部分结果。命令和退出状态的完整说明见[命令行参考](cli.md)。
 

@@ -142,6 +142,37 @@ func TestRunPublishesArtifactAndRecord(t *testing.T) {
 	}
 }
 
+// TestRunResolvesRelativeOutputFromWorkingDirectory 固定 -o 的基准：相对路径
+// 按调用时的工作目录解析，不能因为 go build 使用 -C 就落到项目根下。
+func TestRunResolvesRelativeOutputFromWorkingDirectory(t *testing.T) {
+	root, runner := newProject(t)
+	runner.writeOutput = true
+	input := filepath.Join(root, "add.nir.json")
+	writeFile(t, input, string(exampleNIR(t)))
+
+	work := t.TempDir()
+	t.Chdir(work)
+	record, err := Run(Options{Root: root, Input: input, Output: "out/app"}, runner)
+	if err != nil {
+		t.Fatalf("构建失败：%v", err)
+	}
+	if record.Output.Path != "out/app" {
+		t.Errorf("记录应保留用户写的相对路径，实际 %q", record.Output.Path)
+	}
+	if _, err := os.Stat(filepath.Join(work, "out", "app")); err != nil {
+		t.Fatalf("产物应按工作目录写到 %s：%v", filepath.Join(work, "out", "app"), err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "out", "app")); !os.IsNotExist(err) {
+		t.Errorf("产物不应写到项目根：%v", err)
+	}
+	for _, arg := range runner.lastArgs {
+		if filepath.IsAbs(arg) && strings.Contains(filepath.Base(arg), ".tynel-build-") {
+			return
+		}
+	}
+	t.Errorf("传给 go build 的临时输出应是绝对路径：%v", runner.lastArgs)
+}
+
 func SnapshotDirPath(root string, record *Record) string {
 	if filepath.IsAbs(record.Tools.Snapshot) {
 		return record.Tools.Snapshot
