@@ -209,6 +209,42 @@ func TestAnalyzeMapsHostExit(t *testing.T) {
 	}
 }
 
+// TestAnalyzePreservesChildCategoryAndStderr 确认父进程按子进程的真实类别
+// 映射，而不是把所有非零退出都改写成环境缺失；原始 stderr 必须留在原因里。
+func TestAnalyzePreservesChildCategoryAndStderr(t *testing.T) {
+	cases := []struct {
+		exit int
+		want diagnostic.Category
+	}{
+		{diagnostic.ExitSource, diagnostic.Source},
+		{diagnostic.ExitUsage, diagnostic.Usage},
+		{diagnostic.ExitCapability, diagnostic.Capability},
+		{diagnostic.ExitEnvironment, diagnostic.Environment},
+		{diagnostic.ExitInternal, diagnostic.Internal},
+		{6, diagnostic.Internal},
+	}
+	for _, c := range cases {
+		h := &Host{Path: "/tmp/consumer"}
+		_, err := h.Analyze("a.ts", "check", &fakeRunner{exit: c.exit, stderr: "child stderr"})
+		if err == nil {
+			t.Fatalf("退出 %d 时应有错误", c.exit)
+		}
+		var d *diagnostic.Diagnostic
+		if !errors.As(err, &d) {
+			t.Fatalf("退出 %d 时错误不是诊断：%v", c.exit, err)
+		}
+		if d.Category != c.want {
+			t.Errorf("退出 %d 映射为 %v，期望 %v", c.exit, d.Category, c.want)
+		}
+		if d.Stage != diagnostic.StageFrontend {
+			t.Errorf("退出 %d 的阶段为 %q，期望 frontend", c.exit, d.Stage)
+		}
+		if !strings.Contains(d.Detail, "child stderr") {
+			t.Errorf("退出 %d 时没有保留子进程 stderr：%q", c.exit, d.Detail)
+		}
+	}
+}
+
 func TestAnalyzeRejectsUnknownFields(t *testing.T) {
 	h := &Host{Path: "/tmp/consumer"}
 	_, err := h.Analyze("a.ts", "check", &fakeRunner{stdout: `{"schemaVersion":1,"surprise":true}`})

@@ -65,7 +65,8 @@ func (Exec) RunEnv(env []string, name string, args ...string) (Output, error) {
 // 它不返回源码错误：外部进程失败不是用户代码的问题。
 func (o Output) Failure(name string, args []string) *diagnostic.Diagnostic {
 	command := strings.TrimSpace(name + " " + strings.Join(args, " "))
-	d := diagnostic.New(diagnostic.Internal, "tool.failed", "外部工具执行失败：%s（退出状态 %d）", command, o.ExitCode)
+	d := diagnostic.New(diagnostic.Internal, "tool.failed", "外部工具执行失败：%s（退出状态 %d）", command, o.ExitCode).
+		WithStage(diagnostic.StageBackend)
 	if detail := strings.TrimSpace(o.Stderr); detail != "" {
 		d = d.WithDetail(detail)
 	} else if detail := strings.TrimSpace(o.Stdout); detail != "" {
@@ -76,7 +77,8 @@ func (o Output) Failure(name string, args []string) *diagnostic.Diagnostic {
 
 // Missing 把找不到工具转换为环境缺失诊断。
 func Missing(name string, cause error) *diagnostic.Diagnostic {
-	d := diagnostic.New(diagnostic.Environment, "tool.missing", "找不到工具 %s", name)
+	d := diagnostic.New(diagnostic.Environment, "tool.missing", "找不到工具 %s", name).
+		WithStage(diagnostic.StageToolchain)
 	if cause != nil {
 		d = d.WithDetail(fmt.Sprintf("%v", cause))
 	}

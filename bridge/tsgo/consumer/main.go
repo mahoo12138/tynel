@@ -394,7 +394,31 @@ func checkFiles(snapshot *source.Snapshot, deps []*source.Snapshot) ([]source.Di
 	if closeErr != nil {
 		return nil, diagnostic.New(diagnostic.Internal, "frontend.close", "关闭会话失败").WithDetail(closeErr.Error())
 	}
-	return snapshot.MapDiagnostics(convert(raw))
+	return mapDiagnostics(snapshot, deps, convert(raw))
+}
+
+// mapDiagnostics 按诊断所属文件选择快照换算位置。依赖文件和入口一样是
+// Tynel 自己读进来的源码，应当得到同样的行列；只有声明库等外来文件没有
+// 对应快照，保留路径而不硬套位置。
+func mapDiagnostics(entry *source.Snapshot, deps []*source.Snapshot, raw []source.FrontendDiagnostic) ([]source.Diagnostic, error) {
+	byPath := make(map[string]*source.Snapshot, len(deps)+1)
+	byPath[entry.Path()] = entry
+	for _, dep := range deps {
+		byPath[dep.Path()] = dep
+	}
+	out := make([]source.Diagnostic, 0, len(raw))
+	for _, one := range raw {
+		owner := entry
+		if dep, ok := byPath[one.File]; ok {
+			owner = dep
+		}
+		mapped, err := owner.MapDiagnostics([]source.FrontendDiagnostic{one})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, mapped...)
+	}
+	return out, nil
 }
 
 // convert 把适配层的诊断摊平成 source 认识的形状。这是宿主承担的转换，

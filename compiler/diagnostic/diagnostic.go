@@ -6,6 +6,7 @@
 package diagnostic
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -72,21 +73,119 @@ func (c Category) ExitCode() int {
 	}
 }
 
+// Key 返回稳定的机器可读类别名。中文名只用于人类输出，不参与脚本匹配。
+func (c Category) Key() string {
+	switch c {
+	case Source:
+		return "source"
+	case Usage:
+		return "usage"
+	case Capability:
+		return "capability"
+	case Environment:
+		return "environment"
+	case Internal:
+		return "internal"
+	default:
+		return "internal"
+	}
+}
+
+// 阶段名是稳定的机器字段，描述失败发生在编译流程的哪一段。它不等于类别：
+// 同一个前端阶段可以产生源码错误、能力限制或环境缺失。
+const (
+	StageCLI        = "cli"
+	StageProject    = "project"
+	StageSource     = "source"
+	StageGraph      = "graph"
+	StageModules    = "modules"
+	StageCapability = "capability"
+	StageFrontend   = "frontend"
+	StageLower      = "lower"
+	StageNIR        = "nir"
+	StageBuild      = "build"
+	StageBackend    = "backend"
+	StagePublish    = "publish"
+	StageRun        = "run"
+	StageToolchain  = "toolchain"
+	StageTarget     = "target"
+	StageInternal   = "internal"
+)
+
 // Diagnostic 是一条可展示的失败。Code 是稳定标识，供脚本匹配；Message 是
-// 面向使用者的中文说明；Detail 保存外部进程输出等原始原因，不做改写。
+// 面向使用者的中文说明；Stage 说明发生在编译流程的哪一段；Detail 保存外部
+// 进程输出等原始原因，不做改写。
 type Diagnostic struct {
 	Category Category
 	Code     string
+	Stage    string
 	Message  string
+	Severity string
 	File     string
 	Line     int
 	Column   int
 	Detail   string
 }
 
-// New 构造一条诊断。format 与 args 的用法同 fmt.Sprintf。
+// New 构造一条诊断。format 与 args 的用法同 fmt.Sprintf。阶段默认从错误码
+// 前缀推导，调用方可以在跨进程边界用 WithStage 覆盖。
 func New(category Category, code, format string, args ...any) *Diagnostic {
-	return &Diagnostic{Category: category, Code: code, Message: fmt.Sprintf(format, args...)}
+	return &Diagnostic{Category: category, Code: code, Stage: stageForCode(code), Message: fmt.Sprintf(format, args...)}
+}
+
+// WithStage 覆盖从错误码推导出的阶段。空值不覆盖。
+func (d *Diagnostic) WithStage(stage string) *Diagnostic {
+	if stage != "" {
+		d.Stage = stage
+	}
+	return d
+}
+
+// WithSeverity 补充 TypeScript 的 error/warning 级别；环境与工具诊断没有
+// 这个字段，保持为空。
+func (d *Diagnostic) WithSeverity(severity string) *Diagnostic {
+	d.Severity = severity
+	return d
+}
+
+// stageForCode 让已有错误码不必逐条改写就能带上阶段。前缀是诊断协议的一部分；
+// 新增错误码时沿用同一组前缀即可。
+func stageForCode(code string) string {
+	prefix, _, _ := strings.Cut(code, ".")
+	switch prefix {
+	case "cli":
+		return StageCLI
+	case "project":
+		return StageProject
+	case "source":
+		return StageSource
+	case "graph":
+		return StageGraph
+	case "module", "modules", "init", "merge":
+		return StageModules
+	case "cap":
+		return StageCapability
+	case "facts", "frontend", "host":
+		return StageFrontend
+	case "lower":
+		return StageLower
+	case "nir":
+		return StageNIR
+	case "build":
+		return StageBuild
+	case "tool":
+		return StageToolchain
+	case "lock", "toolchain":
+		return StageToolchain
+	case "run":
+		return StageRun
+	case "target":
+		return StageTarget
+	case "internal":
+		return StageInternal
+	default:
+		return StageInternal
+	}
 }
 
 // At 补充源码位置。
@@ -126,6 +225,10 @@ func (d *Diagnostic) WriteTo(w io.Writer) (int64, error) {
 	}
 	b.WriteString(": ")
 	b.WriteString(d.Message)
+	if d.Stage != "" {
+		b.WriteString("\n  阶段: ")
+		b.WriteString(d.Stage)
+	}
 	if d.File != "" {
 		b.WriteString("\n  位置: ")
 		b.WriteString(d.File)
@@ -162,10 +265,84 @@ func Write(w io.Writer, err error) error {
 	if err == nil {
 		return nil
 	}
-	var d *Diagnostic
-	if !errors.As(err, &d) {
-		d = New(Internal, "internal.unclassified", "%v", err)
-	}
+	d := asDiagnostic(err)
 	_, writeErr := d.WriteTo(w)
 	return writeErr
+}
+
+// asDiagnostic 把任意错误转换成可展示的诊断，避免两个输出路径各写一套
+// 包装逻辑。
+func asDiagnostic(err error) *Diagnostic {
+	var d *Diagnostic
+	if errors.As(err, &d) {
+		return d
+	}
+	return New(Internal, "internal.unclassified", "%v", err)
+}
+
+// Envelope 是机器可读的诊断信封。一次失败只有一个信封，内部可以有多条
+// 源码或能力项；人类输出按同样顺序逐条打印。
+type Envelope struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	OK            bool   `json:"ok"`
+	ExitCode      int    `json:"exitCode"`
+	Diagnostics   []Item `json:"diagnostics"`
+}
+
+// Item 是一条机器可读诊断。Category 和 Stage 是稳定英文键，CategoryName
+// 与 Message 是面向人的中文说明；位置字段没有时不出现。
+type Item struct {
+	Category     string `json:"category"`
+	CategoryName string `json:"categoryName"`
+	Code         string `json:"code,omitempty"`
+	Stage        string `json:"stage"`
+	Message      string `json:"message"`
+	Severity     string `json:"severity,omitempty"`
+	File         string `json:"file,omitempty"`
+	Line         int    `json:"line,omitempty"`
+	Column       int    `json:"column,omitempty"`
+	Detail       string `json:"detail,omitempty"`
+}
+
+// Item 把一条诊断投影成机器可读形状。
+func (d *Diagnostic) Item() Item {
+	return Item{
+		Category:     d.Category.Key(),
+		CategoryName: d.Category.String(),
+		Code:         d.Code,
+		Stage:        d.Stage,
+		Message:      d.Message,
+		Severity:     d.Severity,
+		File:         d.File,
+		Line:         d.Line,
+		Column:       d.Column,
+		Detail:       d.Detail,
+	}
+}
+
+// WriteItems 输出一个 JSON 诊断信封。退出状态决定 ok：成功路径上的警告
+// 也会被报告，但信封仍然是成功的，不能只凭「有条目」就判成失败。
+func WriteItems(w io.Writer, items []*Diagnostic, exitCode int) error {
+	envelope := Envelope{
+		SchemaVersion: 1,
+		OK:            exitCode == ExitOK,
+		ExitCode:      exitCode,
+		Diagnostics:   make([]Item, 0, len(items)),
+	}
+	for _, item := range items {
+		envelope.Diagnostics = append(envelope.Diagnostics, item.Item())
+	}
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(envelope)
+}
+
+// WriteJSON 把任意错误写成单条 JSON 诊断。非诊断错误先按内部故障包装，
+// 与人类输出的 Write 使用同一套分类。
+func WriteJSON(w io.Writer, err error) error {
+	if err == nil {
+		return nil
+	}
+	d := asDiagnostic(err)
+	return WriteItems(w, []*Diagnostic{d}, d.ExitCode())
 }

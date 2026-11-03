@@ -1,6 +1,7 @@
 package build
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -171,6 +172,30 @@ func TestRunResolvesRelativeOutputFromWorkingDirectory(t *testing.T) {
 		}
 	}
 	t.Errorf("传给 go build 的临时输出应是绝对路径：%v", runner.lastArgs)
+}
+
+// TestRunClassifiesToolLaunchFailureAsEnvironment 把启动超时当成外部工具
+// 不可用，而不是用户源码错误；原因必须保留原始错误。
+func TestRunClassifiesToolLaunchFailureAsEnvironment(t *testing.T) {
+	root, runner := newProject(t)
+	runner.err = context.DeadlineExceeded
+	input := filepath.Join(root, "add.nir.json")
+	writeFile(t, input, string(exampleNIR(t)))
+
+	_, err := Run(Options{Root: root, Input: input, Output: filepath.Join(root, "out", "app")}, runner)
+	if err == nil {
+		t.Fatal("工具启动失败应返回错误")
+	}
+	if got := diagnostic.ExitCode(err); got != diagnostic.ExitEnvironment {
+		t.Fatalf("退出状态为 %d，期望 %d（%v）", got, diagnostic.ExitEnvironment, err)
+	}
+	var d *diagnostic.Diagnostic
+	if !errors.As(err, &d) || d.Code != "build.tool-missing" {
+		t.Fatalf("错误码应为 build.tool-missing：%v", err)
+	}
+	if !strings.Contains(d.Detail, "deadline exceeded") {
+		t.Errorf("原因应保留超时信息：%q", d.Detail)
+	}
 }
 
 func SnapshotDirPath(root string, record *Record) string {

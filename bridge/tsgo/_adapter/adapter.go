@@ -166,6 +166,10 @@ func Open(opts Options) (*Session, error) {
 
 // Diagnostics 返回程序级、语法和语义诊断，顺序是程序级在前、文件级在后。
 //
+// 程序里可能有多份源码：入口和它显式导入的依赖。只查入口会漏掉依赖里的
+// 类型错误，让它们在降低阶段变成「内部故障」——那是错误分类，不是源码诊断。
+// 内置声明库不参与检查，只报告调用方提供的源码。
+//
 // 调用方要区分「源码有问题」和「前端自己出错」：本方法只返回诊断，不返回
 // 错误；返回 error 只有一种情况——会话已经关闭。
 func (s *Session) Diagnostics() ([]Diagnostic, error) {
@@ -176,8 +180,13 @@ func (s *Session) Diagnostics() ([]Diagnostic, error) {
 	}
 	ctx := context.Background()
 	raw := s.program.GetProgramDiagnostics()
-	raw = append(raw, s.program.GetSyntacticDiagnostics(ctx, s.file)...)
-	raw = append(raw, s.program.GetSemanticDiagnostics(ctx, s.file)...)
+	for _, file := range s.program.GetSourceFiles() {
+		if file.IsDeclarationFile {
+			continue
+		}
+		raw = append(raw, s.program.GetSyntacticDiagnostics(ctx, file)...)
+		raw = append(raw, s.program.GetSemanticDiagnostics(ctx, file)...)
+	}
 
 	out := make([]Diagnostic, 0, len(raw))
 	for _, d := range raw {

@@ -2,6 +2,7 @@ package diagnostic
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -59,6 +60,7 @@ func TestWriteToFormat(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"tynel: 环境缺失 (tool.missing): 找不到工具 go",
+		"  阶段: toolchain",
 		"  位置: examples/add.ts:3:5",
 		"  原因: line1\n    line2",
 	} {
@@ -93,6 +95,104 @@ func TestWriteWrapsPlainError(t *testing.T) {
 	}
 	if got := buf.String(); !strings.Contains(got, "内部故障") || !strings.Contains(got, "boom") {
 		t.Errorf("普通错误应包装为内部故障并保留原因，实际为：%q", got)
+	}
+}
+
+func TestStageFromCodeAndOverride(t *testing.T) {
+	cases := []struct {
+		code  string
+		stage string
+	}{
+		{"cli.bad-flag", StageCLI},
+		{"project.missing", StageProject},
+		{"module.missing-export", StageModules},
+		{"cap.bad-type", StageCapability},
+		{"facts.decode", StageFrontend},
+		{"host.failed", StageFrontend},
+		{"build.output-unwritable", StageBuild},
+		{"tool.failed", StageToolchain},
+		{"run.exec-failed", StageRun},
+		{"target.unsupported", StageTarget},
+		{"unknown.code", StageInternal},
+	}
+	for _, c := range cases {
+		if got := New(Source, c.code, "x").Stage; got != c.stage {
+			t.Errorf("%s 的阶段为 %q，期望 %q", c.code, got, c.stage)
+		}
+	}
+	if got := New(Internal, "tool.failed", "x").WithStage(StageBackend).Stage; got != StageBackend {
+		t.Errorf("显式阶段没有覆盖默认值：%q", got)
+	}
+}
+
+func TestJSONMatchesHumanDiagnostic(t *testing.T) {
+	d := New(Source, "TS2322", "Type 'string' is not assignable to type 'number'.").
+		At("src/main.ts", 2, 7).
+		WithSeverity("error").
+		WithStage(StageFrontend).
+		WithDetail("child stderr")
+
+	var human, machine bytes.Buffer
+	if err := Write(&human, d); err != nil {
+		t.Fatalf("写人类诊断失败：%v", err)
+	}
+	if err := WriteJSON(&machine, d); err != nil {
+		t.Fatalf("写 JSON 诊断失败：%v", err)
+	}
+	for _, want := range []string{"源码错误", "TS2322", "frontend", "src/main.ts:2:7", "child stderr"} {
+		if !strings.Contains(human.String(), want) {
+			t.Errorf("人类输出缺少 %q：%s", want, human.String())
+		}
+	}
+
+	var envelope Envelope
+	if err := json.Unmarshal(machine.Bytes(), &envelope); err != nil {
+		t.Fatalf("JSON 诊断无法解析：%v\n%s", err, machine.String())
+	}
+	if envelope.SchemaVersion != 1 || envelope.OK || envelope.ExitCode != ExitSource {
+		t.Errorf("信封头部不对：%+v", envelope)
+	}
+	if len(envelope.Diagnostics) != 1 {
+		t.Fatalf("诊断条数为 %d，期望 1", len(envelope.Diagnostics))
+	}
+	item := envelope.Diagnostics[0]
+	if item.Category != "source" || item.CategoryName != "源码错误" || item.Code != "TS2322" || item.Stage != StageFrontend || item.Severity != "error" {
+		t.Errorf("机器诊断字段不对：%+v", item)
+	}
+	if item.File != "src/main.ts" || item.Line != 2 || item.Column != 7 || item.Detail != "child stderr" {
+		t.Errorf("机器诊断位置或原因不对：%+v", item)
+	}
+}
+
+func TestWriteItemsKeepsSuccessEnvelope(t *testing.T) {
+	var buf bytes.Buffer
+	items := []*Diagnostic{New(Source, "TS6133", "声明未被使用").WithSeverity("warning").WithStage(StageFrontend)}
+	if err := WriteItems(&buf, items, ExitOK); err != nil {
+		t.Fatalf("写 JSON 诊断失败：%v", err)
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(buf.Bytes(), &envelope); err != nil {
+		t.Fatalf("JSON 诊断无法解析：%v", err)
+	}
+	if !envelope.OK || envelope.ExitCode != ExitOK {
+		t.Errorf("只有警告时信封不应写成失败：%+v", envelope)
+	}
+	if len(envelope.Diagnostics) != 1 || envelope.Diagnostics[0].Severity != "warning" {
+		t.Errorf("警告条目丢失：%+v", envelope)
+	}
+}
+
+func TestWriteJSONWrapsPlainError(t *testing.T) {
+	var buf bytes.Buffer
+	if err := WriteJSON(&buf, errors.New("boom")); err != nil {
+		t.Fatalf("WriteJSON 失败：%v", err)
+	}
+	var envelope Envelope
+	if err := json.Unmarshal(buf.Bytes(), &envelope); err != nil {
+		t.Fatalf("JSON 诊断无法解析：%v", err)
+	}
+	if len(envelope.Diagnostics) != 1 || envelope.Diagnostics[0].Category != "internal" || envelope.Diagnostics[0].Stage != StageInternal {
+		t.Errorf("普通错误应包装为内部故障：%+v", envelope)
 	}
 }
 

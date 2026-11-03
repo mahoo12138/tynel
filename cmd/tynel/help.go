@@ -30,10 +30,12 @@ const usageText = `tynel 是 TypeScript 到原生二进制的编译器，首版�
   toolchain which <名>          只解析一个工具，输出绝对路径
   help [命令]                   显示总体帮助或单个命令说明
 
-路径：
+路径与诊断：
   源文件相对 --root 解释；省略 --root 时使用编译器检出根。
   构建输出和 build-ir 的输入、输出相对当前工作目录解释。
   --target 省略时使用锁文件的主目标，目前只支持 darwin/arm64。
+  --diagnostics=json 把失败写成 JSON 信封到标准错误，并隐藏进度日志；
+  默认为 human。选项可以放在命令前后；程序自己的标准输出和标准错误不变。
 
 退出状态：
   0  成功

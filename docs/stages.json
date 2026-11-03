@@ -3,7 +3,7 @@
   "track": "mvp",
   "deliverable": "typescript-to-native-compiler",
   "phase": "implementation",
-  "currentImplementationNode": "06.01",
+  "currentImplementationNode": "06.02",
   "target": "darwin/arm64",
   "deferredTargets": [
     "windows/amd64"
@@ -718,9 +718,19 @@
             "06.01"
           ],
           "planSection": "PLAN.md#task-06-02",
-          "status": "planned",
+          "status": "verified",
           "implementationCommits": [],
-          "evidence": []
+          "evidence": [
+            "docs/reference/diagnostics.md",
+            "docs/validation/06-02-diagnostics.md",
+            "compiler/diagnostic/diagnostic.go",
+            "cmd/tynel/main.go",
+            "cmd/tynel/source.go",
+            "bridge/tsgo/consumer/main.go",
+            "internal/host/host.go",
+            "internal/toolchain/exec.go",
+            "cmd/tynel/diagnostics_test.go"
+          ]
         },
         {
           "id": "06.03",

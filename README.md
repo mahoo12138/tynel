@@ -72,4 +72,6 @@ MVP 的交付物是编译器本身：通过 `tynel build input.ts -o out/program
 
 06.01 已完成：固定用户命令与帮助契约。用户命令是 `version`、`check`、`build`、`run`；`dump`、`build-ir`、`toolchain` 是开发调试接口。`--root` 决定源文件根，`-o` 相对当前工作目录，`--target` 只接受 `darwin/arm64`，其他目标明确退出 3。`version` 现在同时显示 Go 和 typescript-go 身份；重复或未知选项按用法错误退出 2。`build` 从 `.work/validation/06-01/cwd` 用绝对项目根构建成功，产物和记录落在该工作目录。规则见[命令行参考](docs/reference/cli.md)，验收见[06.01 验收记录](docs/validation/06-01-cli.md)。
 
-下一步进入 06.02：统一诊断与外部进程故障。节点 01 至 05 已全部验收，06.01 也通过正常、错误和边界检查。
+06.02 已完成：统一诊断与外部进程故障。源码、能力、环境、工具和运行失败现在共用一份诊断描述，带类别、稳定代码、阶段、文件、行列和原始原因；`--diagnostics=json` 把失败写成标准错误上的单个信封，并隐藏宿主重建进度。依赖文件里的类型错误按 `math.ts:1:14` 报告，人类输出与 JSON 条目的位置和错误码一致；修复前同一错误会落到 `lower.bad-type`。工具崩溃按内部故障、启动超时和找不到工具按环境缺失、输出不可写按环境缺失，原始 stderr 保留在原因里；缺导出和依赖环都给出完整路径。规则见[诊断协议](docs/reference/diagnostics.md)，验收见[06.02 验收记录](docs/validation/06-02-diagnostics.md)。
+
+下一步进入 06.03：加固构建事务与缓存策略。节点 01 至 05 已全部验收，06.01 和 06.02 也通过正常、错误和边界检查。

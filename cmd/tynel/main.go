@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
 	"github.com/Mahoo12138/tynel/compiler/pipeline"
@@ -23,18 +24,78 @@ func main() {
 // app 保存一次调用的输出目标和可替换依赖。测试通过替换 runner 和 root
 // 来构造环境缺失、工具不存在等路径，不需要真的改动磁盘上的工具链。
 type app struct {
-	stdout   io.Writer
-	stderr   io.Writer
-	runner   toolchain.Runner
-	program  programRunner
-	frontend func(file, want string) (*pipeline.Result, error)
-	root     string
-	hasRoot  bool
+	stdout          io.Writer
+	stderr          io.Writer
+	progress        io.Writer
+	diag            io.Writer
+	jsonDiagnostics bool
+	runner          toolchain.Runner
+	program         programRunner
+	frontend        func(file, want string) (*pipeline.Result, error)
+	root            string
+	hasRoot         bool
 }
 
 func newApp(stdout, stderr io.Writer) *app {
 	root, ok := findRepoRoot()
-	return &app{stdout: stdout, stderr: stderr, runner: toolchain.Exec{}, root: root, hasRoot: ok}
+	return &app{stdout: stdout, stderr: stderr, diag: stderr, runner: toolchain.Exec{}, root: root, hasRoot: ok}
+}
+
+// progressWriter 接收宿主重建等进度；JSON 诊断模式把它丢弃，避免进度文本
+// 混进同一路输出。真实进程的 stderr 仍由 a.stderr 保留给用户程序。
+func (a *app) progressWriter() io.Writer {
+	if a.progress != nil {
+		return a.progress
+	}
+	return a.stderr
+}
+
+// diagnosticWriter 是诊断的唯一出口。默认与 stderr 相同；测试和 JSON 模式
+// 可以单独指向别的写入端。
+func (a *app) diagnosticWriter() io.Writer {
+	if a.diag != nil {
+		return a.diag
+	}
+	return a.stderr
+}
+
+// writeError 是命令失败的统一出口：人类模式写多行诊断，JSON 模式写一个
+// 信封。写入错误本身不再递归报告。
+func (a *app) writeError(err error) error {
+	if a.jsonDiagnostics {
+		return diagnostic.WriteJSON(a.diagnosticWriter(), err)
+	}
+	return diagnostic.Write(a.diagnosticWriter(), err)
+}
+
+// takeDiagnostics 抽出全局 `--diagnostics=human|json` 选项，返回剩余参数。
+// 选项可以出现在命令前后；模式不合法时按用法错误处理，而不是悄悄回退。
+func takeDiagnostics(args []string) (string, []string, error) {
+	mode := "human"
+	rest := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--diagnostics":
+			if i+1 >= len(args) {
+				return "", nil, diagnostic.New(diagnostic.Usage, "cli.missing-argument", "--diagnostics 需要 human 或 json")
+			}
+			mode = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--diagnostics="):
+			mode = strings.TrimPrefix(arg, "--diagnostics=")
+		default:
+			rest = append(rest, arg)
+		}
+	}
+	switch mode {
+	case "", "human":
+		return "human", rest, nil
+	case "json":
+		return "json", rest, nil
+	default:
+		return "", nil, diagnostic.New(diagnostic.Usage, "cli.bad-diagnostics-mode", "--diagnostics 只接受 human 或 json，收到 %q", mode)
+	}
 }
 
 // findRepoRoot 先按当前工作目录向上找锁文件；找不到时再从可执行文件所在
@@ -53,17 +114,30 @@ func findRepoRoot() (string, bool) {
 
 // run 执行一次命令行调用并返回进程退出状态。
 func run(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
+	mode, rest, err := takeDiagnostics(args)
+	if err != nil {
+		_ = diagnostic.Write(stderr, err)
+		return diagnostic.ExitCode(err)
+	}
+	if len(rest) == 0 {
+		if mode == "json" {
+			_ = diagnostic.WriteJSON(stderr, diagnostic.New(diagnostic.Usage, "cli.missing-command", "没有命令；用 tynel help 查看可用命令"))
+			return diagnostic.ExitUsage
+		}
 		writeUsage(stderr)
 		return diagnostic.ExitUsage
 	}
 	a := newApp(stdout, stderr)
-	if err := a.dispatch(args[0], args[1:]); err != nil {
+	a.jsonDiagnostics = mode == "json"
+	if a.jsonDiagnostics {
+		a.progress = io.Discard
+	}
+	if err := a.dispatch(rest[0], rest[1:]); err != nil {
 		var silent silentExit
 		if errors.As(err, &silent) {
 			return silent.code
 		}
-		_ = diagnostic.Write(stderr, err)
+		_ = a.writeError(err)
 		return diagnostic.ExitCode(err)
 	}
 	return diagnostic.ExitOK

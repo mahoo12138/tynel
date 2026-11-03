@@ -111,11 +111,7 @@ func (h *Host) Imports(file string, runner toolchain.Runner) ([]Import, error) {
 		return nil, diagnostic.New(diagnostic.Environment, "host.start-failed", "无法启动前端宿主 %s", h.Path).WithDetail(err.Error())
 	}
 	if out.ExitCode != 0 {
-		category := diagnostic.Environment
-		if out.ExitCode == diagnostic.ExitInternal {
-			category = diagnostic.Internal
-		}
-		d := diagnostic.New(category, "host.imports-failed", "前端宿主读取导入失败（退出状态 %d）", out.ExitCode)
+		d := diagnostic.New(childCategory(out.ExitCode), "host.imports-failed", "前端宿主读取导入失败（退出状态 %d）", out.ExitCode)
 		if detail := strings.TrimSpace(out.Stderr); detail != "" {
 			d = d.WithDetail(detail)
 		}
@@ -137,7 +133,7 @@ func (h *Host) Facts(file string, deps []string, runner toolchain.Runner) (*fron
 		return nil, diagnostic.New(diagnostic.Environment, "host.start-failed", "无法启动前端宿主 %s", h.Path).WithDetail(err.Error())
 	}
 	if out.ExitCode != 0 {
-		d := diagnostic.New(diagnostic.Environment, "host.facts-failed", "前端宿主读取事实失败（退出状态 %d）", out.ExitCode)
+		d := diagnostic.New(childCategory(out.ExitCode), "host.facts-failed", "前端宿主读取事实失败（退出状态 %d）", out.ExitCode)
 		if detail := strings.TrimSpace(out.Stderr); detail != "" {
 			d = d.WithDetail(detail)
 		}
@@ -165,11 +161,7 @@ func (h *Host) AnalyzeFiles(file string, deps []string, want string, runner tool
 		return nil, diagnostic.New(diagnostic.Environment, "host.start-failed", "无法启动前端宿主 %s", h.Path).WithDetail(err.Error())
 	}
 	if out.ExitCode != 0 {
-		category := diagnostic.Environment
-		if out.ExitCode == diagnostic.ExitInternal {
-			category = diagnostic.Internal
-		}
-		d := diagnostic.New(category, "host.failed", "前端宿主执行失败（退出状态 %d）", out.ExitCode)
+		d := diagnostic.New(childCategory(out.ExitCode), "host.failed", "前端宿主执行失败（退出状态 %d）", out.ExitCode)
 		if detail := strings.TrimSpace(out.Stderr); detail != "" {
 			d = d.WithDetail(detail)
 		}
@@ -180,6 +172,23 @@ func (h *Host) AnalyzeFiles(file string, deps []string, want string, runner tool
 		return nil, diagnostic.New(diagnostic.Internal, "host.bad-result", "前端宿主返回的结果无法解析").WithDetail(err.Error())
 	}
 	return result, nil
+}
+
+// childCategory 保留子进程的退出类别。宿主在管道模式下成功产出结果时退出 0；
+// 非零退出是真正的启动、环境或内部失败，不能一律改写成环境缺失。
+func childCategory(code int) diagnostic.Category {
+	switch code {
+	case diagnostic.ExitSource:
+		return diagnostic.Source
+	case diagnostic.ExitUsage:
+		return diagnostic.Usage
+	case diagnostic.ExitCapability:
+		return diagnostic.Capability
+	case diagnostic.ExitEnvironment:
+		return diagnostic.Environment
+	default:
+		return diagnostic.Internal
+	}
 }
 
 // build 用隔离工具链编译宿主。模块缓存留在 .work 内，编译缓存用默认位置。

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Mahoo12138/tynel/compiler/source"
 	"github.com/microsoft/typescript-go/tyneladapter"
 )
 
@@ -76,6 +77,83 @@ func TestTypeErrorCarriesCodeAndPosition(t *testing.T) {
 	}
 	if first.Length <= 0 {
 		t.Errorf("长度应为正数：%d", first.Length)
+	}
+}
+
+// TestDependencyDiagnosticsAreReported 确认诊断覆盖显式传入的依赖文件，
+// 而不只是入口。漏掉这条路径时，依赖里的类型错误会落到降低阶段。
+func TestDependencyDiagnosticsAreReported(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := filepath.Join(dir, "main.ts")
+	mathPath := filepath.Join(dir, "math.ts")
+	mainSource := `import { value } from "./math.ts";
+console.log(value);
+`
+	mathSource := `export const value: number = "not a number";
+`
+	if err := os.WriteFile(mainPath, []byte(mainSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mathPath, []byte(mathSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	session, err := tyneladapter.Open(tyneladapter.Options{
+		FileName: mainPath,
+		Source:   []byte(mainSource),
+		Files: []tyneladapter.Input{
+			{FileName: mainPath, Source: []byte(mainSource)},
+			{FileName: mathPath, Source: []byte(mathSource)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("建立会话失败：%v", err)
+	}
+	defer session.Close()
+
+	diagnostics, err := session.Diagnostics()
+	if err != nil {
+		t.Fatalf("读取诊断失败：%v", err)
+	}
+	for _, d := range diagnostics {
+		if d.File == mathPath && d.Code == 2322 {
+			return
+		}
+	}
+	t.Fatalf("依赖文件的 TS2322 没有出现在诊断里：%+v", diagnostics)
+}
+
+// TestMapDiagnosticsUsesDependencySnapshot 确认依赖诊断按依赖自己的快照
+// 换算行列，而不是被当成外来文件丢掉位置。
+func TestMapDiagnosticsUsesDependencySnapshot(t *testing.T) {
+	depSource := `export const value: number = "x";` + "\n"
+	entry, err := source.New("/tmp/entry.ts", []byte("import { value } from \"./dep.ts\";\n"), source.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dep, err := source.New("/tmp/dep.ts", []byte(depSource), source.DefaultLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := strings.Index(depSource, `"x"`)
+	mapped, err := mapDiagnostics(entry, []*source.Snapshot{dep}, []source.FrontendDiagnostic{{
+		File:     dep.Path(),
+		Code:     2322,
+		Category: "error",
+		Message:  "Type 'string' is not assignable to type 'number'.",
+		Start:    start,
+		Length:   3,
+	}})
+	if err != nil {
+		t.Fatalf("映射失败：%v", err)
+	}
+	if len(mapped) != 1 {
+		t.Fatalf("应有一条诊断，实际 %d", len(mapped))
+	}
+	if got := mapped[0].Location.Path; got != dep.Path() {
+		t.Errorf("路径应为 %s，实际 %s", dep.Path(), got)
+	}
+	if got := mapped[0].Location.Start; got.Line != 1 || got.Column != start+1 {
+		t.Errorf("依赖位置应为 1:%d，实际 %d:%d", start+1, got.Line, got.Column)
 	}
 }
 

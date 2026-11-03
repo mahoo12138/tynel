@@ -268,7 +268,7 @@ func (a *app) loadGraph(parsed sourceArgs) (*graph.Graph, error) {
 	if !a.hasRoot {
 		return nil, diagnostic.New(diagnostic.Environment, "project.not-found", "不在项目目录内：向上找不到 %s", toolchain.LockPath)
 	}
-	front, err := host.Ensure(a.root, a.runner, a.stderr)
+	front, err := host.Ensure(a.root, a.runner, a.progressWriter())
 	if err != nil {
 		return nil, err
 	}
@@ -284,7 +284,7 @@ func (a *app) loadModules(parsed sourceArgs) (*modules.Table, error) {
 	if g == nil {
 		return nil, diagnostic.New(diagnostic.Internal, "modules.test-frontend", "假前端不能建立模块符号表")
 	}
-	front, err := host.Ensure(a.root, a.runner, a.stderr)
+	front, err := host.Ensure(a.root, a.runner, a.progressWriter())
 	if err != nil {
 		return nil, err
 	}
@@ -311,7 +311,7 @@ func (a *app) loadMerged(g *graph.Graph) (*nir.Module, error) {
 	if g == nil {
 		return nil, diagnostic.New(diagnostic.Internal, "merge.test-frontend", "假前端不能合并模块")
 	}
-	front, err := host.Ensure(a.root, a.runner, a.stderr)
+	front, err := host.Ensure(a.root, a.runner, a.progressWriter())
 	if err != nil {
 		return nil, err
 	}
@@ -359,21 +359,55 @@ func (a *app) analyze(file, want string, deps []string) (*pipeline.Result, error
 	if !a.hasRoot {
 		return nil, diagnostic.New(diagnostic.Environment, "project.not-found", "不在项目目录内：向上找不到 %s", toolchain.LockPath)
 	}
-	front, err := host.Ensure(a.root, a.runner, a.stderr)
+	front, err := host.Ensure(a.root, a.runner, a.progressWriter())
 	if err != nil {
 		return nil, err
 	}
 	return front.AnalyzeFiles(file, deps, want, a.runner)
 }
 
-// render 把诊断与能力结论写到 stderr。stdout 只留给命令的结果。
-func (a *app) render(result *pipeline.Result) {
+// render 把诊断与能力结论写到诊断出口。stdout 只留给命令的结果；JSON
+// 诊断模式写到同一个出口，但换成带阶段和位置的单个信封。
+func (a *app) render(result *pipeline.Result) error {
+	if a.jsonDiagnostics {
+		items := make([]*diagnostic.Diagnostic, 0, len(result.Diagnostics)+len(result.Capability))
+		for _, d := range result.Diagnostics {
+			items = append(items, diagnostic.New(diagnostic.Source, fmt.Sprintf("TS%d", d.Code), "%s", d.Message).
+				At(d.File, d.Line, d.Column).
+				WithSeverity(d.Severity).
+				WithStage(diagnostic.StageFrontend))
+		}
+		for _, f := range result.Capability {
+			items = append(items, diagnostic.New(diagnostic.Capability, f.Code, "%s", f.Message).
+				At(f.File, f.Line, f.Column).
+				WithStage(diagnostic.StageCapability))
+		}
+		if len(items) == 0 {
+			return nil
+		}
+		if err := diagnostic.WriteItems(a.diagnosticWriter(), items, result.ExitCode()); err != nil {
+			return diagnostic.New(diagnostic.Internal, "cli.write-failed", "写出诊断失败").WithDetail(err.Error())
+		}
+		return nil
+	}
 	for _, d := range result.Diagnostics {
-		fmt.Fprintf(a.stderr, "%s:%d:%d: %s TS%d: %s\n", d.File, d.Line, d.Column, d.Severity, d.Code, d.Message)
+		fmt.Fprintf(a.diagnosticWriter(), "%s:%d:%d: %s TS%d: %s\n", d.File, d.Line, d.Column, d.Severity, d.Code, d.Message)
 	}
 	for _, f := range result.Capability {
-		fmt.Fprintf(a.stderr, "%s:%d:%d: %s %s: %s\n", f.File, f.Line, f.Column, f.Category, f.Code, f.Message)
+		fmt.Fprintf(a.diagnosticWriter(), "%s:%d:%d: %s %s: %s\n", f.File, f.Line, f.Column, f.Category, f.Code, f.Message)
 	}
+	return nil
+}
+
+// moduleError 判断模块检查的错误是否比前端诊断更具体。只有模块或初始化
+// 自己的源码诊断可以替换前端结论；工具、环境和内部故障一律留在原因链外，
+// 避免一个语法错误被报告成「事实提取失败」。
+func moduleError(err error) bool {
+	var d *diagnostic.Diagnostic
+	if !errors.As(err, &d) || d.Category != diagnostic.Source {
+		return false
+	}
+	return strings.HasPrefix(d.Code, "module.") || strings.HasPrefix(d.Code, "init.")
 }
 
 // exitFor 把结果映射成「已经报告过」的退出状态。
@@ -402,21 +436,42 @@ func (a *app) check(args []string) error {
 	if err != nil {
 		return err
 	}
+	// 合并降低之前必须先看前端结论。依赖里的类型错误如果被带进降低，就会
+	// 变成另一个「内部故障」，真正的源码位置反而丢了。
 	if g != nil && len(g.Files) > 1 {
-		merged, err := a.loadMerged(g)
-		if err != nil {
-			return err
+		if result.ExitCode() != diagnostic.ExitOK {
+			// 源码错误已经能让检查失败，不再降低；但模块链接问题（例如缺
+			// 导出）比单文件诊断多带一个导出文件路径，仍值得优先报告。
+			// 只接受模块自身的源码诊断：语法错误可能让事实提取失败，那种
+			// 中间故障不能覆盖前端已经定位好的源码错误。
+			if _, err := a.loadModules(parsed); err != nil && moduleError(err) {
+				return err
+			}
+		} else {
+			merged, err := a.loadMerged(g)
+			if err != nil {
+				return err
+			}
+			result.Summary.Functions = len(merged.Functions)
+			result.Summary.Verified = true
 		}
-		result.Summary.Functions = len(merged.Functions)
-		result.Summary.Verified = true
 	}
 	if parsed.json {
 		if err := pipeline.Encode(a.stdout, result); err != nil {
 			return diagnostic.New(diagnostic.Internal, "cli.write-failed", "写出检查结果失败").WithDetail(err.Error())
 		}
+		// --json 是命令自己的完整结果；全局诊断信封仍要独立报告失败，
+		// 两路输出不能因为一个选项而互相吞掉。
+		if a.jsonDiagnostics && result.ExitCode() != diagnostic.ExitOK {
+			if err := a.render(result); err != nil {
+				return err
+			}
+		}
 		return exitFor(result)
 	}
-	a.render(result)
+	if err := a.render(result); err != nil {
+		return err
+	}
 	if err := exitFor(result); err != nil {
 		return err
 	}
@@ -449,7 +504,9 @@ func (a *app) build(args []string) error {
 	if err != nil {
 		return err
 	}
-	a.render(result)
+	if err := a.render(result); err != nil {
+		return err
+	}
 	if err := exitFor(result); err != nil {
 		return err
 	}
@@ -519,7 +576,9 @@ func (a *app) run(args []string) error {
 	if err != nil {
 		return err
 	}
-	a.render(result)
+	if err := a.render(result); err != nil {
+		return err
+	}
 	if err := exitFor(result); err != nil {
 		return err
 	}
@@ -659,7 +718,9 @@ func (a *app) dump(args []string) error {
 		return err
 	}
 	if err := exitFor(result); err != nil {
-		a.render(result)
+		if renderErr := a.render(result); renderErr != nil {
+			return renderErr
+		}
 		return err
 	}
 	var value any

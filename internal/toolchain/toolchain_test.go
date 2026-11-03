@@ -109,6 +109,9 @@ func TestFailureIsInternalNotSource(t *testing.T) {
 	if !strings.Contains(d.Message, "compile -p main") {
 		t.Errorf("消息应包含实际命令，实际为 %q", d.Message)
 	}
+	if d.Stage != diagnostic.StageBackend {
+		t.Errorf("阶段为 %q，期望 backend", d.Stage)
+	}
 }
 
 func TestMissingIsEnvironment(t *testing.T) {
@@ -118,6 +121,9 @@ func TestMissingIsEnvironment(t *testing.T) {
 	}
 	if !strings.Contains(d.Message, "link") {
 		t.Errorf("消息应包含工具名，实际为 %q", d.Message)
+	}
+	if d.Stage != diagnostic.StageToolchain {
+		t.Errorf("阶段为 %q，期望 toolchain", d.Stage)
 	}
 }
 
