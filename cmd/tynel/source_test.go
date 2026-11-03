@@ -267,6 +267,15 @@ func TestBuildSourceErrorDoesNotTouchBackend(t *testing.T) {
 
 func TestRunDoesNotExecuteAfterBuildFailure(t *testing.T) {
 	root := newBackendProject(t)
+	// 目标位置先放一份看起来可执行的旧文件；构建失败后它既不能被执行，
+	// 也不能被这次失败的构建改掉。
+	old := filepath.Join(root, ".work", "run", "app")
+	if err := os.MkdirAll(filepath.Dir(old), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(old, []byte("old binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	runner := &fileRunner{exit: 1, stderr: "link: undefined reference"}
 	program := &fakeProgram{}
 	a := &app{stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, runner: runner, program: program, root: root, hasRoot: true}
@@ -279,6 +288,9 @@ func TestRunDoesNotExecuteAfterBuildFailure(t *testing.T) {
 	}
 	if program.calls != 0 {
 		t.Fatalf("构建失败后不应执行任何产物，实际执行了 %d 次", program.calls)
+	}
+	if data, _ := os.ReadFile(old); string(data) != "old binary" {
+		t.Errorf("失败构建改动了旧文件：%q", data)
 	}
 	var d *diagnostic.Diagnostic
 	if !errors.As(err, &d) || !strings.Contains(d.Detail, "link: undefined reference") {

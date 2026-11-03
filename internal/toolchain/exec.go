@@ -2,6 +2,7 @@ package toolchain
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -30,6 +31,12 @@ type Runner interface {
 	RunEnv(env []string, name string, args ...string) (Output, error)
 }
 
+// ContextRunner 是可取消的 Runner。构建只在调用方实现了这个接口时把
+// context 传下去；测试用的假 Runner 继续只实现 Runner，不需要额外方法。
+type ContextRunner interface {
+	RunEnvContext(ctx context.Context, env []string, name string, args ...string) (Output, error)
+}
+
 // Exec 是用真实操作系统进程实现的 Runner。
 type Exec struct{}
 
@@ -42,8 +49,14 @@ func (e Exec) Run(name string, args ...string) (Output, error) {
 }
 
 // RunEnv 与 Run 相同，但显式指定环境变量。
-func (Exec) RunEnv(env []string, name string, args ...string) (Output, error) {
-	cmd := exec.Command(name, args...)
+func (e Exec) RunEnv(env []string, name string, args ...string) (Output, error) {
+	return e.RunEnvContext(context.Background(), env, name, args...)
+}
+
+// RunEnvContext 在 context 取消时终止外部进程。正常退出和非零退出仍按
+// Output 返回；只有启动失败或被取消才返回 error。
+func (Exec) RunEnvContext(ctx context.Context, env []string, name string, args ...string) (Output, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = env
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -52,6 +65,9 @@ func (Exec) RunEnv(env []string, name string, args ...string) (Output, error) {
 	out := Output{Stdout: stdout.String(), Stderr: stderr.String()}
 	if err == nil {
 		return out, nil
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return out, ctx.Err()
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {

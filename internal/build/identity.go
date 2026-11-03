@@ -185,15 +185,16 @@ func newIdentity(entry string, files []File, inputSHA string, config Config, too
 
 // verifyPostBuildInputs 在产物发布之前再核对一次关键输入。编译器读的是快照
 // 文件；如果快照在读取前后被别的程序替换，产物就不再对应记录里的 NIR。
-// 编译器、工具包装和固定支持文件同样复核，避免「构建成功但用的是另一份
+// go、编译器、工具包装和固定支持文件同样复核，避免「构建成功但用的是另一份
 // 工具」这种无法从记录解释的结果。
-func verifyPostBuildInputs(snapshot, inputSHA, compiler, compilerSHA, toolexec, toolexecSHA, supportDir, supportSHA string) error {
+func verifyPostBuildInputs(snapshot, inputSHA, goTool, goSHA, compiler, compilerSHA, toolexec, toolexecSHA, supportDir, supportSHA string) error {
 	checks := []struct {
 		name string
 		path string
 		want string
 	}{
 		{"NIR 快照", snapshot, inputSHA},
+		{"Go 工具", goTool, goSHA},
 		{"修改版编译器", compiler, compilerSHA},
 		{"工具包装", toolexec, toolexecSHA},
 	}

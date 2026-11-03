@@ -6,11 +6,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
 	"github.com/Mahoo12138/tynel/compiler/pipeline"
@@ -18,7 +21,11 @@ import (
 )
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	// Ctrl-C 取消正在运行的后端进程；发布阶段一旦开始就让它走完，避免把
+	// 两个文件的事务停在中间。
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	os.Exit(runContext(ctx, os.Args[1:], os.Stdout, os.Stderr))
 }
 
 // app 保存一次调用的输出目标和可替换依赖。测试通过替换 runner 和 root
@@ -34,6 +41,7 @@ type app struct {
 	frontend        func(file, want string) (*pipeline.Result, error)
 	root            string
 	hasRoot         bool
+	ctx             context.Context
 }
 
 func newApp(stdout, stderr io.Writer) *app {
@@ -57,6 +65,13 @@ func (a *app) diagnosticWriter() io.Writer {
 		return a.diag
 	}
 	return a.stderr
+}
+
+func (a *app) context() context.Context {
+	if a.ctx != nil {
+		return a.ctx
+	}
+	return context.Background()
 }
 
 // writeError 是命令失败的统一出口：人类模式写多行诊断，JSON 模式写一个
@@ -112,8 +127,13 @@ func findRepoRoot() (string, bool) {
 	return toolchain.FindRoot(filepath.Dir(exe))
 }
 
-// run 执行一次命令行调用并返回进程退出状态。
+// run 执行一次命令行调用并返回进程退出状态。测试不安装信号处理器，
+// 取消路径由 runContext 单独覆盖。
 func run(args []string, stdout, stderr io.Writer) int {
+	return runContext(context.Background(), args, stdout, stderr)
+}
+
+func runContext(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	mode, rest, err := takeDiagnostics(args)
 	if err != nil {
 		_ = diagnostic.Write(stderr, err)
@@ -128,6 +148,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return diagnostic.ExitUsage
 	}
 	a := newApp(stdout, stderr)
+	a.ctx = ctx
 	a.jsonDiagnostics = mode == "json"
 	if a.jsonDiagnostics {
 		a.progress = io.Discard

@@ -535,6 +535,7 @@ func (a *app) build(args []string) error {
 		Entry:       entryPath(g),
 		GraphHash:   graphHash(g),
 		Files:       graphFiles(g),
+		Context:     a.context(),
 	}, a.runner)
 	if err != nil {
 		return err
@@ -608,6 +609,7 @@ func (a *app) run(args []string) error {
 		Entry:       entryPath(g),
 		GraphHash:   graphHash(g),
 		Files:       graphFiles(g),
+		Context:     a.context(),
 	}, a.runner)
 	if err != nil {
 		return err

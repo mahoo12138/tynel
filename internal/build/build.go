@@ -6,6 +6,7 @@
 package build
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -34,15 +35,16 @@ const (
 // TypeScript 构建时降低结果在内存里，没必要先落一份用户可见的文件；快照仍会
 // 写到 .work 下，编译器读的始终是快照。
 type Options struct {
-	Root        string  // 构建根：工具链、支持目录和快照都在它下面
-	ProjectRoot string  // 源码根；Files 与 Source.Path 相对它，默认等于 Root
-	Input       string  // NIR 文件
-	InputData   []byte  // 内存中的 NIR；非空时忽略 Input
-	Output      string  // 产物路径
-	Source      *Source // 可选：源码身份，写进构建记录
-	Entry       string  // 可选：入口在项目内的相对路径，写进构建身份
-	GraphHash   string  // 可选：依赖图内容哈希；给 Files 时必须同时给出
-	Files       []File  // 可选：入口与全部类型/值依赖的身份；从 NIR 构建时没有
+	Root        string          // 构建根：工具链、支持目录和快照都在它下面
+	ProjectRoot string          // 源码根；Files 与 Source.Path 相对它，默认等于 Root
+	Input       string          // NIR 文件
+	InputData   []byte          // 内存中的 NIR；非空时忽略 Input
+	Output      string          // 产物路径
+	Source      *Source         // 可选：源码身份，写进构建记录
+	Entry       string          // 可选：入口在项目内的相对路径，写进构建身份
+	GraphHash   string          // 可选：依赖图内容哈希；给 Files 时必须同时给出
+	Files       []File          // 可选：入口与全部类型/值依赖的身份；从 NIR 构建时没有
+	Context     context.Context // 可选：取消后停止后端，未发布的临时文件会被清理
 }
 
 // Source 是产生这份 NIR 的源码。从 NIR 文件构建时没有这一项。
@@ -89,6 +91,9 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 	started := time.Now()
 	if opts.Root == "" || opts.Output == "" || (len(opts.InputData) == 0 && opts.Input == "") {
 		return nil, diagnostic.New(diagnostic.Usage, "build.missing-argument", "构建需要项目根、NIR 输入和输出路径")
+	}
+	if err := checkContext(opts.Context); err != nil {
+		return nil, err
 	}
 
 	// 1. 输入快照：一次读入，后续都用这份字节，构建期间改源文件不影响本次结果。
@@ -213,17 +218,9 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 	if err := os.MkdirAll(snapshotDir, 0o755); err != nil {
 		return nil, diagnostic.New(diagnostic.Environment, "build.snapshot-failed", "无法创建快照目录").WithDetail(err.Error())
 	}
-	snapshot := filepath.Join(snapshotDir, inputSHA[:16]+".nir.json")
-	if existing, err := os.ReadFile(snapshot); err == nil {
-		// 快照按内容哈希命名。名字对得上但内容对不上，说明它被别的程序改过，
-		// 这时宁可停下，也不要悄悄覆盖后继续构建。
-		if sha256Hex(existing) != inputSHA {
-			return nil, diagnostic.New(diagnostic.Environment, "build.snapshot-corrupt", "输入快照 %s 的内容与文件名不符", snapshot)
-		}
-	} else if !os.IsNotExist(err) {
-		return nil, diagnostic.New(diagnostic.Environment, "build.snapshot-failed", "无法读取输入快照").WithDetail(err.Error())
-	} else if err := os.WriteFile(snapshot, data, 0o644); err != nil {
-		return nil, diagnostic.New(diagnostic.Environment, "build.snapshot-failed", "无法写入输入快照").WithDetail(err.Error())
+	snapshot := filepath.Join(snapshotDir, inputSHA+".nir.json")
+	if err := ensureSnapshot(snapshot, data, inputSHA); err != nil {
+		return nil, err
 	}
 	if inputPath == "" {
 		// 内存里的 NIR 没有用户可见的文件路径；记录里写实际被编译的快照，
@@ -242,12 +239,26 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return nil, diagnostic.New(diagnostic.Environment, "build.output-unwritable", "无法创建输出目录 %s", outDir).WithDetail(err.Error())
 	}
+	// 同一输出同时只允许一个构建。锁覆盖临时文件、发布和恢复；第二个构建
+	// 立即被拒绝，而不是两个进程互相覆盖产物或记录。
+	lock, err := acquireOutputLock(output)
+	if err != nil {
+		return nil, err
+	}
+	defer lock.release()
+	pub := newPublication(output)
+	if err := pub.recover(); err != nil {
+		return nil, err
+	}
 	tmpFile, err := os.CreateTemp(outDir, ".tynel-build-*")
 	if err != nil {
 		return nil, diagnostic.New(diagnostic.Environment, "build.output-unwritable", "无法在 %s 创建临时文件", outDir).WithDetail(err.Error())
 	}
 	tmpPath := tmpFile.Name()
-	tmpFile.Close()
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		return nil, diagnostic.New(diagnostic.Environment, "build.output-unwritable", "无法关闭临时文件 %s", tmpPath).WithDetail(err.Error())
+	}
 	os.Remove(tmpPath)
 
 	// 6. 构建：Go 缓存键不含 NIR、配置和 bridge 身份，用产物输入身份作为
@@ -266,25 +277,44 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 		"-o", tmpPath,
 		"./" + SupportDir,
 	}
-	out, err := runner.RunEnv(env, goTool, args...)
+	if err := checkContext(opts.Context); err != nil {
+		os.Remove(tmpPath)
+		return nil, err
+	}
+	out, err := runBackend(opts.Context, runner, env, goTool, args...)
 	if err != nil {
 		os.Remove(tmpPath)
+		if canceled := checkContext(opts.Context); canceled != nil {
+			return nil, canceled
+		}
 		return nil, diagnostic.New(diagnostic.Environment, "build.tool-missing", "无法启动 %s", goTool).WithDetail(err.Error())
 	}
 	if out.ExitCode != 0 {
 		os.Remove(tmpPath)
+		if canceled := checkContext(opts.Context); canceled != nil {
+			return nil, canceled
+		}
 		return nil, out.Failure("go", args)
 	}
-
-	// 7. 发布前复核关键输入没有被替换。
-	if err := verifyPostBuildInputs(snapshot, inputSHA, compiler, compilerSHA, toolexec, toolexecSHA, supportDir, supportSHA); err != nil {
+	if err := checkContext(opts.Context); err != nil {
 		os.Remove(tmpPath)
 		return nil, err
 	}
 
-	// 8. 产物存在才发布。改名是原子的，失败时旧产物保持原样。
+	// 7. 发布前复核关键输入没有被替换。
+	if err := verifyPostBuildInputs(snapshot, inputSHA, goTool, goSHA, compiler, compilerSHA, toolexec, toolexecSHA, supportDir, supportSHA); err != nil {
+		os.Remove(tmpPath)
+		return nil, err
+	}
+
+	// 8. 产物和记录都先落成临时文件，再作为一个发布事务换到目标位置。
+	if err := checkContext(opts.Context); err != nil {
+		os.Remove(tmpPath)
+		return nil, err
+	}
 	info, err := os.Stat(tmpPath)
 	if err != nil {
+		os.Remove(tmpPath)
 		return nil, diagnostic.New(diagnostic.Internal, "build.no-output", "构建报告成功但没有产出文件").WithDetail(err.Error())
 	}
 	outputSHA, err := hashFile(tmpPath)
@@ -292,9 +322,9 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 		os.Remove(tmpPath)
 		return nil, diagnostic.New(diagnostic.Environment, "build.output-unreadable", "无法读取构建产物").WithDetail(err.Error())
 	}
-	if err := os.Rename(tmpPath, output); err != nil {
+	if err := syncFile(tmpPath); err != nil {
 		os.Remove(tmpPath)
-		return nil, diagnostic.New(diagnostic.Environment, "build.output-unwritable", "无法发布到 %s", output).WithDetail(err.Error())
+		return nil, diagnostic.New(diagnostic.Environment, "build.output-unreadable", "无法刷新构建产物 %s", tmpPath).WithDetail(err.Error())
 	}
 
 	// 9. 构建记录。
@@ -317,13 +347,43 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 	record.Output.Path = opts.Output
 	record.Output.SHA256 = outputSHA
 	record.Output.Bytes = info.Size()
-	if err := writeRecord(opts.Output+".build.json", record); err != nil {
-		// 没有记录的产物无法复核来源与哈希，留着比没有更危险：删掉它，
-		// 让这次构建明确失败。
-		os.Remove(opts.Output)
+	stagedRecord, err := stageRecord(RecordPath(output), record)
+	if err != nil {
+		os.Remove(tmpPath)
+		return nil, err
+	}
+	pub.stagedOutput = tmpPath
+	pub.stagedRecord = stagedRecord
+	if err := pub.commit(); err != nil {
+		os.Remove(tmpPath)
+		os.Remove(stagedRecord)
 		return nil, err
 	}
 	return record, nil
+}
+
+// checkContext 把取消转换成环境类诊断，避免把它误报成源码或工具故障。
+func checkContext(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return diagnostic.New(diagnostic.Environment, "build.canceled", "构建已取消").
+			WithStage(diagnostic.StageBuild).
+			WithDetail(err.Error())
+	}
+	return nil
+}
+
+// runBackend 在 Runner 支持取消时把 context 传给外部进程。
+func runBackend(ctx context.Context, runner toolchain.Runner, env []string, name string, args ...string) (toolchain.Output, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if cancellable, ok := runner.(toolchain.ContextRunner); ok {
+		return cancellable.RunEnvContext(ctx, env, name, args...)
+	}
+	return runner.RunEnv(env, name, args...)
 }
 
 // RecordPath 返回某个产物对应的构建记录路径。
@@ -372,18 +432,6 @@ func checkStamp(root, sdkDir, compilerSHA string) error {
 
 func staleCompiler(reason string) error {
 	return diagnostic.New(diagnostic.Environment, "build.stale-compiler", "修改版编译器已过期（%s）；重新运行 ./bridge/go/build", reason)
-}
-
-func writeRecord(path string, record *Record) error {
-	data, err := json.MarshalIndent(record, "", "  ")
-	if err != nil {
-		return diagnostic.New(diagnostic.Internal, "build.record-failed", "无法序列化构建记录").WithDetail(err.Error())
-	}
-	data = append(data, '\n')
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return diagnostic.New(diagnostic.Environment, "build.record-failed", "无法写入构建记录 %s", path).WithDetail(err.Error())
-	}
-	return nil
 }
 
 func hashFile(path string) (string, error) {

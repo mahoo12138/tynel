@@ -346,7 +346,7 @@ func TestRunRejectsCorruptSnapshot(t *testing.T) {
 	data := exampleNIR(t)
 	input := filepath.Join(root, "add.nir.json")
 	writeFile(t, input, string(data))
-	snapshot := filepath.Join(root, filepath.FromSlash(SnapshotDir), sha256Hex(data)[:16]+".nir.json")
+	snapshot := filepath.Join(root, filepath.FromSlash(SnapshotDir), sha256Hex(data)+".nir.json")
 	writeFile(t, snapshot, "被改动过的内容")
 
 	_, err := Run(Options{Root: root, Input: input, Output: filepath.Join(root, "out", "app")}, runner)
@@ -384,28 +384,6 @@ func TestRunAcceptsInMemoryNIR(t *testing.T) {
 	}
 	if _, err := os.Stat(record.Input.Path); err != nil {
 		t.Errorf("记录指向的快照不存在：%v", err)
-	}
-}
-
-// TestRunRemovesArtifactWhenRecordFails 确认「没有记录的产物不留」。
-func TestRunRemovesArtifactWhenRecordFails(t *testing.T) {
-	root, runner := newProject(t)
-	runner.writeOutput = true
-	output := filepath.Join(root, "out", "app")
-	// 用一个同名目录占住记录路径，让写记录必然失败。
-	if err := os.MkdirAll(RecordPath(output), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := Run(Options{Root: root, InputData: exampleNIR(t), Output: output}, runner)
-	if err == nil {
-		t.Fatal("记录写不进去时应失败")
-	}
-	if got := diagnostic.ExitCode(err); got != diagnostic.ExitEnvironment {
-		t.Errorf("退出状态为 %d，期望 %d", got, diagnostic.ExitEnvironment)
-	}
-	if _, statErr := os.Stat(output); !os.IsNotExist(statErr) {
-		t.Errorf("记录失败后产物应被删除")
 	}
 }
 

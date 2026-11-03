@@ -23,7 +23,7 @@ func (a *app) buildIR(args []string) error {
 		return diagnostic.New(diagnostic.Environment, "project.not-found", "不在项目目录内：向上找不到 %s", toolchain.LockPath)
 	}
 
-	record, err := build.Run(build.Options{Root: a.root, Input: parsed.file, Output: parsed.output}, a.runner)
+	record, err := build.Run(build.Options{Root: a.root, Input: parsed.file, Output: parsed.output, Context: a.context()}, a.runner)
 	if err != nil {
 		return err
 	}
