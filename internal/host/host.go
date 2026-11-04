@@ -23,6 +23,7 @@ import (
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
 	"github.com/Mahoo12138/tynel/compiler/frontend"
 	"github.com/Mahoo12138/tynel/compiler/pipeline"
+	"github.com/Mahoo12138/tynel/internal/release"
 	"github.com/Mahoo12138/tynel/internal/toolchain"
 )
 
@@ -51,6 +52,16 @@ type stamp struct {
 //
 // progress 接收进度行（通常是命令行的 stderr）；结果本身永远不写进去。
 func Ensure(root string, runner toolchain.Runner, progress io.Writer) (*Host, error) {
+	sealed, err := release.IsSealed(root)
+	if err != nil {
+		return nil, err
+	}
+	if sealed {
+		// 发行包只带预构建宿主，不带前端源码、适配包副本或模块缓存。
+		// 完整性由 release.json 负责，这里只确认宿主与戳记自洽。
+		return sealedHost(root)
+	}
+
 	tree := filepath.Join(root, filepath.FromSlash(TreeDir))
 	if info, err := os.Stat(tree); err != nil || !info.IsDir() {
 		return nil, diagnostic.New(diagnostic.Environment, "host.no-tree",
@@ -201,7 +212,11 @@ func build(root, binary string, runner toolchain.Runner) error {
 	if !ok {
 		return diagnostic.New(diagnostic.Environment, "host.no-sdk", "准备报告里没有 SDK 记录；重新运行 ./tools/toolchain/prep")
 	}
-	goTool := filepath.Join(sdk.Dir, "bin", "go")
+	sdkDir, err := toolchain.ResolvePath(root, sdk.Dir)
+	if err != nil {
+		return err
+	}
+	goTool := filepath.Join(sdkDir, "bin", "go")
 	proxy := os.Getenv("TYNEL_GOPROXY")
 	if proxy == "" {
 		proxy = "https://goproxy.cn"
@@ -304,6 +319,47 @@ func verifyAdapter(tree, adapter string) error {
 func adapterStale(name string) error {
 	return diagnostic.New(diagnostic.Environment, "host.stale-adapter",
 		"源码树里的适配包副本与 %s 不一致（%s）；运行 ./tools/toolchain/prep --frontend-only 重新同步", AdapterDir, name)
+}
+
+// sealedHost 只验证发行包里的宿主二进制与戳记。发行清单已覆盖文件和
+// 权限；这里再确认戳记确实指向这份二进制，避免两者被单独替换。
+func sealedHost(root string) (*Host, error) {
+	if err := release.VerifyOnce(root); err != nil {
+		return nil, err
+	}
+	binary := filepath.Join(root, filepath.FromSlash(BinaryPath))
+	info, err := os.Stat(binary)
+	if err != nil || info.IsDir() {
+		return nil, diagnostic.New(diagnostic.Environment, "release.host-missing",
+			"发行包缺少前端宿主 %s", BinaryPath).WithDetail(errorText(err))
+	}
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(StampPath)))
+	if err != nil {
+		return nil, diagnostic.New(diagnostic.Environment, "release.host-stamp",
+			"发行包缺少前端宿主戳记 %s", StampPath).WithDetail(err.Error())
+	}
+	var st stamp
+	if err := json.Unmarshal(data, &st); err != nil || st.SchemaVersion != 1 || st.BinarySHA256 == "" || len(st.Sources) == 0 {
+		return nil, diagnostic.New(diagnostic.Environment, "release.host-stamp",
+			"发行包的前端宿主戳记 %s 不完整", StampPath)
+	}
+	sum, err := hashFile(binary)
+	if err != nil {
+		return nil, diagnostic.New(diagnostic.Environment, "release.host-stamp",
+			"无法读取发行包的前端宿主").WithDetail(err.Error())
+	}
+	if sum != st.BinarySHA256 {
+		return nil, diagnostic.New(diagnostic.Environment, "release.host-stamp",
+			"发行包的前端宿主与戳记不符；重新打包或恢复原文件")
+	}
+	return &Host{Path: binary}, nil
+}
+
+func errorText(err error) string {
+	if err == nil {
+		return "文件不存在"
+	}
+	return err.Error()
 }
 
 func stampMatches(binary, stampPath string, sources map[string]string) (bool, error) {

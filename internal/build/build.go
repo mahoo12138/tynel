@@ -17,6 +17,7 @@ import (
 
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
 	"github.com/Mahoo12138/tynel/compiler/nir"
+	"github.com/Mahoo12138/tynel/internal/release"
 	"github.com/Mahoo12138/tynel/internal/toolchain"
 )
 
@@ -95,6 +96,11 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 	if err := checkContext(opts.Context); err != nil {
 		return nil, err
 	}
+	// 发行目录带清单时先复核内容。清单只登记运行所需文件，构建产生的
+	// 快照和输出不属于发行内容。
+	if err := release.VerifyIfSealed(opts.Root); err != nil {
+		return nil, err
+	}
 
 	// 1. 输入快照：一次读入，后续都用这份字节，构建期间改源文件不影响本次结果。
 	data := opts.InputData
@@ -124,13 +130,17 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 	if !ok {
 		return nil, diagnostic.New(diagnostic.Environment, "build.no-sdk", "准备报告里没有 SDK 记录；重新运行 ./tools/toolchain/prep")
 	}
-	goTool := filepath.Join(sdk.Dir, "bin", "go")
+	sdkDir, err := toolchain.ResolvePath(opts.Root, sdk.Dir)
+	if err != nil {
+		return nil, err
+	}
+	goTool := filepath.Join(sdkDir, "bin", "go")
 	compiler := filepath.Join(opts.Root, filepath.FromSlash(CompilerPath))
 	compilerSHA, err := hashFile(compiler)
 	if err != nil {
 		return nil, diagnostic.New(diagnostic.Environment, "build.no-compiler", "找不到修改版编译器 %s；先运行 ./bridge/go/build", CompilerPath).WithDetail(err.Error())
 	}
-	if err := checkStamp(opts.Root, sdk.Dir, compilerSHA); err != nil {
+	if err := checkStamp(opts.Root, sdkDir, compilerSHA); err != nil {
 		return nil, err
 	}
 	goSHA, err := hashFile(goTool)

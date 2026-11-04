@@ -49,7 +49,11 @@ func (a *app) showToolchain() error {
 	fmt.Fprintf(a.stdout, "锁定工具链 %s（提交 %s，%s）\n", lock.Go.Version, shortSHA(lock.Go.SourceCommit), lock.Go.License)
 	fmt.Fprintf(a.stdout, "目标平台     %s\n", lock.Targets.Host)
 	if sdk, ok := report.SDK(); ok {
-		fmt.Fprintf(a.stdout, "SDK 目录     %s\n", sdk.Dir)
+		dir, err := toolchain.ResolvePath(a.root, sdk.Dir)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(a.stdout, "SDK 目录     %s\n", dir)
 	}
 	var missing []string
 	for _, name := range toolchain.ToolNames {
@@ -57,6 +61,10 @@ func (a *app) showToolchain() error {
 		if !ok {
 			missing = append(missing, name)
 			continue
+		}
+		path, err := toolchain.ResolvePath(a.root, path)
+		if err != nil {
+			return err
 		}
 		resolved, err := a.runner.LookPath(path)
 		if err != nil {
@@ -86,6 +94,10 @@ func (a *app) whichTool(name string) error {
 	path, ok := report.Tool(name)
 	if !ok {
 		return diagnostic.New(diagnostic.Environment, "tool.not-recorded", "准备报告里没有工具 %s；重新运行 ./tools/toolchain/prep", name)
+	}
+	path, err = toolchain.ResolvePath(a.root, path)
+	if err != nil {
+		return err
 	}
 	resolved, err := a.runner.LookPath(path)
 	if err != nil {

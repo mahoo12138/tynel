@@ -76,4 +76,6 @@ MVP 的交付物是编译器本身：通过 `tynel build input.ts -o out/program
 
 06.03 已完成：加固构建事务、并发与缓存策略。同一输出现在由 `flock` 锁保护，第二个构建按 `build.output-busy` 退出 4；产物和记录先写临时文件，再经 `.pending` 标记、旧文件备份和最终哈希复核发布，记录失败会恢复旧的一对而不是删掉旧产物。快照按完整内容哈希原子写入，后端支持 context 取消，发布前会再次复核 `go`、编译器、工具包装和支持目录。两次相同构建得到相同产物哈希 `7e591c43…`，失败构建前后旧产物哈希不变。规则见[构建事务、并发与清理](docs/reference/build-transactions.md)，验收见[06.03 验收记录](docs/validation/06-03-transactions.md)。
 
-下一步进入 06.04：组装编译器发行目录。节点 01 至 05 已全部验收，06.01 至 06.03 也通过正常、错误和边界检查。
+06.04 已完成：组装编译器发行目录。`./tools/package` 现在把 CLI、预构建前端宿主、修改版编译器、Go SDK、支持文件、锁文件、示例和许可证收进一个目录，并生成记录每个文件 sha256、大小和权限的 `release.json`。发行报告使用相对路径；把 339 MB、15,674 个文件的目录搬移后，包内 `tynel build examples/add.ts` 仍输出 `42`，记录中的 go、compiler、toolexec 都来自搬移目录。删文件、改支持库、写回开发机绝对路径分别以 `release.missing`、`release.mismatch`、`toolchain.path-escape` 退出 4。规则见[编译器发行目录](docs/reference/release.md)，验收见[06.04 验收记录](docs/validation/06-04-release.md)。
+
+下一步进入 06.05：在干净目录重建工具和示例。节点 01 至 05 已全部验收，06.01 至 06.04 也通过正常、错误和边界检查。

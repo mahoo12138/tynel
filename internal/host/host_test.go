@@ -11,6 +11,7 @@ import (
 
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
 	"github.com/Mahoo12138/tynel/compiler/pipeline"
+	"github.com/Mahoo12138/tynel/internal/release"
 	"github.com/Mahoo12138/tynel/internal/toolchain"
 )
 
@@ -170,6 +171,82 @@ func TestEnsureRejectsStaleAdapterCopy(t *testing.T) {
 	}
 	if runner.calls != 0 {
 		t.Errorf("适配包不一致时不应尝试构建，实际调用 %d 次", runner.calls)
+	}
+}
+
+// sealedRoot 造一个最小发行目录：只需要清单列出的文件，不放前端源码树。
+func sealedRoot(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	for _, rel := range release.RequiredFiles {
+		mode := os.FileMode(0o644)
+		if strings.HasPrefix(rel, "bin/") || strings.HasSuffix(rel, "compile") || strings.HasSuffix(rel, "consumer") || strings.HasSuffix(rel, "toolexec") {
+			mode = 0o755
+		}
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("content of "+rel+"\n"), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	binary := filepath.Join(root, filepath.FromSlash(BinaryPath))
+	if err := os.WriteFile(binary, []byte("fake host"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sum, err := hashFile(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeStamp(filepath.Join(root, filepath.FromSlash(StampPath)), &stamp{
+		SchemaVersion: 1,
+		BinarySHA256:  sum,
+		BuiltAt:       time.Now().Format(time.RFC3339),
+		Sources:       map[string]string{"bridge/tsgo/consumer/main.go": sum},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := release.Collect(root, release.Manifest{
+		Name: "tynel-test-darwin-arm64", Version: "dev", Commit: "abcdef0",
+		Target: "darwin/arm64", GeneratedAt: time.Now().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := release.Write(root, m); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func TestEnsureSealedUsesPrebuiltHostWithoutSources(t *testing.T) {
+	root := sealedRoot(t)
+	runner := &fakeRunner{}
+	h, err := Ensure(root, runner, nil)
+	if err != nil {
+		t.Fatalf("密封发行目录应直接复用宿主：%v", err)
+	}
+	if runner.calls != 0 {
+		t.Errorf("密封目录不应重建宿主，实际调用 %d 次", runner.calls)
+	}
+	if !strings.HasSuffix(h.Path, "consumer") {
+		t.Errorf("宿主路径不对：%q", h.Path)
+	}
+}
+
+func TestEnsureSealedRejectsMissingHost(t *testing.T) {
+	root := sealedRoot(t)
+	if err := os.Remove(filepath.Join(root, filepath.FromSlash(BinaryPath))); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Ensure(root, &fakeRunner{}, nil)
+	if exitOf(err) != diagnostic.ExitEnvironment {
+		t.Fatalf("发行包缺宿主应为环境缺失，实际 %d（%v）", exitOf(err), err)
+	}
+	var d *diagnostic.Diagnostic
+	if !errors.As(err, &d) || d.Code != "release.missing" {
+		t.Errorf("错误码应为 release.missing：%v", err)
 	}
 }
 

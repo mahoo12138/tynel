@@ -320,6 +320,51 @@ func TestRunRejectsUnwritableOutput(t *testing.T) {
 	}
 }
 
+// TestRunUsesRelativeSDKDirectory 覆盖发行报告：SDK 目录相对项目根，
+// 移动目录后仍从新根解析，而不是依赖开发机的绝对路径。
+func TestRunUsesRelativeSDKDirectory(t *testing.T) {
+	root, runner := newProject(t)
+	runner.writeOutput = true
+	report, err := toolchain.LoadReport(filepath.Join(root, filepath.FromSlash(toolchain.ReportPath)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	report.Installs[0].Dir = ".work/toolchain/go1.27.3-sdk-darwin-arm64"
+	writeJSON(t, filepath.Join(root, filepath.FromSlash(toolchain.ReportPath)), report)
+	input := filepath.Join(root, "add.nir.json")
+	writeFile(t, input, string(exampleNIR(t)))
+
+	record, err := Run(Options{Root: root, Input: input, Output: filepath.Join(root, "out", "app")}, runner)
+	if err != nil {
+		t.Fatalf("相对 SDK 目录应可用：%v", err)
+	}
+	want := filepath.Join(root, ".work", "toolchain", "go1.27.3-sdk-darwin-arm64", "bin", "go")
+	if record.Tools.Go != want {
+		t.Errorf("记录里的 go 路径为 %q，期望 %q", record.Tools.Go, want)
+	}
+}
+
+func TestRunRejectsSDKOutsideRoot(t *testing.T) {
+	root, runner := newProject(t)
+	report, err := toolchain.LoadReport(filepath.Join(root, filepath.FromSlash(toolchain.ReportPath)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	report.Installs[0].Dir = filepath.Join("..", "outside-sdk")
+	writeJSON(t, filepath.Join(root, filepath.FromSlash(toolchain.ReportPath)), report)
+	input := filepath.Join(root, "add.nir.json")
+	writeFile(t, input, string(exampleNIR(t)))
+
+	_, err = Run(Options{Root: root, Input: input, Output: filepath.Join(root, "out", "app")}, runner)
+	var d *diagnostic.Diagnostic
+	if !errors.As(err, &d) || d.Code != "toolchain.path-escape" {
+		t.Fatalf("错误码应为 toolchain.path-escape：%v", err)
+	}
+	if runner.calls != 0 {
+		t.Errorf("根外工具路径不应启动后端，实际调用 %d 次", runner.calls)
+	}
+}
+
 func TestRunAcceptsPathsWithSpaces(t *testing.T) {
 	root, runner := newProject(t)
 	runner.writeOutput = true

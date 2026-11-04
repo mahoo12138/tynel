@@ -418,6 +418,18 @@ cd tynel
 
 `bin/tynel` 不进入版本库。命令、退出状态和职责划分见[命令行参考](reference/cli.md)。
 
+## 发行目录
+
+```zsh
+# 组装可搬移的编译器目录；打包过程会用包内 CLI 编译并运行示例。
+./tools/package
+
+# 复核已有目录的 release.json。
+./tools/package --verify out/release/tynel-<commit>-darwin-arm64
+```
+
+发行包包含预构建前端宿主、修改版编译器、Go SDK、支持文件和许可证，不含前端源码树；布局与完整性规则见[编译器发行目录](reference/release.md)。
+
 源码回归的用例清单在 `tests/source/testdata/cases.json`，参考输出锁在 `tests/source/reference.json`（Node v22.22.2，`--experimental-strip-types`）。有 Node 的机器会把参考输出与 Node 的实际输出对一遍；没有就跳过对照并说明原因，黄金输出比对照常进行。覆盖范围与环境见[源码回归验收](validation/02-08-source.md)。
 
 ## bridge：从 NIR 到原生程序
