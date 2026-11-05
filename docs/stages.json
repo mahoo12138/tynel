@@ -3,7 +3,7 @@
   "track": "mvp",
   "deliverable": "typescript-to-native-compiler",
   "phase": "implementation",
-  "currentImplementationNode": "06.05",
+  "currentImplementationNode": "06.06",
   "target": "darwin/arm64",
   "deferredTargets": [
     "windows/amd64"
@@ -778,9 +778,20 @@
             "06.04"
           ],
           "planSection": "PLAN.md#task-06-05",
-          "status": "planned",
-          "implementationCommits": [],
-          "evidence": []
+          "status": "verified",
+          "implementationCommits": [
+            "800f993",
+            "6573cb7",
+            "0317ca3",
+            "236cbe6"
+          ],
+          "evidence": [
+            "docs/validation/06-05-clean.md",
+            "tools/clean-build",
+            "tools/build",
+            "internal/build/build.go",
+            "internal/build/build_test.go"
+          ]
         },
         {
           "id": "06.06",
