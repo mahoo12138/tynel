@@ -121,7 +121,9 @@ build_example() {
   local name=$1 want=$2
   shift 2
   local output="$OUT/outputs/$name"
-  "$TREE/bin/tynel" build "$@" -o "$output"
+  # 必须从 clean tree 启动：tynel 会先按当前目录找工具链根，从开发根启动
+  # 会悄悄复用开发目录的 .work，看起来成功但记录指向旧工具。
+  (cd "$TREE" && ./bin/tynel build "$@" -o "$output")
   local got
   got=$("$output")
   if [[ "$got" != "$want" ]]; then
@@ -132,6 +134,16 @@ build_example() {
     print -u2 -- "示例 $name 缺少构建记录：$output.build.json"
     return 1
   fi
+  python3 - "$output.build.json" "$TREE" <<'PY'
+import json
+import sys
+record = json.load(open(sys.argv[1], encoding="utf-8"))
+root = sys.argv[2] + "/"
+for field in ("go", "compiler", "toolexec"):
+    path = record["tools"][field]
+    if not path.startswith(root):
+        raise SystemExit("构建记录中的 %s 不在 clean tree：%s" % (field, path))
+PY
   print -- "PASS 示例 $name：$got"
 }
 build_example add "42" "$TREE/examples/add.ts"
@@ -160,6 +172,16 @@ if [[ "$SPACE_GOT" != "42" ]]; then
   print -u2 -- "搬移后的编译器输出为 $(printf %q "$SPACE_GOT")，期望 42"
   exit 1
 fi
+python3 - "$SPACE_OUT.build.json" "$SPACED" <<'PY'
+import json
+import sys
+record = json.load(open(sys.argv[1], encoding="utf-8"))
+root = sys.argv[2] + "/"
+for field in ("go", "compiler", "toolexec"):
+    path = record["tools"][field]
+    if not path.startswith(root):
+        raise SystemExit("搬移记录中的 %s 不在搬移目录：%s" % (field, path))
+PY
 print -- "PASS 搬移后的编译器：$SPACE_GOT"
 
 step "report"
