@@ -74,9 +74,9 @@ git -C "$ROOT" worktree add --detach "$TREE" "$COMMIT"
 
 # 这些目录只可能来自开发目录或旧归档。它们不该出现在新 worktree 里；如果
 # 出现，后续命令可能读到旧工具，因此直接停止而不是“继续试试”。
-for path in .work .tynel .upstream dist bin out; do
-  if [[ -e "$TREE/$path" ]]; then
-    print -u2 -- "干净树中出现不应复用的路径：$TREE/$path"
+for rel in .work .tynel .upstream dist bin out; do
+  if [[ -e "$TREE/$rel" ]]; then
+    print -u2 -- "干净树中出现不应复用的路径：$TREE/$rel"
     exit 1
   fi
 done
