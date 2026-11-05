@@ -70,7 +70,15 @@ func writeJSON(t *testing.T, path string, v any) {
 // newProject 造一个最小项目：准备报告、bridge 源码、编译器二进制和一致的戳记。
 func newProject(t *testing.T) (string, *fakeRunner) {
 	t.Helper()
-	root := t.TempDir()
+	return newProjectAt(t, t.TempDir())
+}
+
+// newProjectAt 在调用方指定的根下造项目；空格路径测试需要根本身含空格。
+func newProjectAt(t *testing.T, root string) (string, *fakeRunner) {
+	t.Helper()
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("创建项目根失败：%v", err)
+	}
 	sdk := filepath.Join(root, ".work", "toolchain", "go1.27.3-sdk-darwin-arm64")
 	writeFile(t, filepath.Join(sdk, "src", "cmd", "compile", "internal", "gc", "main.go"), "package gc\n")
 	writeFile(t, filepath.Join(sdk, "bin", "go"), "#!/bin/sh\n")
@@ -382,6 +390,49 @@ func TestRunAcceptsPathsWithSpaces(t *testing.T) {
 	}
 	if _, err := os.Stat(output); err != nil {
 		t.Errorf("产物不存在：%v", err)
+	}
+}
+
+// TestRunQuotesToolexecPathWithSpaces 固定真正传给 go build 的参数。只让输出
+// 路径含空格不够：工具包装路径也会进入 -toolexec，必须按 Go 的 quoted.Split
+// 规则加引号，否则路径在第一个空格处就被截断。
+func TestRunQuotesToolexecPathWithSpaces(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "带 空格 的目录")
+	root, runner := newProjectAt(t, root)
+	runner.writeOutput = true
+	input := filepath.Join(root, "add.nir.json")
+	writeFile(t, input, string(exampleNIR(t)))
+
+	if _, err := Run(Options{Root: root, Input: input, Output: filepath.Join(root, "out", "app")}, runner); err != nil {
+		t.Fatalf("带空格的工具根应可用：%v", err)
+	}
+	want := "-toolexec='" + filepath.Join(root, filepath.FromSlash(ToolexecPath)) + "'"
+	for _, arg := range runner.lastArgs {
+		if strings.HasPrefix(arg, "-toolexec=") {
+			if arg != want {
+				t.Fatalf("工具包装参数为 %q，期望 %q", arg, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("没有找到 -toolexec 参数：%v", runner.lastArgs)
+}
+
+func TestToolexecArgument(t *testing.T) {
+	plain := filepath.Join("a", "b")
+	if got, err := toolexecArgument(plain); err != nil || got != plain {
+		t.Fatalf("普通路径：%q %v", got, err)
+	}
+	spaced := filepath.Join("a b", "toolexec")
+	if got, err := toolexecArgument(spaced); err != nil || got != "'"+spaced+"'" {
+		t.Fatalf("空格路径：%q %v", got, err)
+	}
+	quoted := "a'b c"
+	if got, err := toolexecArgument(quoted); err != nil || got != `"`+quoted+`"` {
+		t.Fatalf("单引号路径：%q %v", got, err)
+	}
+	if _, err := toolexecArgument(`a'b"c d`); err == nil {
+		t.Fatal("同时含两种引号的路径应被拒绝")
 	}
 }
 

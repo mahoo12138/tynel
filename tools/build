@@ -9,7 +9,7 @@ if [[ -z "$GO" ]]; then
   exit 1
 fi
 
-COMMIT=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || print -- none)
+COMMIT=${TYNEL_COMMIT:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || print -- none)}
 
 mkdir -p "$ROOT/bin"
 cd "$ROOT"

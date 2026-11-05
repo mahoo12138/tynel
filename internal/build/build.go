@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
@@ -279,10 +280,15 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 		"TYNEL_NIR="+snapshot,
 		"TYNEL_COMPILE="+compiler,
 	)
+	toolexecValue, err := toolexecArgument(toolexec)
+	if err != nil {
+		os.Remove(tmpPath)
+		return nil, err
+	}
 	args := []string{
 		"-C", opts.Root,
 		"build",
-		"-toolexec=" + toolexec,
+		"-toolexec=" + toolexecValue,
 		"-tags", "tynelapp " + tag,
 		"-o", tmpPath,
 		"./" + SupportDir,
@@ -394,6 +400,25 @@ func runBackend(ctx context.Context, runner toolchain.Runner, env []string, name
 		return cancellable.RunEnvContext(ctx, env, name, args...)
 	}
 	return runner.RunEnv(env, name, args...)
+}
+
+// toolexecArgument 把工具包装路径编码成 go build 的 -toolexec 值。
+//
+// go 命令用 quoted.Split 解析这个值；含空格的路径如果不加引号，会在第一个
+// 空格处被拆成程序名和额外参数。Go 的引号内没有转义，所以路径同时含单引号
+// 和双引号时无法安全表达，直接拒绝而不是悄悄生成错误命令。
+func toolexecArgument(path string) (string, error) {
+	if !strings.ContainsAny(path, " \t\n\r") {
+		return path, nil
+	}
+	if !strings.ContainsRune(path, '\'') {
+		return "'" + path + "'", nil
+	}
+	if !strings.ContainsRune(path, '"') {
+		return `"` + path + `"`, nil
+	}
+	return "", diagnostic.New(diagnostic.Environment, "build.toolexec-unquotable",
+		"工具包装路径同时含单引号和双引号，无法安全传给 Go：%s", path)
 }
 
 // RecordPath 返回某个产物对应的构建记录路径。
