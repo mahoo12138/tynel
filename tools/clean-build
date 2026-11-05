@@ -83,7 +83,7 @@ done
 
 CACHE="$OUT/cache"
 mkdir -p "$CACHE"
-export TYNEL_COMMIT="$COMMIT"
+export TYNEL_COMMIT="$SHORT"
 export GOCACHE="$CACHE/go-build"
 export GOMODCACHE="$CACHE/gomod"
 export GOPATH="$CACHE/gopath"
