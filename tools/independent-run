@@ -1,0 +1,20 @@
+#!/bin/zsh
+# 在只含 exe 的载荷目录和限制性 macOS 沙箱中验收 06.06。
+# 需要在未嵌套 Seatbelt 沙箱的 macOS 终端运行；受阻时退出 3，不降级为普通运行。
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+GO=$(find "$ROOT/.work/toolchain" -maxdepth 3 -path '*/bin/go' -type f 2>/dev/null | head -1)
+if [[ -z "$GO" ]]; then
+  print -u2 -- "找不到隔离 Go 工具链；先在项目根运行 ./tools/toolchain/prep"
+  exit 4
+fi
+
+export GOTOOLCHAIN=local
+export GOCACHE="$ROOT/.work/cache/independent-go-build"
+VERIFIER="$ROOT/.work/cache/independent/verifier"
+mkdir -p "$GOCACHE" "$(dirname "$VERIFIER")"
+cd "$ROOT"
+# go run 会把子进程的非零状态统一变成 1；先构建再执行才能区分受阻 3 与失败 1。
+"$GO" build -trimpath -o "$VERIFIER" ./tools/independent
+exec "$VERIFIER" --project "$ROOT" "$@"

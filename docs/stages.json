@@ -688,7 +688,7 @@
       "dependsOn": [
         "05"
       ],
-      "status": "active",
+      "status": "blocked",
       "plannedNote": "docs/notes/06-compiler-mvp.md",
       "goal": "稳定命令、错误诊断、干净构建和二进制独立运行",
       "gateSubnode": "06.08",
@@ -800,9 +800,16 @@
             "06.05"
           ],
           "planSection": "PLAN.md#task-06-06",
-          "status": "planned",
+          "status": "blocked",
           "implementationCommits": [],
-          "evidence": []
+          "evidence": [
+            "docs/validation/06-06-independent.md",
+            "docs/reference/release.md",
+            "tools/independent-run",
+            "tools/test",
+            "internal/independent/run.go",
+            "internal/independent/independent_test.go"
+          ]
         },
         {
           "id": "06.07",

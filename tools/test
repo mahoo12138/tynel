@@ -22,8 +22,11 @@ fi
 cd "$ROOT"
 print -- "使用 $("$GO" version)"
 
+# 只发现当前源码树的包。out/ 下可能有历史 clean-build worktree，其中既
+# 有不完整实验，也可能缺示例；它们是可观察产物，不是本轮测试输入。
+PACKAGES=(./cmd/... ./compiler/... ./internal/... ./tests/... ./tools/...)
 set +e
-OUTPUT=$("$GO" test -count=1 ./... 2>&1)
+OUTPUT=$("$GO" test -count=1 "${PACKAGES[@]}" 2>&1)
 STATUS=$?
 set -e
 print -r -- "$OUTPUT"

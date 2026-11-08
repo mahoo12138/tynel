@@ -80,4 +80,4 @@ MVP 的交付物是编译器本身：通过 `tynel build input.ts -o out/program
 
 06.05 已完成：在干净目录重建工具和示例。`./tools/clean-build --tests` 从提交 `236cbe6` 建立新的 detached worktree，拒绝已有输出和未提交的跟踪文件；在全新的 `.work`、Go 构建缓存和模块缓存中下载并核验 go1.27.3 SDK、Go 源码和 typescript-go 归档，重建 bridge 与 CLI，18 个 Go 测试包通过。四个示例和新打包的 15,674 文件发行目录都通过；把发行目录复制到 `搬移 后的编译器` 后，`tynel build examples/add.ts` 仍输出 `42`。缺网退出 5、同尺寸坏哈希退出 6、错误 SDK 退出 8，旧式 `.tynel/compile` 诱饵没有参与构建。步骤见[复现指南](docs/reproducing.md#在干净目录重建)，验收见[06.05 验收记录](docs/validation/06-05-clean.md)。
 
-下一步进入 06.06：在独立环境中验证生成物。节点 01 至 05 已全部验收，06.01 至 06.05 也通过正常、错误和边界检查。
+06.06 当前受阻：独立运行验收器已实现，四个产物的构建记录、传输哈希和 Mach-O 系统动态库预检通过；当前环境无法应用限制性 Seatbelt 配置，因此尚未在隔离环境中运行载荷，节点保持 `blocked`，不进入 06.07。恢复方法和真实日志见[06.06 验收记录](docs/validation/06-06-independent.md)。

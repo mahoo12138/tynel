@@ -361,6 +361,17 @@ PY
 
 报告在 `<输出>/report.json`，示例和构建记录在 `<输出>/outputs/`。准备阶段会拒绝未提交的跟踪文件、已有的输出目录，以及新 worktree 中出现的 `.work`、`.tynel`、`.upstream`、`dist`、`bin` 或 `out`。实际哈希、搬移结果和负向退出码见[06.05 验收记录](validation/06-05-clean.md)。
 
+## 在隔离环境运行产物
+
+06.06 提供 `./tools/independent-run`。它只携带 06.05 构建的四个 exe，核对传输身份和 Mach-O 动态库，再用限制性 macOS 沙箱检查源码与 Node 不可读、子进程不可启动以及实际输出和退出状态。
+
+```zsh
+# 在未嵌套 Seatbelt 的 macOS arm64 终端执行；host-run 必须是新目录。
+./tools/independent-run --out .work/validation/06-06/host-run
+```
+
+只有退出 0 且报告为 `status: passed` 才算通过。当前会话的沙箱预检失败，06.06 保持 blocked；受阻证据与恢复条件见[06.06 验收记录](validation/06-06-independent.md)。
+
 ## 前置条件
 
 当前开发与验收基线是一台 Mac mini（Mac16,10，Apple M4，10 核，24 GB 内存，macOS 26.6.2）。换机器时，下列条件满足即可复现，机型本身不是契约。
