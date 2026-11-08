@@ -801,7 +801,9 @@
           ],
           "planSection": "PLAN.md#task-06-06",
           "status": "blocked",
-          "implementationCommits": [],
+          "implementationCommits": [
+            "96545a2"
+          ],
           "evidence": [
             "docs/validation/06-06-independent.md",
             "docs/reference/release.md",
