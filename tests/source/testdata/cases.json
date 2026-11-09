@@ -33,6 +33,7 @@
     {"name": "combine", "file": "combine.ts", "kind": "program", "stdout": "1\ntrue\n4\n5\n6\nfalse\n7\n9\ntrue\n", "note": "优先级与括号"},
     {"name": "combine-ternary", "file": "combine-ternary.ts", "kind": "program", "stdout": "1\n2\n20\n3\n4\n50\n2\n5\n70\n", "note": "多层选择与短路组合"},
     {"name": "combine-order", "file": "combine-order.ts", "kind": "program", "stdout": "1\n2\n30\n3\n4\n5\n50\n7\n8\n9\n10\n11\n", "note": "实参、比较与三元式的输出顺序"},
+    {"name": "binary-order", "file": "binary-order.ts", "kind": "program", "stdout": "1\n10\n3\n4\n5\n10\n7\ntrue\n2\n10\n4\n6\n6\n10\n8\ntrue\n", "note": "+ 与比较两侧都有准备语句时的求值顺序"},
     {"name": "let", "file": "let.ts", "kind": "program", "stdout": "2\n1\ntrue\n", "note": "已初始化的 let 与块内遮蔽"},
     {"name": "assign", "file": "assign.ts", "kind": "program", "stdout": "4\ntrue\n", "note": "数值累加与布尔改写"},
     {"name": "assign-order", "file": "assign-order.ts", "kind": "program", "stdout": "2\n2\n3\n5\n", "note": "右值先求值再写回"},

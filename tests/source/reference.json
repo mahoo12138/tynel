@@ -37,6 +37,7 @@
     "combine": {"comparison": "shared"},
     "combine-ternary": {"comparison": "shared"},
     "combine-order": {"comparison": "shared"},
+    "binary-order": {"comparison": "shared"},
     "let": {"comparison": "shared"},
     "assign": {"comparison": "shared"},
     "assign-order": {"comparison": "shared"},

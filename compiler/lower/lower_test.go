@@ -736,6 +736,112 @@ func TestRejectsSelectMismatch(t *testing.T) {
 	}
 }
 
+// pairOrderFacts 对应：
+//
+//	function mark(n: number): number { console.log(n); return n; }
+//	function identity(n: number): number { console.log(10); return n; }
+//	console.log(identity(true ? mark(1) : mark(2)) + (true ? mark(3) : mark(4)));
+//	console.log(identity(true ? mark(5) : mark(6)) < (true ? mark(7) : mark(8)));
+//
+// 两侧都带准备语句：左侧是实参为三元式的调用，右侧是三元式。左侧的最终
+// 调用有副作用，必须在右侧准备之前算出来，顺序才是 TypeScript 的语义。
+func pairOrderFacts() *frontend.Facts {
+	number := frontend.Type{Kind: frontend.KindNumber}
+	markBody := node("Block",
+		node("ExpressionStatement", consoleLog(ident("n", 2))),
+		node("ReturnStatement", ident("n", 2)),
+	)
+	identityBody := node("Block",
+		node("ExpressionStatement", consoleLog(literal("0x4024000000000000"))),
+		node("ReturnStatement", ident("n", 4)),
+	)
+	mark := func(bits string) frontend.Node {
+		return typed("CallExpression", frontend.KindNumber, ident("mark", 1), literal(bits))
+	}
+	ternary := func(a, b string) frontend.Node {
+		return ternaryNode(boolLiteral(true), mark(a), mark(b))
+	}
+	identity := func(arg frontend.Node) frontend.Node {
+		return typed("CallExpression", frontend.KindNumber, ident("identity", 3), arg)
+	}
+	module := node("Block",
+		node("ExpressionStatement", consoleLog(
+			binary("+", identity(ternary("0x3ff0000000000000", "0x4000000000000000")),
+				ternary("0x4008000000000000", "0x4010000000000000")))),
+		node("ExpressionStatement", consoleLog(
+			compareNode("<", identity(ternary("0x4014000000000000", "0x4018000000000000")),
+				ternary("0x401c000000000000", "0x4020000000000000")))),
+	)
+	return &frontend.Facts{
+		SchemaVersion: 1,
+		Session:       "s",
+		File:          "/tmp/t.ts",
+		Module:        &module,
+		Declarations: []frontend.Declaration{
+			{ID: 1, Kind: frontend.DeclFunction, Name: "mark", Start: 0, Length: 20, Result: &number, Parameters: []int{2}, Body: &markBody},
+			{ID: 2, Kind: frontend.DeclParameter, Name: "n", Start: 4, Length: 1, Type: &number},
+			{ID: 3, Kind: frontend.DeclFunction, Name: "identity", Start: 30, Length: 20, Result: &number, Parameters: []int{4}, Body: &identityBody},
+			{ID: 4, Kind: frontend.DeclParameter, Name: "n", Start: 34, Length: 1, Type: &number},
+		},
+	}
+}
+
+// TestMaterializesLeftBeforeRightPrelude 锁住两侧都有准备语句时的求值顺序。
+// 左侧最终调用必须物化成 let，且它排在右侧 select 之前；否则调用会推迟到
+// 整个二元表达式求值时，跑到右侧副作用的后面。加法和比较走同一条路径。
+func TestMaterializesLeftBeforeRightPrelude(t *testing.T) {
+	module := lowerFacts(t, pairOrderFacts())
+	main := module.Functions[len(module.Functions)-1]
+	if main.Name != EntryName {
+		t.Fatalf("最后一个函数应为 %s，实际 %q", EntryName, main.Name)
+	}
+	cases := []struct {
+		name     string
+		exprOp   string
+		operator string
+	}{
+		{"加法", nir.OpBinary, "+"},
+		{"比较", nir.OpCompare, "<"},
+	}
+
+	start := 0
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			idx := start
+			for idx < len(main.Body) && main.Body[idx].Op != nir.OpPrint {
+				idx++
+			}
+			if idx == len(main.Body) {
+				t.Fatalf("没有找到 %s 的 print：%+v", c.name, main.Body)
+			}
+			print := main.Body[idx]
+			if print.Value == nil || print.Value.Op != c.exprOp || print.Value.Operator != c.operator {
+				t.Fatalf("%s 的 print 形状不对：%+v", c.name, print)
+			}
+			pre := main.Body[start:idx]
+			start = idx + 1
+
+			// 左侧实参三元式 → 实参物化 → 左侧最终调用物化 → 右侧三元式。
+			if len(pre) != 4 {
+				t.Fatalf("期望 4 条准备语句，实际 %d：%+v", len(pre), pre)
+			}
+			if pre[0].Op != nir.OpSelect || pre[1].Op != nir.OpLet || pre[3].Op != nir.OpSelect {
+				t.Fatalf("准备语句的顺序不对：%+v", pre)
+			}
+			bound := pre[2]
+			if bound.Op != nir.OpLet || bound.Value == nil || bound.Value.Op != nir.OpCall || bound.Value.Function != "identity" {
+				t.Fatalf("左侧最终调用应在右侧 select 之前物化：%+v", pre)
+			}
+			if print.Value.Left == nil || print.Value.Left.Op != nir.OpLocal || print.Value.Left.Name != bound.Name {
+				t.Fatalf("左操作数应读取物化结果 %q，实际 %+v", bound.Name, print.Value.Left)
+			}
+			if print.Value.Right == nil || print.Value.Right.Op != nir.OpLocal || print.Value.Right.Name != pre[3].Name {
+				t.Fatalf("右操作数应读取右侧 select 的结果 %q，实际 %+v", pre[3].Name, print.Value.Right)
+			}
+		})
+	}
+}
+
 func TestRejectsComparisonMismatches(t *testing.T) {
 	cases := []struct {
 		name   string

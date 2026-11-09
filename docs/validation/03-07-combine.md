@@ -207,3 +207,96 @@ Node 对照全部通过，3 个组合程序都标记为 `shared`，输出逐字�
 - 没有联合类型、`undefined` 与对象。
 - 组合表只覆盖当前子集，不是完整 TypeScript 优先级表。
 - 只在 `darwin/arm64` 上验证。
+
+## 交付后的求值顺序加固（2026-11-09）
+
+上面各节的命令输出和累计数字属于 03.07 原始验收；本节记录之后的一次修复，执行时间是 2026-11-09 15:55 CST，代码基于提交 `8133d9c` 的工作树。环境仍是 macOS 26.6.2、arm64、锁定的 go1.27.3，Node 为 v22.22.2，命令行程序由 `./tools/build` 从当前工作树生成。
+
+03.07 修掉的是「左侧没有准备语句、右侧有」这一半：`pairOperands()` 的条件写成 `len(rightPre) > 0 && len(leftPre) == 0`。剩下的一半是两侧都带准备语句。看这段程序，左侧 `identity(...)` 的实参是三元式，准备工作会先算出实参并绑定临时值，但 `identity(...)` 这次调用本身还没执行；右侧的三元式另带一份准备工作：
+
+```typescript
+function mark(n: number): number { console.log(n); return n; }
+function identity(n: number): number { console.log(10); return n; }
+function add(flag: boolean): number {
+  return identity(flag ? mark(1) : mark(2)) + (flag ? mark(3) : mark(4));
+}
+console.log(add(true));
+```
+
+因为 `leftPre` 非空，旧条件不成立，左侧最终调用没有物化；NIR 里 `binary` 的左操作数仍是 `call identity`，准备工作却是「左侧 select → 右侧 select」。后端把 `binary` 变成 Go 的二元表达式，`identity` 的副作用就落到右侧 select 之后。修复前 `./bin/tynel run tests/source/testdata/binary-order.ts` 的四组输出里，`10` 都排到了右侧标记后面：
+
+```text
+$ ./bin/tynel run tests/source/testdata/binary-order.ts
+1
+3
+10
+4
+5
+7
+10
+true
+2
+4
+10
+6
+6
+8
+10
+true
+```
+
+Node 的正确顺序是 `1, 10, 3, 4` 这一组起头。修法就是去掉 `len(leftPre) == 0`：只要右侧有准备语句，就在左侧准备之后、右侧准备之前，把左侧最终表达式绑定成临时值，`binary` / `compare` 改用 `local` 读它。修复后与 Node 逐字节一致：
+
+```text
+$ node --experimental-strip-types tests/source/testdata/binary-order.ts > /tmp/binary-order.node.txt
+$ ./bin/tynel run tests/source/testdata/binary-order.ts > /tmp/binary-order.tynel.txt
+$ diff /tmp/binary-order.node.txt /tmp/binary-order.tynel.txt
+（无输出）
+
+$ ./bin/tynel run tests/source/testdata/binary-order.ts
+1
+10
+3
+4
+5
+10
+7
+true
+2
+10
+4
+6
+6
+10
+8
+true
+```
+
+回归覆盖分两层。`tests/source/testdata/binary-order.ts` 走完整前端到原生二进制：`+` 和 `<` 各写一个函数，左右两侧都含三元式，左侧的 `identity` 带打印副作用，`flag` 取 `true` 与 `false` 各跑一遍，连未选中分支不能执行也一起验了；用例登记在 `cases.json`，并在 `reference.json` 标记为 `shared`，由 `TestPrograms` 和 `TestNodeReference` 各核对一次。`compiler/lower/lower_test.go` 的 `TestMaterializesLeftBeforeRightPrelude` 则钉住 NIR 形状：每个运算的准备语句必须是 4 条，顺序为「左侧 select → 实参物化 → 左侧最终调用物化 → 右侧 select」，且二元表达式的左操作数读的正是那条物化结果。
+
+把 `lower.go` 里的旧条件临时换回后，两层都失败，说明它们确实守住了这个缺陷：
+
+```text
+$ ./.work/toolchain/go1.27.3-sdk-darwin-arm64/bin/go test ./compiler/lower -run TestMaterializesLeftBeforeRightPrelude -count=1
+--- FAIL: TestMaterializesLeftBeforeRightPrelude/加法
+    lower_test.go:826: 期望 4 条准备语句，实际 3：...
+
+$ ./.work/toolchain/go1.27.3-sdk-darwin-arm64/bin/go test ./tests/source -run 'TestPrograms/binary-order' -count=1
+--- FAIL: TestPrograms/binary-order
+    source_test.go:269: binary-order：输出为 "1\n3\n10\n4\n5\n7\n10\ntrue\n2\n4\n10\n6\n6\n8\n10\ntrue\n"，参考为 "1\n10\n3\n4\n5\n10\n7\ntrue\n2\n10\n4\n6\n6\n10\n8\ntrue\n"
+```
+
+恢复修复后的全量检查：
+
+```text
+$ ./.work/toolchain/go1.27.3-sdk-darwin-arm64/bin/gofmt -l compiler/lower/lower.go compiler/lower/lower_test.go
+（无输出）
+
+$ ./.work/toolchain/go1.27.3-sdk-darwin-arm64/bin/go vet ./...
+（无输出）
+
+$ ./tools/test
+测试通过：20 个包
+```
+
+`docs/reference/lowering.md` 的「求值顺序」一节补上了二元操作数的物化规则。本次未覆盖：`-`、`*`、`/`、`===` 与 `!==` 没有逐个写夹具，它们与 `+`、`<` 共用 `pairOperands()`，由同一条分支保证；仍只在 `darwin/arm64` 上验证。

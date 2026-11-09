@@ -864,9 +864,10 @@ func (l *lowerer) tempName() string {
 	return fmt.Sprintf("_tmp_%d", l.temp)
 }
 
-// pairOperands 降低二元运算的两个操作数。右侧带准备语句时，左侧如果只是
-// 一个尚未物化的表达式，必须先算出来再执行右侧准备，否则右侧的副作用会
-// 跑到左侧前面。
+// pairOperands 降低二元运算的两个操作数。只要右侧带准备语句，左侧最终值
+// 就必须在左侧准备之后、右侧准备之前物化：左侧若还是一次没求值的调用，
+// 它的副作用会被推迟到整个二元表达式求值时，跑到右侧准备的后面。左侧自己
+// 带准备语句时同样要物化——准备语句只算出了中间量，最终调用仍未执行。
 func (l *lowerer) pairOperands(leftNode, rightNode *frontend.Node, sc *scope, depth int) (*nir.Expr, *nir.Expr, []nir.Stmt, error) {
 	left, leftPre, err := l.expr(leftNode, sc, depth+1)
 	if err != nil {
@@ -877,7 +878,7 @@ func (l *lowerer) pairOperands(leftNode, rightNode *frontend.Node, sc *scope, de
 		return nil, nil, nil, err
 	}
 	pre := leftPre
-	if len(rightPre) > 0 && len(leftPre) == 0 {
+	if len(rightPre) > 0 {
 		name := l.tempName()
 		value := *left
 		pre = append(pre, nir.Stmt{Op: nir.OpLet, Name: name, Value: &value, Pos: l.pos(leftNode.Start)})
