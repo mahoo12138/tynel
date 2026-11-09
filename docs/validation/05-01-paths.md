@@ -141,3 +141,51 @@ $ echo $?
 - 没有读 `tsconfig.json`，不扩展 `paths` / `baseUrl`。
 - 没有解析裸模块或 `node_modules`。
 - 只在 `darwin/arm64` 上验证。
+
+## 交付后的边界加固（2026-11-09）
+
+上面各节的命令输出和累计测试数字属于 05.01 原始验收；本节记录之后的一次修复，执行时间是 2026-11-09 15:29 CST。代码基于提交 `8ff572c` 的工作树，环境同为 macOS 26.6.2、arm64 与锁定的 go1.27.3，命令行程序由 `./tools/build` 从当前工作树生成。修复前 `resolve()` 只在最后一段本身是符号链接时展开路径，中间目录是链接时，字面路径留在许可根内，`ReadFile` 却读走了根外的源码。
+
+夹具放在不入库的 `.work/validation/symlink-boundary/`：`project/external` 指向同级 `outside/`，`main.ts` 导入 `./external/secret.ts`。修复前越界导入被当成正常源码，退出码是 0：
+
+```text
+$ ./bin/tynel check --root .work/validation/symlink-boundary/project main.ts
+ok: /Users/mahoo/Projects/tynel/.work/validation/symlink-boundary/project/main.ts（3 个函数，NIR 已验证）
+```
+
+修复后整条路径先展开成真实路径再检查边界，导入和入口都拒绝，退出码是 1；普通目录和指向根内的目录链接仍正常通过：
+
+```text
+$ ./bin/tynel check --root .work/validation/symlink-boundary/project main.ts
+tynel: 源码错误 (project.outside-root): 导入 external/secret.ts 经过的目录符号链接指向项目根外：/Users/mahoo/Projects/tynel/.work/validation/symlink-boundary/outside
+  阶段: project
+
+$ ./bin/tynel check --root .work/validation/symlink-boundary/project external/secret.ts
+tynel: 源码错误 (project.outside-root): 入口 external/secret.ts 经过的目录符号链接指向项目根外：/Users/mahoo/Projects/tynel/.work/validation/symlink-boundary/outside
+  阶段: project
+
+$ ./bin/tynel check --root .work/validation/symlink-boundary/project-inside main.ts
+ok: /Users/mahoo/Projects/tynel/.work/validation/symlink-boundary/project-inside/main.ts（3 个函数，NIR 已验证）
+
+$ ./bin/tynel check --root .work/validation/symlink-boundary/project-linked main.ts
+ok: /Users/mahoo/Projects/tynel/.work/validation/symlink-boundary/project-linked/main.ts（3 个函数，NIR 已验证）
+```
+
+回归覆盖入口、导入、绝对入口、相对与绝对链接目标、两级链接、根外目录条目枚举，以及「中间目录越界后最终链接又指回根内」；正向用例确认根内目录链接的身份仍是逻辑路径，前端宿主能按同一条路径解析导入。把 `HEAD` 中的旧 `project.go` 临时换回后，同一组越界用例有 5 个子用例返回 `<nil>`，说明修复前确实读取成功；绝对入口一项由 `ResolveEntry` 的既有预检挡住，不受本次修复影响。
+
+```text
+$ ./.work/toolchain/go1.27.3-sdk-darwin-arm64/bin/gofmt -l compiler/project compiler/graph
+（无输出）
+
+$ ./.work/toolchain/go1.27.3-sdk-darwin-arm64/bin/go test ./compiler/project ./compiler/graph -count=1
+ok  	github.com/Mahoo12138/tynel/compiler/project	1.187s
+ok  	github.com/Mahoo12138/tynel/compiler/graph	0.803s
+
+$ ./tools/test
+测试通过：20 个包
+
+$ ./.work/toolchain/go1.27.3-sdk-darwin-arm64/bin/go vet ./...
+（无输出）
+```
+
+本次未覆盖：并发改写文件系统的竞态没有确定性测试。基于目录文件描述符的打开管住了 `compiler/project` 解析内部的检查与使用窗口；后续阶段按 `File.Abs` 自行读文件时，若逻辑路径中的目录链接在此期间被替换，边界仍由那一层保证。仍只在 `darwin/arm64` 上验证。

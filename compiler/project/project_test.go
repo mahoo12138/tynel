@@ -195,3 +195,139 @@ func TestOpenRejectsMissingRoot(t *testing.T) {
 		t.Fatalf("错误码为 %q，期望 project.root-missing（err=%v）", got, err)
 	}
 }
+
+// 中间目录是符号链接时，字面路径看上去仍在许可根内，最终读到的却可能是根外
+// 文件。入口、导入、绝对入口、链接链和相对链接目标都要在同一处被拒绝。
+func TestResolveRejectsSymlinkedDirectoryOutside(t *testing.T) {
+	base := t.TempDir()
+	rootDir := filepath.Join(base, "project")
+	outside := filepath.Join(base, "outside")
+	for _, dir := range []string{
+		rootDir,
+		filepath.Join(rootDir, "src"),
+		outside,
+		filepath.Join(outside, "deep"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(rootDir, "main.ts"), []byte("import './external/secret.ts';\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "secret.ts"), []byte("export const secret = 42;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "deep", "nested.ts"), []byte("export const nested = 1;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// 绝对目标、相对目标、两级链接，以及「先出根、再指回根内」的链接。
+	if err := os.Symlink(outside, filepath.Join(rootDir, "external")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../outside", filepath.Join(rootDir, "src", "escape")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(rootDir, "src", "escape"), filepath.Join(rootDir, "chain")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(rootDir, "main.ts"), filepath.Join(outside, "back.ts")); err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := Open(rootDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := root.ResolveEntry("main.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		call func() (File, error)
+	}{
+		{"入口经过绝对目标的目录链接", func() (File, error) { return root.ResolveEntry("external/secret.ts") }},
+		{"入口经过相对目标的目录链接", func() (File, error) { return root.ResolveEntry("src/escape/deep/nested.ts") }},
+		{"入口经过两级目录链接", func() (File, error) { return root.ResolveEntry("chain/secret.ts") }},
+		{"导入经过目录链接", func() (File, error) { return root.ResolveImport(entry, "./external/secret.ts") }},
+		{"绝对入口经过目录链接", func() (File, error) {
+			return root.ResolveEntry(filepath.Join(rootDir, "external", "secret.ts"))
+		}},
+		{"根外目录的条目不被枚举", func() (File, error) { return root.ResolveEntry("external/缺失.ts") }},
+		{"中间目录越界后即使最终指回根内也拒绝", func() (File, error) { return root.ResolveEntry("external/back.ts") }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := c.call(); codeOf(err) != "project.outside-root" {
+				t.Fatalf("中间目录越界应拒绝，实际 %v", err)
+			}
+		})
+	}
+	if _, err := root.ResolveEntry("main.ts"); err != nil {
+		t.Fatalf("普通文件应通过：%v", err)
+	}
+}
+
+// 目标仍在许可根内时，中间目录的符号链接继续可用。只有最后一段是文件链接时
+// 身份才落到真实目标；目录链接保留逻辑路径，前端宿主靠这条路径解析导入。
+func TestResolveAllowsSymlinkedDirectoryInside(t *testing.T) {
+	rootDir := t.TempDir()
+	for _, dir := range []string{filepath.Join(rootDir, "src"), filepath.Join(rootDir, "shared")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []byte("export const value = 1;\n")
+	if err := os.WriteFile(filepath.Join(rootDir, "shared", "value.ts"), want, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootDir, "main.ts"), []byte("import './src/link/value.ts';\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../shared", filepath.Join(rootDir, "src", "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(rootDir, "shared"), filepath.Join(rootDir, "src", "absolute")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("value.ts", filepath.Join(rootDir, "shared", "alias.ts")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(".", filepath.Join(rootDir, "self")); err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := Open(rootDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := root.ResolveEntry("main.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		call func() (File, error)
+		path string
+	}{
+		{"相对目标的目录链接", func() (File, error) { return root.ResolveEntry("src/link/value.ts") }, "src/link/value.ts"},
+		{"绝对目标的目录链接", func() (File, error) { return root.ResolveEntry("src/absolute/value.ts") }, "src/absolute/value.ts"},
+		{"目录链接加文件链接", func() (File, error) { return root.ResolveEntry("src/link/alias.ts") }, "shared/value.ts"},
+		{"链接指向根自身", func() (File, error) { return root.ResolveEntry("self/shared/value.ts") }, "self/shared/value.ts"},
+		{"导入经过目录链接", func() (File, error) { return root.ResolveImport(entry, "./src/link/value.ts") }, "src/link/value.ts"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			file, err := c.call()
+			if err != nil {
+				t.Fatalf("根内符号链接应通过：%v", err)
+			}
+			wantAbs := filepath.Join(root.Path(), filepath.FromSlash(c.path))
+			if file.Path != c.path || file.Abs != wantAbs || string(file.Bytes) != string(want) {
+				t.Fatalf("身份或内容不对，期望 %s / %s，实际 %+v", c.path, wantAbs, file)
+			}
+		})
+	}
+}

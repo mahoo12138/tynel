@@ -11,6 +11,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -112,8 +114,9 @@ func (r *Root) ResolveImport(from File, request string) (File, error) {
 	return r.resolve(joined, "导入")
 }
 
-// resolve 把项目内相对路径解析成文件。它先按字面路径逐段精确查找，再处理
-// 符号链接；任何一步失败都返回明确错误，不做后备搜索。
+// resolve 把项目内相对路径解析成文件。它先按字面路径逐段精确查找，再把整条
+// 路径展开成真实路径后检查许可根，最后从根目录文件描述符读取字节；任何一步
+// 失败都返回明确错误，不做后备搜索。
 func (r *Root) resolve(rel, what string) (File, error) {
 	rel = strings.TrimSpace(rel)
 	if rel == "" {
@@ -130,45 +133,83 @@ func (r *Root) resolve(rel, what string) (File, error) {
 		return File{}, diagnostic.New(diagnostic.Source, "project.non-ts", "%s %q 不是 .ts 文件", what, rel)
 	}
 
-	abs, err := r.exactPath(clean, what)
+	// 一次解析固定一个根目录文件描述符。后面的目录项读取和最终的读文件都从它
+	// 出发，检查与读取之间即使有目录项被换成符号链接，也不会跟着走出许可根。
+	handle, err := os.OpenRoot(r.path)
+	if err != nil {
+		return File{}, diagnostic.New(diagnostic.Environment, "project.io", "无法打开项目根 %s", r.path).WithDetail(err.Error())
+	}
+	defer handle.Close()
+
+	abs, err := r.exactPath(handle, clean, what)
 	if err != nil {
 		return File{}, err
 	}
 
-	info, err := os.Lstat(abs)
+	// 符号链接可能出现在任意一段，包括中间目录。只看最后一段是不是链接，会让
+	// 字面路径留在根内、真实文件却在根外；因此整条路径都展开后再做边界检查。
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return File{}, diagnostic.New(diagnostic.Source, "project.missing", "%s %s 的符号链接目标不存在", what, clean).WithDetail(err.Error())
+	}
+	real = filepath.Clean(real)
+	readRel, err := filepath.Rel(r.path, real)
+	if err != nil || !within(r.path, real) {
+		return File{}, diagnostic.New(diagnostic.Source, "project.outside-root", "%s %s 的符号链接指向项目根外：%s", what, clean, real)
+	}
+	readName := filepath.ToSlash(readRel)
+
+	last, err := os.Lstat(abs)
 	if err != nil {
 		return File{}, diagnostic.New(diagnostic.Environment, "project.io", "无法读取%s %s", what, clean).WithDetail(err.Error())
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		target, err := filepath.EvalSymlinks(abs)
-		if err != nil {
-			return File{}, diagnostic.New(diagnostic.Source, "project.missing", "%s %s 的符号链接目标不存在", what, clean)
-		}
-		if !within(r.path, target) {
-			return File{}, diagnostic.New(diagnostic.Source, "project.outside-root", "%s %s 的符号链接指向项目根外：%s", what, clean, target)
-		}
-		abs = target
-		info, err = os.Stat(abs)
-		if err != nil {
-			return File{}, diagnostic.New(diagnostic.Source, "project.missing", "%s %s 的符号链接目标不可读", what, clean)
-		}
+	info, err := os.Lstat(real)
+	if err != nil {
+		return File{}, diagnostic.New(diagnostic.Environment, "project.io", "无法读取%s %s", what, clean).WithDetail(err.Error())
 	}
 	if !info.Mode().IsRegular() {
 		return File{}, diagnostic.New(diagnostic.Source, "project.not-file", "%s %s 不是普通文件", what, clean)
 	}
 
-	data, err := os.ReadFile(abs)
+	// 身份沿用原来的规则：最后一段是符号链接时落到真实目标，只有中间目录是
+	// 链接时保持逻辑路径。前端宿主按逻辑路径解析导入，把 Abs 改成真实路径会
+	// 让 tsgo 解析到的模块和项目解析出的文件对不上。
+	identity := abs
+	if last.Mode()&os.ModeSymlink != 0 {
+		identity = real
+	}
+	relToRoot, err := filepath.Rel(r.path, identity)
+	if err != nil || !within(r.path, identity) {
+		return File{}, diagnostic.New(diagnostic.Source, "project.outside-root", "%s %s 不在项目根 %s 内", what, clean, r.path)
+	}
+
+	// 读字节用真实路径相对许可根的名字，经根目录文件描述符打开，而不是逐段
+	// 跟随链接；打开后再对描述符做一次普通文件检查，收窄检查与读取之间的窗口。
+	f, err := handle.Open(readName)
+	if err != nil {
+		// 检查之后、打开之前目录项被换掉时，根描述符会拒绝跟随越界链接；再
+		// 展开一次把这种情况报成边界错误，而不是笼统的 I/O 失败。
+		if now, e := filepath.EvalSymlinks(abs); e == nil && !within(r.path, now) {
+			return File{}, diagnostic.New(diagnostic.Source, "project.outside-root", "%s %s 的符号链接指向项目根外：%s", what, clean, now)
+		}
+		return File{}, diagnostic.New(diagnostic.Environment, "project.io", "无法在许可根内读取%s %s", what, clean).WithDetail(err.Error())
+	}
+	defer f.Close()
+	opened, err := f.Stat()
 	if err != nil {
 		return File{}, diagnostic.New(diagnostic.Environment, "project.io", "无法读取%s %s", what, clean).WithDetail(err.Error())
 	}
-	relToRoot, err := filepath.Rel(r.path, abs)
-	if err != nil || !within(r.path, abs) {
-		return File{}, diagnostic.New(diagnostic.Source, "project.outside-root", "%s %s 不在项目根 %s 内", what, clean, r.path)
+	if !opened.Mode().IsRegular() {
+		return File{}, diagnostic.New(diagnostic.Source, "project.not-file", "%s %s 不是普通文件", what, clean)
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return File{}, diagnostic.New(diagnostic.Environment, "project.io", "无法读取%s %s", what, clean).WithDetail(err.Error())
 	}
 	sum := sha256.Sum256(data)
 	return File{
 		Path:   filepath.ToSlash(relToRoot),
-		Abs:    abs,
+		Abs:    identity,
 		SHA256: hex.EncodeToString(sum[:]),
 		Bytes:  data,
 	}, nil
@@ -176,15 +217,33 @@ func (r *Root) resolve(rel, what string) (File, error) {
 
 // exactPath 逐段检查目录项，要求大小写完全匹配。它同时识别两种情况：
 // 请求的大小写与磁盘不一致，以及同一目录里存在仅大小写不同的多个条目。
-func (r *Root) exactPath(rel, what string) (string, error) {
-	cur := r.path
+// 每一段都先展开当前目录上的符号链接并检查边界，目录项则通过根目录文件
+// 描述符读取，避免中途顺着目录链接列出许可根之外的内容。
+func (r *Root) exactPath(handle *os.Root, rel, what string) (string, error) {
+	fsys := handle.FS()
+	cur := "."
 	for _, part := range strings.Split(rel, "/") {
-		entries, err := os.ReadDir(cur)
+		dirAbs := filepath.Join(r.path, filepath.FromSlash(cur))
+		realDir, err := filepath.EvalSymlinks(dirAbs)
 		if err != nil {
 			if os.IsNotExist(err) {
 				return "", diagnostic.New(diagnostic.Source, "project.missing", "%s %s 不存在", what, rel)
 			}
-			return "", diagnostic.New(diagnostic.Environment, "project.io", "无法读取目录 %s", cur).WithDetail(err.Error())
+			return "", diagnostic.New(diagnostic.Environment, "project.io", "无法读取目录 %s", dirAbs).WithDetail(err.Error())
+		}
+		if !within(r.path, realDir) {
+			return "", diagnostic.New(diagnostic.Source, "project.outside-root", "%s %s 经过的目录符号链接指向项目根外：%s", what, rel, realDir)
+		}
+		relDir, err := filepath.Rel(r.path, realDir)
+		if err != nil {
+			return "", diagnostic.New(diagnostic.Source, "project.outside-root", "%s %s 不在项目根 %s 内", what, rel, r.path)
+		}
+		entries, err := fs.ReadDir(fsys, filepath.ToSlash(relDir))
+		if err != nil {
+			if os.IsNotExist(err) {
+				return "", diagnostic.New(diagnostic.Source, "project.missing", "%s %s 不存在", what, rel)
+			}
+			return "", diagnostic.New(diagnostic.Environment, "project.io", "无法读取目录 %s", dirAbs).WithDetail(err.Error())
 		}
 		var exact string
 		var folded []string
@@ -205,9 +264,9 @@ func (r *Root) exactPath(rel, what string) (string, error) {
 		if len(folded) > 1 {
 			return "", diagnostic.New(diagnostic.Source, "project.case-conflict", "%s %s 存在仅大小写不同的条目：%s", what, rel, strings.Join(folded, "、"))
 		}
-		cur = filepath.Join(cur, exact)
+		cur = path.Join(cur, exact)
 	}
-	return cur, nil
+	return filepath.Join(r.path, filepath.FromSlash(cur)), nil
 }
 
 // within 报告 target 是否在 root 内（含 root 本身）。两侧都应是规范化绝对路径。

@@ -165,6 +165,43 @@ func TestLoadRejectsResolutionMismatch(t *testing.T) {
 	}
 }
 
+// 经过根内目录符号链接时，tsgo 仍按逻辑绝对路径解析导入。项目解析出的 Abs
+// 必须保持同一条逻辑路径，否则依赖图会把正常导入误判成解析不一致。
+func TestLoadKeepsLogicalPathAcrossDirectorySymlink(t *testing.T) {
+	dir := t.TempDir()
+	for _, sub := range []string{"src", "shared"} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.ts"), []byte("import { a } from './src/link/a.ts';"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "shared", "a.ts"), []byte("export const a = 1;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../shared", filepath.Join(dir, "src", "link")); err != nil {
+		t.Fatal(err)
+	}
+	root, err := project.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, err := root.ResolveEntry("main.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lexical := filepath.Join(root.Path(), "src", "link", "a.ts")
+	scan := fakeScanner{"main.ts": {{Specifier: "./src/link/a.ts", Resolved: lexical}}}
+	g, err := Load(root, entry, scan)
+	if err != nil {
+		t.Fatalf("根内目录链接应能载入：%v", err)
+	}
+	if len(g.Files) != 2 || g.Files[1].Abs != lexical {
+		t.Fatalf("依赖身份应为逻辑路径 %s，实际 %+v", lexical, g.Files)
+	}
+}
+
 func TestReportHasNoBytes(t *testing.T) {
 	root, entry := setup(t, map[string]string{"main.ts": "console.log(1);"})
 	g, err := Load(root, entry, fakeScanner{})
