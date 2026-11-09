@@ -3,6 +3,8 @@
 bin/
 out/
 node_modules/
+site/.vitepress/cache/
+site/.vitepress/dist/
 __pycache__/
 *.pyc
 

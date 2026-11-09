@@ -1,0 +1,16 @@
+{
+  "name": "tynel-site",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "vitepress build",
+    "preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "@fontsource/jetbrains-mono": "^5.2.5",
+    "@fontsource/space-grotesk": "^5.2.5",
+    "vitepress": "^1.6.3",
+    "vue": "^3.5.13"
+  }
+}
