@@ -845,7 +845,9 @@
           ],
           "planSection": "PLAN.md#task-06-08",
           "status": "verified",
-          "implementationCommits": [],
+          "implementationCommits": [
+            "f811a77"
+          ],
           "evidence": [
             "docs/notes/06-compiler-mvp.md",
             "docs/validation/06-compiler-mvp.md",

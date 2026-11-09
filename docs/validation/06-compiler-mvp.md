@@ -7,7 +7,7 @@
 | 项目 | 实际值 |
 | --- | --- |
 | 系统 | macOS 26.6.2，Darwin 25.6.0，`arm64`，Apple M4 |
-| 打包源码 | `3c3ce69`；06.08 文档提交不改变编译器代码 |
+| 打包源码 | `3c3ce69`；06.08 交付记录保存在 `f811a77`，该提交不改变编译器代码 |
 | 编译器版本 | `tynel dev (commit 3c3ce69)` |
 | 工具链 | go1.27.3；typescript-go `typescript/v7.0.2` |
 | 原始发行目录 | `out/release/tynel-3c3ce69-darwin-arm64`，339 MB，15,674 个文件 |
