@@ -603,6 +603,127 @@ func TestAliasesRejectOtherKinds(t *testing.T) {
 	}
 }
 
+// crossModuleFacts 造一份「模块体只有一次外部引用」的事实。shape 决定这次
+// 引用是 CallExpression 还是 Identifier；module 与 exported 是前端 target()
+// 从符号声明处解析出来的目标，imports 是本文件的值导入。
+func crossModuleFacts(shape, local, module, exported string, imports []frontend.Import) *frontend.Facts {
+	const start = 30
+	facts := base()
+	facts.ModulePath = "/tmp/t.ts"
+	facts.Imports = imports
+
+	arg := typed("NumericLiteral", frontend.KindNumber)
+	arg.Start = 40
+	arg.Bits = "0x3ff0000000000000"
+
+	var expr frontend.Node
+	switch shape {
+	case "call":
+		callee := ident(local, 0)
+		callee.Start = start
+		expr = node("CallExpression", callee, arg)
+		expr.Start = start
+		facts.Calls = []frontend.Call{{
+			Start: start, Length: 12, Callee: 0,
+			CalleeModule: module, CalleeName: exported,
+			Arguments: []frontend.Type{{Kind: frontend.KindNumber}},
+			Result:    frontend.Type{Kind: frontend.KindNumber},
+		}}
+	case "value":
+		expr = ident(local, 0)
+		expr.Start = start
+		facts.References = []frontend.Reference{{
+			Name: local, Start: start, Length: len(local), Target: 0,
+			TargetModule: module, TargetName: exported,
+		}}
+	}
+	stmt := node("ExpressionStatement", expr)
+	stmt.Start = 10
+	moduleNode := node("Block", stmt)
+	facts.Module = &moduleNode
+	return facts
+}
+
+// TestCrossModuleUsesShareOneRule 把同一组解析结果分别以调用和值引用两种
+// 形状检查：两者必须给出一样的放行结论，并且只有对上一条真实值导入才放行。
+//
+// 前端的 target() 会把标准库声明文件也写成模块名（isFinite 落在
+// bundled:///libs/lib.es5.d.ts），只凭 CalleeModule 非空放行会让降低阶段
+// 拿到 Target 为 0 的调用，最后报成 lower.unknown-callee 内部故障。
+func TestCrossModuleUsesShareOneRule(t *testing.T) {
+	const bundled = "bundled:///libs/lib.es5.d.ts"
+	const project = "/tmp/lib.ts"
+	const other = "/tmp/other.ts"
+
+	imp := func(local, exported, module string, typeOnly bool) frontend.Import {
+		return frontend.Import{Local: local, Imported: exported, Module: module, TypeOnly: typeOnly, Start: 1, Length: 5}
+	}
+	cases := []struct {
+		name     string
+		module   string
+		exported string
+		local    string
+		imports  []frontend.Import
+		wantPass bool
+	}{
+		{"标准库全局函数", bundled, "isFinite", "isFinite", nil, false},
+		{"标准库全局值", bundled, "Infinity", "Infinity", nil, false},
+		{"项目模块但没有导入", project, "helper", "helper", nil, false},
+		{"导出名对不上导入", project, "other", "helper", []frontend.Import{imp("helper", "helper", project, false)}, false},
+		{"模块路径对不上导入", other, "helper", "helper", []frontend.Import{imp("helper", "helper", project, false)}, false},
+		{"本地名对不上导入", project, "helper", "helper", []frontend.Import{imp("h", "helper", project, false)}, false},
+		{"类型导入不能当值用", project, "helper", "helper", []frontend.Import{imp("helper", "helper", project, true)}, false},
+		{"当前模块不是跨模块", "/tmp/t.ts", "helper", "helper", []frontend.Import{imp("helper", "helper", "/tmp/t.ts", false)}, false},
+		{"项目模块的普通导入", project, "helper", "helper", []frontend.Import{imp("helper", "helper", project, false)}, true},
+		{"项目模块的重命名导入", project, "helper", "h", []frontend.Import{imp("h", "helper", project, false)}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			for _, shape := range []string{"call", "value"} {
+				findings := check(t, crossModuleFacts(shape, c.local, c.module, c.exported, c.imports))
+				pass := len(findings) == 0
+				if pass != c.wantPass {
+					t.Fatalf("%s：放行=%t，期望 %t；诊断 %v", shape, pass, c.wantPass, codes(findings))
+				}
+				if !c.wantPass {
+					code := "cap.unknown-callee"
+					if shape == "value" {
+						code = "cap.unknown-name"
+					}
+					wantCode(t, findings, code)
+				}
+			}
+		})
+	}
+}
+
+// TestLocalCallWithSameModuleTargetPasses 确认本文件函数的调用不受跨模块
+// 白名单影响：Callee 已经指向本文件声明，走的是普通调用分支。
+func TestLocalCallWithSameModuleTargetPasses(t *testing.T) {
+	facts := base()
+	facts.ModulePath = "/tmp/t.ts"
+	a := typed("NumericLiteral", frontend.KindNumber)
+	a.Start = 20
+	a.Bits = "0x3ff0000000000000"
+	b := a
+	b.Start = 24
+	call := node("CallExpression", ident("add", 1), a, b)
+	call.Start = 30
+	stmt := node("ExpressionStatement", call)
+	stmt.Start = 10
+	moduleNode := node("Block", stmt)
+	facts.Module = &moduleNode
+	facts.Calls = []frontend.Call{{
+		Start: 30, Length: 12, Callee: 1,
+		CalleeModule: "/tmp/t.ts", CalleeName: "add",
+		Arguments: []frontend.Type{{Kind: frontend.KindNumber}, {Kind: frontend.KindNumber}},
+		Result:    frontend.Type{Kind: frontend.KindNumber},
+	}}
+	if findings := check(t, facts); len(findings) != 0 {
+		t.Fatalf("本文件函数调用不应被拒绝：%v", codes(findings))
+	}
+}
+
 func TestTypeOnlyImportAllowed(t *testing.T) {
 	facts := base()
 	facts.Module = &frontend.Node{Kind: "Block", Start: 0, Length: 10, Children: []frontend.Node{

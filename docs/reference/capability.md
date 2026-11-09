@@ -54,7 +54,7 @@ function neverCalled(n: number): number {
 | --- | --- | --- |
 | 声明 | `function`、参数、顶层 `const`、函数体内 `const` 与已初始化的 `let` | 参数、常量与局部值限 `number`、`boolean`，返回值限 `number`、`boolean` 或 `void`；模块级 `let` 与 `var` 拒绝；固定入口名 `main` 不能由用户占用 |
 | 运算 | `+` `-` `*` `/`，数字字面量上的一元 `-` `+`、`!`，比较 `<` `<=` `>` `>=` `===` `!==`，短路 `&&` `\|\|`，三元式 `? :` | 有序比较只接受 `number`；严格相等要求两侧同类型；`&&` / `\|\|` 两侧都必须是 `boolean`；三元式的条件必须是 `boolean`，两臂同类型；一元 `-` / `+` 不接受变量或一般表达式 |
-| 调用 | 本文件内声明的函数，实参个数与形参一致 | 不支持函数值、方法调用 |
+| 调用 | 本文件内声明的函数，或经值导入绑定到项目模块导出的函数；实参个数与形参一致 | 不支持函数值、方法调用，也不支持标准库全局函数 |
 | 语句 | `return`、表达式语句、语句块、`if` / `else` / `else if`、`while`、`break` / `continue`、分支内 `const` 与已初始化的 `let`、独立的简单赋值 | 表达式语句的结果被丢弃；`if` / `while` 的条件必须是 `boolean`；`break` / `continue` 只能作用于最近循环 |
 | 输出 | `console.log(<number 或 boolean>)` | 必须是内置 `console`，见下 |
 
@@ -97,7 +97,7 @@ const x = announce(1);     // 拒绝：void 没有值可以绑
 | `cap.any` | 参数、返回值或常量声明为 `any` / `unknown` |
 | `cap.type-escape` | `as`、`<T>x`、后缀 `!`（非空断言）、`satisfies` 这类绕过检查的写法 |
 | `cap.unsupported-syntax` | 对象、数组、字符串、`for` / `do`、未初始化的 `let`、`var`、`new`、嵌套函数等本阶段不支持的语法 |
-| `cap.unknown-callee` | 调用目标不是本文件声明的函数，也不是 `console.log` |
+| `cap.unknown-callee` | 调用目标不是本文件声明的函数、不是 `console.log`，也没有对上一条值导入绑定的项目模块导出 |
 | `cap.forbidden-global` | 调用 `eval` |
 | `cap.shadowed-console` | `console` 被本文件的声明遮蔽 |
 | `cap.bad-console-call` | `console.log` 的参数不是恰好一个 `number` 或 `boolean` |
@@ -112,7 +112,7 @@ const x = announce(1);     // 拒绝：void 没有值可以绑
 | `cap.inc-dec` | 自增自减 `++` / `--` |
 | `cap.labeled-jump` | 带标签的 `break` / `continue` 或带标签语句 |
 | `cap.loop-target` | `break` / `continue` 不在循环里 |
-| `cap.unknown-name` | 引用了本文件之外的名称 |
+| `cap.unknown-name` | 引用了本文件之外的名称，且没有对上一条值导入绑定的项目模块导出 |
 | `cap.arg-count` | 实参个数与函数声明的形参个数不一致 |
 | `cap.void-value` | 把 void 调用当作值使用：实参、操作数、返回值、常量初始值 |
 | `cap.bad-type` | 声明的类型不在本阶段范围内，例如 `string` 参数；或 `!` 的操作数不是 `boolean`、`if` 的条件不是 `boolean`、`&&` / `\|\|` 的操作数不是 `boolean` |
@@ -130,6 +130,20 @@ const console = { log: (x: number) => x };
 那么 `console.log(42)` 调用的是用户的函数，不是输出。能力检查因此不看名字，而是看 `console` 这个标识符解析到了哪里：解析到本文件里的声明就是遮蔽，按 `cap.shadowed-console` 拒绝。
 
 这条检查与输出是否已实现无关：能力检查的职责是判断「这段程序能不能进后端」。输出本身在 02.06 已经可用，格式见[输出格式](output.md)。
+
+## 跨模块引用怎么核对
+
+前端事实里的 `CalleeModule` / `CalleeName` 和 `TargetModule` / `TargetName` 来自符号声明所在的文件。标准库也有声明文件，所以 `isFinite(1)` 的调用事实长这样：
+
+```json
+{"callee": 0, "calleeModule": "bundled:///libs/lib.es5.d.ts", "calleeName": "isFinite"}
+```
+
+只看「模块名非空」就把它当成跨模块调用放行，降低阶段会拿到一个 `Target` 为 0 的调用，最后报 `lower.unknown-callee` 内部故障——这是能力检查漏判，不该让后端背锅。反过来，真正能落到 NIR 的跨模块引用是 `import { helper as h } from "./lib.ts"; h(1)`，事实里的 `calleeName` 是导出名 `helper`，源码里写的是本地名 `h`。
+
+能力检查因此只认一条规则：把前端解析出的 `(模块, 导出名)` 连同源码里的本地名，一起对本文件的**值导入**表核对，三者完全对上才放行。类型导入不算值绑定；模块名等于当前模块的，说明声明身份缺失，同样拒绝。`Identifier` 查 `References`、`CallExpression` 查 `Calls`，但两者最后都走这一套判定，不会出现「调用放行、名字引用拒绝」的分叉。导入指向的目标模块是否真的导出了这个名字，由[模块符号表](module-bindings.md)在合并之前用目标模块的事实再复核一次。
+
+`isFinite`、`NaN`、`Infinity` 这类库符号因此按 `cap.unknown-callee` 或 `cap.unknown-name` 退出 3，和 `eval` 一样属于「写法合法但后端不支持」，而不是内部故障。
 
 ## 检查不做什么
 

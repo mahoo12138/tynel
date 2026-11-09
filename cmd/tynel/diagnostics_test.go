@@ -293,6 +293,61 @@ func TestDependencySyntaxErrorNotMaskedByModuleProbe(t *testing.T) {
 	}
 }
 
+// TestBuiltinGlobalCallIsCapabilityError 走真实前端确认：标准库全局函数的
+// 声明文件也会被 target() 算成 CalleeModule，但项目里没有导入能接住它。
+// 它必须在能力检查阶段按退出 3 拒绝，不能溜到降低阶段变成内部故障。
+func TestBuiltinGlobalCallIsCapabilityError(t *testing.T) {
+	root := realRepoRoot(t)
+	dir, err := os.MkdirTemp(filepath.Join(root, ".work"), "global-call-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	writeSource(t, filepath.Join(dir, "main.ts"), "console.log(isFinite(1));\n")
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"check", "--root", dir, "main.ts"}, &stdout, &stderr)
+	if code != diagnostic.ExitCapability {
+		t.Fatalf("退出状态为 %d，期望 %d；stderr=%s", code, diagnostic.ExitCapability, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "cap.unknown-callee") {
+		t.Errorf("应报 cap.unknown-callee：%s", stderr.String())
+	}
+	for _, unwanted := range []string{"lower.unknown-callee", "host.failed"} {
+		if strings.Contains(stderr.String(), unwanted) {
+			t.Errorf("不应出现 %s：%s", unwanted, stderr.String())
+		}
+	}
+}
+
+// TestProjectImportsStillResolve 确认这次收紧只针对「凭模块名放行」这一条：
+// 真实项目模块的跨模块调用与顶层 const 引用仍然能一路走到原生产物。
+// 重命名导入在这里很关键：CalleeName 是导出名，源码里写的却是本地名。
+func TestProjectImportsStillResolve(t *testing.T) {
+	root := realRepoRoot(t)
+	dir, err := os.MkdirTemp(filepath.Join(root, ".work"), "project-import-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	writeSource(t, filepath.Join(dir, "lib.ts"),
+		"export function helper(n: number): number { return n + 1; }\n"+
+			"export const offset: number = 5;\n")
+	writeSource(t, filepath.Join(dir, "main.ts"),
+		"import { helper as h, offset as o } from \"./lib.ts\";\n"+
+			"console.log(h(1) + o);\n")
+
+	output := filepath.Join(dir, "app")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"build", "main.ts", "--root", dir, "-o", output}, &stdout, &stderr)
+	if code != diagnostic.ExitOK {
+		t.Fatalf("构建退出状态为 %d，期望 0；stderr=%s", code, stderr.String())
+	}
+	if got := runBuilt(t, output); got != "7\n" {
+		t.Fatalf("产物输出 %q，期望 %q", got, "7\n")
+	}
+}
+
 func TestBadDiagnosticsMode(t *testing.T) {
 	var out, errOut bytes.Buffer
 	code := run([]string{"--diagnostics=xml", "version"}, &out, &errOut)

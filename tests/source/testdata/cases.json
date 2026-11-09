@@ -53,6 +53,8 @@
     {"name": "combo-mixed", "file": "combo-mixed.ts", "kind": "program", "stdout": "15\n6\n", "note": "循环、赋值、短路与三元式组合"},
     {"name": "syntax-error", "file": "errors/syntax.ts", "kind": "source-error", "code": "1005", "note": "截断函数签名是语法错误"},
     {"name": "console-arity", "file": "errors/console-arity.ts", "kind": "capability", "code": "cap.bad-console-call", "note": "受限输出只接受一个实参"},
+    {"name": "global-call", "file": "errors/global-call.ts", "kind": "capability", "code": "cap.unknown-callee", "note": "标准库全局函数不是项目模块导出"},
+    {"name": "global-value", "file": "errors/global-value.ts", "kind": "capability", "code": "cap.unknown-name", "note": "标准库全局值不是项目模块导出"},
     {"name": "type-error", "file": "errors/type.ts", "kind": "source-error", "code": "2322", "note": "字符串赋给 number"},
     {"name": "bool-arg", "file": "errors/bool-arg.ts", "kind": "source-error", "code": "2345", "note": "boolean 参数收到 number"},
     {"name": "mixed-compare", "file": "errors/mixed-compare.ts", "kind": "source-error", "code": "2367", "note": "number 与 boolean 比较"},

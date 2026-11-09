@@ -25,7 +25,7 @@ func Check(snapshot *source.Snapshot, facts *frontend.Facts) ([]*diagnostic.Diag
 	if err := facts.Validate(); err != nil {
 		return nil, err
 	}
-	c := &checker{snapshot: snapshot, facts: facts}
+	c := &checker{snapshot: snapshot, facts: facts, imports: valueImports(facts)}
 	for _, alias := range facts.Aliases {
 		switch alias.Kind {
 		case frontend.KindNumber, frontend.KindBoolean:
@@ -64,10 +64,33 @@ func Check(snapshot *source.Snapshot, facts *frontend.Facts) ([]*diagnostic.Diag
 type checker struct {
 	snapshot   *source.Snapshot
 	facts      *frontend.Facts
+	imports    map[importKey]bool
 	findings   []*diagnostic.Diagnostic
 	err        error
 	inFunction bool
 	loopDepth  int
+}
+
+// importKey 是一条值导入绑定的完整身份：目标模块的解析后路径、那个模块
+// 导出表里的名字、以及本文件里写出来的本地名。少任何一段都会把不同来源的
+// 符号混成一个。
+type importKey struct {
+	module   string
+	exported string
+	local    string
+}
+
+// valueImports 收集本文件的值导入。类型导入只在类型空间里存在，不能当作
+// 运行时调用或值的来源；这里就把它排除掉。
+func valueImports(facts *frontend.Facts) map[importKey]bool {
+	out := make(map[importKey]bool, len(facts.Imports))
+	for _, imp := range facts.Imports {
+		if imp.TypeOnly {
+			continue
+		}
+		out[importKey{module: imp.Module, exported: imp.Imported, local: imp.Local}] = true
+	}
+	return out
 }
 
 // EntryName 是固定宿主入口使用的名字。用户函数不能占用它；这不是 TypeScript
@@ -439,7 +462,10 @@ func (c *checker) assignment(n *frontend.Node) {
 
 func (c *checker) identifier(n *frontend.Node) {
 	decl, ok := c.facts.Declaration(n.Target)
-	if (!ok || n.Target == 0) && !c.inFunction && c.crossModuleRef(n) {
+	// 跨模块值引用只允许在模块初始化阶段；函数捕获模块值仍由
+	// module.captured-variable 拒绝。跨模块函数调用不受这条限制，它会被
+	// 重映射成 NIR 里的全局函数 ID，不需要闭包环境。
+	if (!ok || n.Target == 0) && !c.inFunction && c.crossModuleUse(n, n.Name) {
 		return
 	}
 	if !ok || n.Target == 0 {
@@ -459,26 +485,45 @@ func (c *checker) identifier(n *frontend.Node) {
 	}
 }
 
-// crossModuleRef 查事实里的跨模块值引用。只允许在模块初始化阶段使用；
-// 函数捕获模块值仍由 module.captured-variable 拒绝。
-func (c *checker) crossModuleRef(n *frontend.Node) bool {
-	for _, ref := range c.facts.References {
-		if ref.Start == n.Start && ref.TargetModule != "" && ref.TargetName != "" {
-			return true
+// crossModuleUse 判断一次引用能不能落到项目模块里真实导出的值上。
+//
+// 前端的 target() 从符号声明所在的文件取模块名，标准库声明文件也一样会给
+// 出这个字段：`isFinite` 的 CalleeModule 是 bundled:///libs/lib.es5.d.ts，
+// `Infinity` 的 TargetModule 也是它。所以「模块名非空」根本不是跨模块调用
+// 的证据，只凭它放行会让降低阶段拿到一个 Target 为 0 的调用，最终报成
+// lower.unknown-callee 这种内部故障。
+//
+// 能对上本文件的一条值导入，才说明目标模块是依赖图里解析过的真实模块、
+// 名字在那个模块的导出表里解析到了声明（modules.Build 之后还会拿目标模块
+// 的事实再复核一次）。Identifier 与 CallExpression 共用这套判定：前者查
+// References，后者查 Calls，两者取出的 (模块, 导出名) 连源码里的本地名
+// 一起交给 resolvesImport，不会出现两套不同的放行规则。
+func (c *checker) crossModuleUse(n *frontend.Node, local string) bool {
+	switch n.Kind {
+	case "Identifier":
+		for _, ref := range c.facts.References {
+			if ref.Start == n.Start && ref.Name == local {
+				return c.resolvesImport(ref.TargetModule, ref.TargetName, local)
+			}
+		}
+	case "CallExpression":
+		for _, call := range c.facts.Calls {
+			if call.Start == n.Start {
+				return c.resolvesImport(call.CalleeModule, call.CalleeName, local)
+			}
 		}
 	}
 	return false
 }
 
-// crossModuleCall 查事实里的跨模块调用记录。语法节点上的 Target 是 0，
-// 但 Call.CalleeModule 已经由前端检查器填好。
-func (c *checker) crossModuleCall(n *frontend.Node) bool {
-	for _, call := range c.facts.Calls {
-		if call.Start == n.Start && call.CalleeModule != "" && call.CalleeName != "" {
-			return true
-		}
+// resolvesImport 核对一份前端解析结果是否对应本文件的一条值导入。
+// 模块名等于当前模块时不是跨模块引用：那种调用应该由本文件的声明接住，
+// 落到这里说明声明身份缺失，必须拒绝。
+func (c *checker) resolvesImport(module, exported, local string) bool {
+	if module == "" || exported == "" || local == "" || module == c.facts.ModulePath {
+		return false
 	}
-	return false
+	return c.imports[importKey{module: module, exported: exported, local: local}]
 }
 
 func (c *checker) call(n *frontend.Node) {
@@ -496,7 +541,7 @@ func (c *checker) call(n *frontend.Node) {
 			return
 		}
 		decl, ok := c.facts.Declaration(callee.Target)
-		if (!ok || callee.Target == 0) && c.crossModuleCall(n) {
+		if (!ok || callee.Target == 0) && c.crossModuleUse(n, callee.Name) {
 			for i := range args {
 				c.valueNode(&args[i], "调用 "+callee.Name+" 的实参")
 			}
