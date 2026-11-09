@@ -11,6 +11,7 @@ package frontend
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
 )
@@ -182,13 +183,18 @@ type Facts struct {
 }
 
 // Decode 解析适配层输出的事实。未知字段直接拒绝：字段名对不上说明适配层
-// 与本包的约定已经漂移，静默忽略会让一半事实悄悄消失。
+// 与本包的约定已经漂移，静默忽略会让一半事实悄悄消失。第一份 JSON 之后再读
+// 一次，只有 io.EOF 才算完整输入，尾随内容同样拒绝——与 pipeline.Decode 和
+// nir.DecodeBytes 一致，协议层既然严格核对字段，就不该忽略文档之后的字节。
 func Decode(data []byte) (*Facts, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var f Facts
 	if err := dec.Decode(&f); err != nil {
 		return nil, diagnostic.New(diagnostic.Internal, "facts.decode", "事实不是预期的 JSON 结构").WithDetail(err.Error())
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return nil, diagnostic.New(diagnostic.Internal, "facts.trailing", "事实 JSON 文档结束后还有多余内容")
 	}
 	if err := f.Validate(); err != nil {
 		return nil, err

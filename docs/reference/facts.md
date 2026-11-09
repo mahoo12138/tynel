@@ -170,6 +170,8 @@ const doubled: number = scale(answer);
 
 事实不一致属于**内部故障**（退出 5），不是源码错误。用户写错代码时前端会给诊断；事实自相矛盾说明编译器自己出了问题。
 
+`Decode` 在一致性校验之前还严格核对 JSON 外壳：`DisallowUnknownFields` 拒绝未知字段（`facts.decode`），第一份文档读完后再读一次，只有 `io.EOF` 才算完整输入，尾随内容按 `facts.trailing` 拒绝。这与 `pipeline.Decode`、`nir.DecodeBytes` 一致——协议层既然已经逐字段核对，就不该悄悄忽略文档之后的字节。文档之后的空白不算内容，仍然接受；这两类拒绝同样属于内部故障。
+
 ## 会话身份与纯数据
 
 每条事实带一个随机的 `session` 标识。两次检查的声明 ID 各自从 1 开始，把两份事实拼在一起会出现「两个 ID 3 指向不同声明」，`Combine` 因此拒绝不同会话或不同文件的合并。

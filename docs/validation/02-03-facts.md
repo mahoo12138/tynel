@@ -336,3 +336,39 @@ $ gofmt -l bridge/tsgo/_adapter/facts.go compiler/capability/capability.go compi
 四个失败的消费者用例都是 Windows 平台差异，且与匿名函数无关：`TestTypeErrorCarriesCodeAndPosition` 与 `TestDependencyDiagnosticsAreReported` 断言用 `filepath.Join` 的反斜杠路径，前端诊断给的是正斜杠（`C:\…` 对 `C:/…`）；`TestPositionAfterChinesePrefixEndToEnd` 与 `TestTruncatedSourceIsSyntaxError` 的行列在本机算成 `0:0`。纯编译器测试里 `graph` 与 `project` 也有既有 Windows 失败：创建符号链接需要「客户端没有持有的特权」，`TestResolveRejects/绝对路径越界` 用的 `/tmp/outside.ts` 在 Windows 不存在，报 `project.missing` 而非 `project.outside-root`。这两个包本次未改动。
 
 本次未覆盖：完整的 `tests/source`（`TestErrors` / `TestPrograms`）、`./tools/test` 与 `./bridge/tsgo/check` 依赖隔离 SDK 报告或 zsh 驱动，只能在官方 `darwin/arm64` 上跑，本机仅验证到 `TestManifest`、真实前端消费者套件、适配包单测与纯编译器测试；默认导出仍不在子集内，没有建立独立导出身份；嵌套函数声明也由同一骨架分支拒绝，未单独区分子集措辞；本次只在 `windows/amd64` 上验证，`darwin/arm64` 的复核待补。适配包改动需要 `./tools/toolchain/prep --frontend-only` 重新同步到 `.work` 里的副本。
+
+## 交付后的事实解码尾随内容（2026-11-10）
+
+本节记录 `Facts.Decode()` 拒绝 JSON 尾随内容的一次协议加固，执行时间是 2026-11-10 00:22 CST，代码基于提交 `0ae5550` 的工作树。环境与上一节相同：Windows 10 x64、缓存的 go1.27.3 windows/amd64、锁定的前端归档。
+
+`Decode()` 过去只调用一次 `dec.Decode(&f)`，第一份 JSON 通过校验后，文档之后的字节被静默忽略。`pipeline.Decode()` 与 `nir.DecodeBytes()` 都会在第一次解码后再读一次并确认 `io.EOF`，事实层既然已经用 `DisallowUnknownFields` 严格核对字段，就没有理由放过尾随内容。形如 `{…合法事实…} {"unexpected":true}` 的输入，修复前只取第一份、丢掉第二份。
+
+修法照搬 `pipeline.Decode()` 的形状：第一次 `Decode` 成功后再 `dec.Decode(&struct{}{})`，只有返回 `io.EOF` 才算完整输入，否则按 `facts.trailing` 拒绝（内部故障，退出 5），与 `nir.trailing` 平行。文档之后只有空白时第二次解码落在 `io.EOF`，仍然接受。这条检查在 `Validate()` 之前，尾随内容不会进入一致性校验。
+
+`compiler/frontend/facts_test.go` 新增 `TestDecodeRejectsTrailingContent`：先确认合法样例能解码，再分别追加尾随对象、第二份完整文档、垃圾文本与标量，四种都断言 `facts.trailing` 且类别为内部故障；最后追加纯空白断言仍被接受。把 `facts.go` 临时换回 `HEAD` 的原始实现后，四个子用例全部以「实际 `<nil>`」失败——原始 `Decode` 接受了尾随内容、没有报错：
+
+```text
+--- FAIL: TestDecodeRejectsTrailingContent/尾随对象
+    facts_test.go:140: 尾随内容应按 facts.trailing 拒绝，实际 <nil>
+--- FAIL: TestDecodeRejectsTrailingContent/第二份文档
+--- FAIL: TestDecodeRejectsTrailingContent/尾随垃圾
+--- FAIL: TestDecodeRejectsTrailingContent/尾随标量
+```
+
+恢复修复后的检查：
+
+```text
+# 事实包与依赖它的六个包一起跑，确认严格解码没有误伤正常事实。
+$ GOTOOLCHAIN=go1.27.3 go test -count=1 ./compiler/frontend ./compiler/capability ./compiler/lower ./compiler/merge ./compiler/modules ./compiler/pipeline ./compiler/nir
+ok  	github.com/Mahoo12138/tynel/compiler/frontend	2.164s
+（其余六个包同样 ok）
+
+$ GOTOOLCHAIN=go1.27.3 go vet ./compiler/frontend
+（无输出）
+$ gofmt -l compiler/frontend/facts.go compiler/frontend/facts_test.go
+（无输出）
+```
+
+真实前端没有回归：消费者套件仍是 26 个顶层用例通过、4 个失败，失败项与上一节完全相同（Windows 路径分隔符与行列的既有问题），事实、能力夹具与降低用例全部通过——适配层产出的本就是单份 JSON 文档，尾随检查不影响正常路径。
+
+本次未覆盖：这是协议层加固，正常生成的单份事实不受影响，构造的尾随输入只由单测覆盖，没有端到端夹具；完整 `tests/source` 与 `./bridge/tsgo/check` 仍只在官方 `darwin/arm64` 上跑；本次只在 `windows/amd64` 上验证。`docs/reference/facts.md` 的「校验做什么」补了 JSON 外壳严格性一段（`facts.decode` 与 `facts.trailing`）。

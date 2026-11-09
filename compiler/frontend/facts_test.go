@@ -110,6 +110,46 @@ func TestDecodeRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+// TestDecodeRejectsTrailingContent 确认第一份合法 JSON 之后的内容不会被静默
+// 忽略：再读一次必须落在 io.EOF，否则按 facts.trailing 拒绝。文档之后的空白
+// 不算内容，仍然接受。
+func TestDecodeRejectsTrailingContent(t *testing.T) {
+	data, err := json.Marshal(sampleFacts())
+	if err != nil {
+		t.Fatalf("序列化失败：%v", err)
+	}
+	if _, err := Decode(data); err != nil {
+		t.Fatalf("合法事实应能解码：%v", err)
+	}
+
+	cases := []struct {
+		name    string
+		trailer string
+	}{
+		{"尾随对象", `{"unexpected":true}`},
+		{"第二份文档", string(data)},
+		{"尾随垃圾", `garbage`},
+		{"尾随标量", `123`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			forged := append(append([]byte{}, data...), []byte(c.trailer)...)
+			_, err := Decode(forged)
+			var d *diagnostic.Diagnostic
+			if !errors.As(err, &d) || d.Code != "facts.trailing" {
+				t.Fatalf("尾随内容应按 facts.trailing 拒绝，实际 %v", err)
+			}
+			if d.Category != diagnostic.Internal {
+				t.Fatalf("尾随内容属于内部故障，实际类别 %v", d.Category)
+			}
+		})
+	}
+
+	if _, err := Decode(append(append([]byte{}, data...), []byte("\n \t")...)); err != nil {
+		t.Fatalf("尾随空白应被接受：%v", err)
+	}
+}
+
 func TestCombineRejectsDifferentSessions(t *testing.T) {
 	a := sampleFacts()
 	b := sampleFacts()
