@@ -821,7 +821,9 @@
           ],
           "planSection": "PLAN.md#task-06-07",
           "status": "verified",
-          "implementationCommits": [],
+          "implementationCommits": [
+            "bea2c7f"
+          ],
           "evidence": [
             "docs/validation/06-07-mvp.md",
             "SPEC.md",
