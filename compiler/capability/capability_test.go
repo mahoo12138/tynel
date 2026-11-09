@@ -2,6 +2,7 @@ package capability
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -540,6 +541,104 @@ func TestModuleLetRejected(t *testing.T) {
 		ID: 4, Kind: frontend.DeclModuleLet, Name: "x", Start: 30, Length: 1, Type: &number, Mutable: true,
 	})
 	wantCode(t, check(t, facts), "cap.module-let")
+}
+
+// callArityFacts 造一份「模块里调用 add，带 got 个实参」的事实，第二个参数
+// 带默认值。语法骨架与 Calls 记录同步，让 Validate 与 Check 看同一份数据。
+func callArityFacts(got int) *frontend.Facts {
+	facts := base()
+	facts.ModulePath = "/tmp/t.ts"
+	facts.Declarations[2].HasDefault = true
+	args := make([]frontend.Node, got)
+	argTypes := make([]frontend.Type, got)
+	for i := range args {
+		lit := typed("NumericLiteral", frontend.KindNumber)
+		lit.Start = 40 + i*2
+		lit.Bits = "0x3ff0000000000000"
+		args[i] = lit
+		argTypes[i] = frontend.Type{Kind: frontend.KindNumber}
+	}
+	callee := ident("add", 1)
+	callee.Start = 30
+	children := append([]frontend.Node{callee}, args...)
+	call := node("CallExpression", children...)
+	call.Start = 30
+	stmt := node("ExpressionStatement", call)
+	stmt.Start = 10
+	moduleNode := node("Block", stmt)
+	facts.Module = &moduleNode
+	facts.Calls = []frontend.Call{{
+		Start: 30, Length: 12, Callee: 1,
+		Arguments: argTypes,
+		Result:    frontend.Type{Kind: frontend.KindNumber},
+	}}
+	return facts
+}
+
+func TestDefaultAndOptionalParametersAreRejected(t *testing.T) {
+	cases := []struct {
+		name     string
+		mutate   func(*frontend.Facts)
+		wantText string
+	}{
+		{"默认值", func(f *frontend.Facts) { f.Declarations[2].HasDefault = true }, "带默认值"},
+		{"可选参数", func(f *frontend.Facts) { f.Declarations[2].Optional = true }, "可选参数"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			facts := base()
+			c.mutate(facts)
+			findings := check(t, facts)
+			wantCode(t, findings, "cap.unsupported-parameter")
+			for _, d := range findings {
+				if d.Code == "cap.unsupported-parameter" && strings.Contains(d.Message, c.wantText) {
+					return
+				}
+			}
+			t.Fatalf("诊断里没有说明 %q：%v", c.wantText, codes(findings))
+		})
+	}
+}
+
+// TestDefaultParameterRejectedEvenWithFullArguments 确认策略落在声明上：后端
+// 还不会合成缺省值，就算调用把两个实参都给齐，带默认值的参数也照样拒绝。
+func TestDefaultParameterRejectedEvenWithFullArguments(t *testing.T) {
+	findings := check(t, callArityFacts(2))
+	wantCode(t, findings, "cap.unsupported-parameter")
+	for _, d := range findings {
+		if d.Code == "cap.arg-count" {
+			t.Fatalf("实参给齐时不应再报 cap.arg-count：%v", codes(findings))
+		}
+	}
+}
+
+// TestArityRuleIsSharedWithFactsValidation 对同一份事实，确认事实校验与能力
+// 检查在实参个数上给出一致结论。add(a, b = 10) 允许 1 到 2 个实参；少一个
+// 实参是合法 TypeScript，不能再被 facts.arg-count 或 cap.arg-count 拦下。
+func TestArityRuleIsSharedWithFactsValidation(t *testing.T) {
+	for _, got := range []int{0, 1, 2, 3} {
+		t.Run(fmt.Sprintf("%d 个实参", got), func(t *testing.T) {
+			facts := callArityFacts(got)
+			wantOK := got == 1 || got == 2
+
+			validateOK := facts.Validate() == nil
+			if validateOK != wantOK {
+				t.Fatalf("事实校验放行=%t，期望 %t", validateOK, wantOK)
+			}
+			findings, err := Check(snapshot(t), facts)
+			capabilityOK := err == nil
+			if err == nil {
+				for _, d := range findings {
+					if d.Code == "cap.arg-count" {
+						capabilityOK = false
+					}
+				}
+			}
+			if capabilityOK != wantOK {
+				t.Fatalf("能力检查放行=%t，期望 %t（err=%v，诊断 %v）", capabilityOK, wantOK, err, codes(findings))
+			}
+		})
+	}
 }
 
 func TestCallArgumentCountIsChecked(t *testing.T) {

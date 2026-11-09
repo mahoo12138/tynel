@@ -69,6 +69,30 @@ const doubled: number = scale(answer);
 
 校验会核对 `mutable` 与 `kind` 是否一致；不一致报 `facts.bad-mutable`。这不是冗余字段：降低器和后续赋值只看 `mutable`，种类则用于能力检查和诊断措辞，两者分开后，手写事实也不能把 `const` 标成可写。
 
+## 参数语义与实参数量
+
+参数声明除了 ID 与类型，还带两个只在 `parameter` 上出现的标记：
+
+| 字段 | 来源 | 含义 |
+| --- | --- | --- |
+| `optional` | `a?: number` 的 `?` | 语法上的可选参数 |
+| `hasDefault` | `b: number = 10` 的初始化表达式 | 默认参数 |
+
+两者都让这个位置在调用时可以省略。事实层照实记录，是因为 `add(5)` 对 `function add(a: number, b: number = 10)` 是合法 TypeScript：只记两个参数 ID 的话，`Facts.Validate()` 会把「1 个实参 vs 2 个形参」误判成内部不一致（`facts.arg-count`），能力检查连跑都跑不到。
+
+`frontend.Arity` 是唯一的参数数量规则，事实校验与能力检查都调用 `Facts.ArityOf(callee)`：
+
+| 参数列表 | 允许的实参个数 |
+| --- | --- |
+| `a, b` | 2 |
+| `a, b = 10` | 1 或 2 |
+| `a, b?` | 1 或 2 |
+| `a = 1, b` | 2（后面还有必填参数，第一个位置不能省，要显式传 `undefined`） |
+
+下界取「最后一个必填参数的下标 + 1」。可省略的位置允许显式传 `undefined`：前端把 `undefined` 压成 `other`，粗粒度类型摘要不足以在这个位置上判定不一致。校验也只在实参确实给出的位置上比较类型，不再按形参数量去索引实参列表。
+
+这两个标记**不代表后端支持它们**。当前阶段只实现必填参数，带默认值或 `?` 的参数由能力检查按 `cap.unsupported-parameter` 拒绝，见[原生能力白名单](capability.md)。
+
 ## 事实里有什么
 
 | 部分 | 内容 |

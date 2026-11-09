@@ -55,6 +55,8 @@
     {"name": "console-arity", "file": "errors/console-arity.ts", "kind": "capability", "code": "cap.bad-console-call", "note": "受限输出只接受一个实参"},
     {"name": "global-call", "file": "errors/global-call.ts", "kind": "capability", "code": "cap.unknown-callee", "note": "标准库全局函数不是项目模块导出"},
     {"name": "global-value", "file": "errors/global-value.ts", "kind": "capability", "code": "cap.unknown-name", "note": "标准库全局值不是项目模块导出"},
+    {"name": "default-parameter", "file": "errors/default-parameter.ts", "kind": "capability", "code": "cap.unsupported-parameter", "note": "默认参数尚未实现；add(5) 不能报内部故障"},
+    {"name": "optional-parameter", "file": "errors/optional-parameter.ts", "kind": "capability", "code": "cap.unsupported-parameter", "note": "可选参数明确拒绝"},
     {"name": "type-error", "file": "errors/type.ts", "kind": "source-error", "code": "2322", "note": "字符串赋给 number"},
     {"name": "bool-arg", "file": "errors/bool-arg.ts", "kind": "source-error", "code": "2345", "note": "boolean 参数收到 number"},
     {"name": "mixed-compare", "file": "errors/mixed-compare.ts", "kind": "source-error", "code": "2367", "note": "number 与 boolean 比较"},

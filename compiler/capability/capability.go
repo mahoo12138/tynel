@@ -106,6 +106,17 @@ func (c *checker) declaration(d *frontend.Declaration) {
 		}
 		c.declaredType(d.Result, d.Start, "函数 %q 的返回类型", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindVoid)
 	case frontend.DeclParameter:
+		// 默认参数与可选参数都需要后端合成缺省值，本阶段还没实现。先在这里
+		// 明确拒绝，别让合法的 add(5) 一路走到降低阶段才报内部故障；事实层
+		// 已经放宽了参数个数，所以这两条诊断是唯一挡住它们的关卡。
+		if d.HasDefault {
+			c.report(d.Start, "cap.unsupported-parameter", "参数 %q 带默认值，本阶段只支持必填参数", d.Name)
+			return
+		}
+		if d.Optional {
+			c.report(d.Start, "cap.unsupported-parameter", "参数 %q 是可选参数，本阶段只支持必填参数", d.Name)
+			return
+		}
 		c.declaredType(d.Type, d.Start, "参数 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean)
 	case frontend.DeclConst:
 		c.declaredType(d.Type, d.Start, "常量 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean)
@@ -551,10 +562,12 @@ func (c *checker) call(n *frontend.Node) {
 			c.report(n.Start, "cap.unknown-callee", "调用目标 %q 不是本文件里声明的函数", callee.Name)
 			return
 		}
-		// 类型检查已经拦过实参个数，这里再核对一次：能力检查拿到的事实可能
-		// 不是刚从前端出来的那一份，不能假设上游一定检查过。
-		if len(args) != len(decl.Parameters) {
-			c.report(n.Start, "cap.arg-count", "调用 %q 给了 %d 个实参，函数声明有 %d 个参数", decl.Name, len(args), len(decl.Parameters))
+		// 与事实校验共用同一套参数数量规则；能力检查拿到的事实可能不是刚从
+		// 前端出来的那一份，不能假设上游一定检查过。可省略的尾部参数会先被
+		// declaration 里的 cap.unsupported-parameter 拒绝，这里只核对范围。
+		arity := c.facts.ArityOf(decl)
+		if !arity.Allows(len(args)) {
+			c.report(n.Start, "cap.arg-count", "调用 %q 给了 %d 个实参，函数声明需要 %d 到 %d 个", decl.Name, len(args), arity.Required, arity.Total)
 			return
 		}
 		for i := range args {

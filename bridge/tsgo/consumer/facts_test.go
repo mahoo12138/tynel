@@ -126,3 +126,59 @@ func TestFactsFromDifferentSessionsCannotCombine(t *testing.T) {
 		t.Fatal("不同会话的事实不能合并")
 	}
 }
+
+// TestFactsRecordParameterSemantics 确认适配层把 `?` 与初始化表达式分别记进
+// 参数声明。少一个实参的 add(1) 因此能通过事实校验，而不是撞上
+// facts.arg-count 内部故障。
+func TestFactsRecordParameterSemantics(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "params.ts")
+	src := `function add(a: number, b: number = 10, c?: number): number {
+  return a;
+}
+console.log(add(1));
+`
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	facts := loadFacts(t, path)
+
+	byName := map[string]frontend.Declaration{}
+	for _, d := range facts.Declarations {
+		if d.Kind == frontend.DeclParameter {
+			byName[d.Name] = d
+		}
+	}
+	for _, name := range []string{"a", "b", "c"} {
+		if _, ok := byName[name]; !ok {
+			t.Fatalf("缺少参数 %q 的声明：%+v", name, facts.Declarations)
+		}
+	}
+	if byName["a"].Optional || byName["a"].HasDefault {
+		t.Errorf("必填参数 a 不应带语义标记：%+v", byName["a"])
+	}
+	if !byName["b"].HasDefault || byName["b"].Optional {
+		t.Errorf("b 应只有 hasDefault：%+v", byName["b"])
+	}
+	if !byName["c"].Optional || byName["c"].HasDefault {
+		t.Errorf("c 应只有 optional：%+v", byName["c"])
+	}
+
+	var callee *frontend.Declaration
+	for i := range facts.Declarations {
+		if facts.Declarations[i].Kind == frontend.DeclFunction && facts.Declarations[i].Name == "add" {
+			callee = &facts.Declarations[i]
+		}
+	}
+	if callee == nil {
+		t.Fatal("没有 add 的声明")
+	}
+	if got, want := facts.ArityOf(callee), (frontend.Arity{Required: 1, Total: 3}); got != want {
+		t.Errorf("ArityOf = %+v，期望 %+v", got, want)
+	}
+	for _, call := range facts.Calls {
+		if call.Callee == callee.ID && !facts.ArityOf(callee).Allows(len(call.Arguments)) {
+			t.Errorf("add 的 %d 个实参应被允许：%+v", len(call.Arguments), call)
+		}
+	}
+}

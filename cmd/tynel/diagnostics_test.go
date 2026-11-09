@@ -348,6 +348,52 @@ func TestProjectImportsStillResolve(t *testing.T) {
 	}
 }
 
+// TestDefaultParameterIsCapabilityError 确认默认参数不管出现在入口还是依赖
+// 模块，都按能力限制拒绝。少一个实参的 add(5) 是合法 TypeScript，不能落到
+// facts.arg-count 或 lower.bad-arity 这种内部故障上。
+func TestDefaultParameterIsCapabilityError(t *testing.T) {
+	root := realRepoRoot(t)
+	cases := []struct {
+		name string
+		lib  bool
+	}{
+		{"入口模块", false},
+		{"依赖模块", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir, err := os.MkdirTemp(filepath.Join(root, ".work"), "default-param-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(dir) })
+			if c.lib {
+				writeSource(t, filepath.Join(dir, "lib.ts"),
+					"export function add(a: number, b: number = 10): number { return a + b; }\n")
+				writeSource(t, filepath.Join(dir, "main.ts"),
+					"import { add } from \"./lib.ts\";\nconsole.log(add(5));\n")
+			} else {
+				writeSource(t, filepath.Join(dir, "main.ts"),
+					"function add(a: number, b: number = 10): number { return a + b; }\nconsole.log(add(5));\n")
+			}
+
+			var stdout, stderr bytes.Buffer
+			code := run([]string{"check", "--root", dir, "main.ts"}, &stdout, &stderr)
+			if code != diagnostic.ExitCapability {
+				t.Fatalf("退出状态为 %d，期望 %d；stderr=%s", code, diagnostic.ExitCapability, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), "cap.unsupported-parameter") {
+				t.Errorf("应报 cap.unsupported-parameter：%s", stderr.String())
+			}
+			for _, unwanted := range []string{"facts.arg-count", "lower.bad-arity", "host.failed"} {
+				if strings.Contains(stderr.String(), unwanted) {
+					t.Errorf("不应出现 %s：%s", unwanted, stderr.String())
+				}
+			}
+		})
+	}
+}
+
 func TestBadDiagnosticsMode(t *testing.T) {
 	var out, errOut bytes.Buffer
 	code := run([]string{"--diagnostics=xml", "version"}, &out, &errOut)

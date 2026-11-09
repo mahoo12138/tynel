@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Mahoo12138/tynel/compiler/capability"
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
 	"github.com/Mahoo12138/tynel/compiler/frontend"
 	"github.com/Mahoo12138/tynel/compiler/graph"
@@ -331,6 +332,16 @@ func (a *app) loadMerged(g *graph.Graph) (*nir.Module, error) {
 		snapshot, err := file.Snapshot(source.DefaultLimits())
 		if err != nil {
 			return nil, err
+		}
+		// 前端宿主只对入口跑能力检查。依赖模块里的写法（比如带默认值的参数）
+		// 同样要过这道闸，否则合并降低会拿到少一个实参的调用，报成
+		// lower.bad-arity 内部故障，而不是能力限制。
+		findings, err := capability.Check(snapshot, item)
+		if err != nil {
+			return nil, err
+		}
+		if len(findings) > 0 {
+			return nil, findings[0]
 		}
 		facts = append(facts, item)
 		units = append(units, merge.Unit{Snapshot: snapshot, Facts: item})

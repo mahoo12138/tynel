@@ -104,6 +104,12 @@ type Export struct {
 }
 
 // Declaration 是一个声明。ID 在模块内唯一；跨模块身份是 Module 加 ID。
+//
+// Optional 与 HasDefault 只属于 DeclParameter：Optional 是语法上的 `?`，
+// HasDefault 是参数带初始化表达式。两者都让这个位置在调用时可以省略，但
+// 本阶段都不支持，由能力检查按 cap.unsupported-parameter 拒绝。事实层照实
+// 记录，是为了让 add(5) 这种合法调用先通过事实自洽校验，而不是被当成
+// 内部故障。
 type Declaration struct {
 	ID         int      `json:"id"`
 	Module     string   `json:"module,omitempty"`
@@ -117,6 +123,8 @@ type Declaration struct {
 	Parameters []int    `json:"parameters,omitempty"`
 	Body       *Node    `json:"body,omitempty"`
 	Mutable    bool     `json:"mutable,omitempty"`
+	Optional   bool     `json:"optional,omitempty"`
+	HasDefault bool     `json:"hasDefault,omitempty"`
 }
 
 // Alias 是一个类型别名或接口声明。Kind 是类型空间的归类：number、boolean、

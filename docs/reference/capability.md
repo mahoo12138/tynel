@@ -52,7 +52,7 @@ function neverCalled(n: number): number {
 
 | 类别 | 支持 | 说明 |
 | --- | --- | --- |
-| 声明 | `function`、参数、顶层 `const`、函数体内 `const` 与已初始化的 `let` | 参数、常量与局部值限 `number`、`boolean`，返回值限 `number`、`boolean` 或 `void`；模块级 `let` 与 `var` 拒绝；固定入口名 `main` 不能由用户占用 |
+| 声明 | `function`、必填参数、顶层 `const`、函数体内 `const` 与已初始化的 `let` | 参数、常量与局部值限 `number`、`boolean`，返回值限 `number`、`boolean` 或 `void`；默认参数、可选参数、模块级 `let` 与 `var` 拒绝；固定入口名 `main` 不能由用户占用 |
 | 运算 | `+` `-` `*` `/`，数字字面量上的一元 `-` `+`、`!`，比较 `<` `<=` `>` `>=` `===` `!==`，短路 `&&` `\|\|`，三元式 `? :` | 有序比较只接受 `number`；严格相等要求两侧同类型；`&&` / `\|\|` 两侧都必须是 `boolean`；三元式的条件必须是 `boolean`，两臂同类型；一元 `-` / `+` 不接受变量或一般表达式 |
 | 调用 | 本文件内声明的函数，或经值导入绑定到项目模块导出的函数；实参个数与形参一致 | 不支持函数值、方法调用，也不支持标准库全局函数 |
 | 语句 | `return`、表达式语句、语句块、`if` / `else` / `else if`、`while`、`break` / `continue`、分支内 `const` 与已初始化的 `let`、独立的简单赋值 | 表达式语句的结果被丢弃；`if` / `while` 的条件必须是 `boolean`；`break` / `continue` 只能作用于最近循环 |
@@ -71,6 +71,14 @@ function neverCalled(n: number): number {
 简单赋值只支持 `x = value;` 这种独立语句，目标必须是可变的 `let`，右值与目标同类型。给 `const`、参数或模块常量赋值报 `cap.assign-immutable`；赋值出现在表达式里报 `cap.assignment-value`；复合赋值报 `cap.compound-assignment`；`++` / `--` 报 `cap.inc-dec`。
 
 `while` 的条件必须是 `boolean`，循环体在函数体内，可以包含 `if`、赋值和嵌套 `while`。条件每轮重新求值，循环可能零次执行；模块级 `while` 报 `cap.unsupported-syntax`。`break` / `continue` 只作用于最近循环，带标签的写法报 `cap.labeled-jump`，循环外的跳转由 TypeScript 先报 `TS1107`。`for` 与 `do` 仍不在子集内。
+
+## 参数与实参数量
+
+参数语义记在事实里：`optional` 是 `a?: number` 的 `?`，`hasDefault` 是 `b: number = 10` 的初始化表达式，见[声明身份与事实](facts.md)。两者都让参数在调用时可以省略，但本阶段后端还不会合成缺省值，所以只要声明里出现其中任一种，就按 `cap.unsupported-parameter` 拒绝，诊断落在参数自己的位置上。策略落在声明而不是调用上：即使 `add(5, 2)` 把两个实参都给齐，带默认值的 `b` 仍然不支持。
+
+实参数量规则只有一套：`frontend.Arity` 给出 `[必填参数个数, 形参总数]`，`Facts.Validate()` 与能力检查都用它。少一个实参的 `add(5)` 因此先通过事实自洽校验，再由能力检查以 `cap.unsupported-parameter` 退出 3；不会再被 `facts.arg-count` 当成内部故障。参数全部必填时，区间退化成一个数，与原来的固定个数检查一致。
+
+跨模块调用在入口事实里没有目标函数的声明，个数由合并降低阶段的调用节点核对；依赖模块里的默认参数由命令行在合并前对每个模块各跑一次能力检查，同样按 `cap.unsupported-parameter` 拒绝，不会落到 `lower.bad-arity`。
 
 ## void 与丢弃结果
 
@@ -113,7 +121,8 @@ const x = announce(1);     // 拒绝：void 没有值可以绑
 | `cap.labeled-jump` | 带标签的 `break` / `continue` 或带标签语句 |
 | `cap.loop-target` | `break` / `continue` 不在循环里 |
 | `cap.unknown-name` | 引用了本文件之外的名称，且没有对上一条值导入绑定的项目模块导出 |
-| `cap.arg-count` | 实参个数与函数声明的形参个数不一致 |
+| `cap.unsupported-parameter` | 参数带默认值或 `?` 可选标记；本阶段只支持必填参数 |
+| `cap.arg-count` | 实参个数不在 `Arity` 允许的范围内（必填参数个数到形参总数） |
 | `cap.void-value` | 把 void 调用当作值使用：实参、操作数、返回值、常量初始值 |
 | `cap.bad-type` | 声明的类型不在本阶段范围内，例如 `string` 参数；或 `!` 的操作数不是 `boolean`、`if` 的条件不是 `boolean`、`&&` / `\|\|` 的操作数不是 `boolean` |
 

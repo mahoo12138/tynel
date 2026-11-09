@@ -783,6 +783,10 @@ func (l *lowerer) call(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir
 		return nil, nil, l.fail(n.Start, "lower.unknown-callee", "调用目标 %q 不是本文件里的函数", callee.Name)
 	}
 	args := n.Children[1:]
+	// 这里要求实参与形参一一对应：后端不会合成缺省值，少一个实参就凑不出
+	// 目标函数的调用。可省略的参数在能力检查阶段已按 cap.unsupported-parameter
+	// 拒绝，所以合法程序不会走到这里；事实验证用的 frontend.Arity 允许一个
+	// 区间，是给「先判自洽、再判能力」那两步用的，不是降低器的契约。
 	if len(args) != len(decl.Parameters) {
 		return nil, nil, l.fail(n.Start, "lower.bad-arity", "调用 %q 给了 %d 个实参，声明有 %d 个参数", decl.Name, len(args), len(decl.Parameters))
 	}

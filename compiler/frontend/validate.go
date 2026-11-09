@@ -64,6 +64,9 @@ func (f *Facts) Validate() error {
 		if d.Mutable != mutable {
 			return diagnostic.New(diagnostic.Internal, "facts.bad-mutable", "声明 %q 的 mutable 为 %t，与种类 %s 不符", d.Name, d.Mutable, d.Kind)
 		}
+		if d.Kind != DeclParameter && (d.Optional || d.HasDefault) {
+			return diagnostic.New(diagnostic.Internal, "facts.bad-decl", "声明 %q 不是参数，却带了参数语义", d.Name)
+		}
 		byID[d.ID] = d
 	}
 
@@ -154,16 +157,28 @@ func (f *Facts) Validate() error {
 		if callee.Kind != DeclFunction {
 			return diagnostic.New(diagnostic.Internal, "facts.call-target", "调用指向 %s %q，它不是函数", callee.Kind, callee.Name)
 		}
-		if len(call.Arguments) != len(callee.Parameters) {
-			return diagnostic.New(diagnostic.Internal, "facts.arg-count", "调用 %q 给了 %d 个实参，函数声明有 %d 个参数", callee.Name, len(call.Arguments), len(callee.Parameters))
+		// 参数数量规则与能力检查共用：必填参数个数是下界，可省略的尾部参数
+		// 不要求有对应实参。少一个实参的 add(5) 因此是合法事实，不是内部故障。
+		arity := f.ArityOf(callee)
+		if !arity.Allows(len(call.Arguments)) {
+			return diagnostic.New(diagnostic.Internal, "facts.arg-count", "调用 %q 给了 %d 个实参，函数声明需要 %d 到 %d 个", callee.Name, len(call.Arguments), arity.Required, arity.Total)
 		}
 		for i, pid := range callee.Parameters {
 			param, ok := byID[pid]
 			if !ok || param.Type == nil {
 				return diagnostic.New(diagnostic.Internal, "facts.unknown-target", "函数 %q 的第 %d 个参数没有类型摘要", callee.Name, i+1)
 			}
-			if call.Arguments[i].Kind != param.Type.Kind {
-				return diagnostic.New(diagnostic.Internal, "facts.arg-type", "调用 %q 的第 %d 个实参是 %s，形参是 %s", callee.Name, i+1, call.Arguments[i].Kind, param.Type.Kind)
+			if i >= len(call.Arguments) {
+				continue // 省略的尾部参数没有实参可比。
+			}
+			got := call.Arguments[i].Kind
+			if got != param.Type.Kind {
+				// 带默认值或 ? 的位置允许显式传 undefined；前端把 undefined
+				// 压成 other，粗粒度摘要不足以在这个位置上判定不一致。
+				if got == KindOther && (param.Optional || param.HasDefault) {
+					continue
+				}
+				return diagnostic.New(diagnostic.Internal, "facts.arg-type", "调用 %q 的第 %d 个实参是 %s，形参是 %s", callee.Name, i+1, got, param.Type.Kind)
 			}
 		}
 		if callee.Result == nil || call.Result.Kind != callee.Result.Kind {

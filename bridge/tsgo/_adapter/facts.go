@@ -55,6 +55,8 @@ type factDeclaration struct {
 	Parameters []int     `json:"parameters,omitempty"`
 	Body       *factNode `json:"body,omitempty"`
 	Mutable    bool      `json:"mutable,omitempty"`
+	Optional   bool      `json:"optional,omitempty"`
+	HasDefault bool      `json:"hasDefault,omitempty"`
 }
 
 // factNode 是函数体或初始化表达式的语法骨架。
@@ -393,14 +395,20 @@ func (b *factBuilder) declareFunction(node *ast.Node, exported bool) pending {
 		id := b.declare(b.checker.GetSymbolAtLocation(paramName))
 		decl.Parameters = append(decl.Parameters, id)
 		typ := b.typeOf(b.checker.GetTypeAtLocation(paramName))
+		// `?` 与初始化表达式分开记：两者都让参数在调用时可省略，但当前后端
+		// 都不支持，能力检查要按不同写法给诊断。事实里照实保留，add(5) 才
+		// 不会在事实校验阶段被误判成内部不一致。
+		signature := param.AsParameterDeclaration()
 		params = append(params, factDeclaration{
-			ID:     id,
-			Module: b.file.FileName(),
-			Kind:   "parameter",
-			Name:   paramName.Text(),
-			Start:  b.startOf(param),
-			Length: param.End() - b.startOf(param),
-			Type:   &typ,
+			ID:         id,
+			Module:     b.file.FileName(),
+			Kind:       "parameter",
+			Name:       paramName.Text(),
+			Start:      b.startOf(param),
+			Length:     param.End() - b.startOf(param),
+			Type:       &typ,
+			Optional:   signature.QuestionToken != nil,
+			HasDefault: signature.Initializer != nil,
 		})
 		b.declNameNodes[paramName] = true
 	}
