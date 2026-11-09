@@ -53,6 +53,8 @@ func TestCapabilityFixtures(t *testing.T) {
 		{"dynamic-function.ts", "cap.unsupported-syntax"},
 		{"library.ts", "cap.unknown-callee"},
 		{"uncalled.ts", "cap.unsupported-syntax"},
+		{"default-export-anon.ts", "cap.unsupported-syntax"},
+		{"default-export-named.ts", "cap.unsupported-syntax"},
 	}
 	for _, c := range cases {
 		t.Run(c.file, func(t *testing.T) {

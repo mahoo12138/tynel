@@ -52,7 +52,7 @@ function neverCalled(n: number): number {
 
 | 类别 | 支持 | 说明 |
 | --- | --- | --- |
-| 声明 | `function`、必填参数、顶层 `const`、函数体内 `const` 与已初始化的 `let` | 参数、常量与局部值限 `number`、`boolean`，返回值限 `number`、`boolean` 或 `void`；默认参数、可选参数、模块级 `let` 与 `var` 拒绝；固定入口名 `main` 不能由用户占用 |
+| 声明 | 顶层具名 `function`、必填参数、顶层 `const`、函数体内 `const` 与已初始化的 `let` | 参数、常量与局部值限 `number`、`boolean`，返回值限 `number`、`boolean` 或 `void`；默认参数、可选参数、模块级 `let` 与 `var` 拒绝；匿名、默认导出与嵌套函数声明按 `cap.unsupported-syntax` 拒绝；固定入口名 `main` 不能由用户占用 |
 | 运算 | `+` `-` `*` `/`，数字字面量上的一元 `-` `+`、`!`，比较 `<` `<=` `>` `>=` `===` `!==`，短路 `&&` `\|\|`，三元式 `? :` | 有序比较只接受 `number`；严格相等要求两侧同类型；`&&` / `\|\|` 两侧都必须是 `boolean`；三元式的条件必须是 `boolean`，两臂同类型；一元 `-` / `+` 不接受变量或一般表达式 |
 | 调用 | 本文件内声明的函数，或经值导入绑定到项目模块导出的函数；实参个数与形参一致 | 不支持函数值、方法调用，也不支持标准库全局函数 |
 | 语句 | `return`、表达式语句、语句块、`if` / `else` / `else if`、`while`、`break` / `continue`、分支内 `const` 与已初始化的 `let`、独立的简单赋值 | 表达式语句的结果被丢弃；`if` / `while` 的条件必须是 `boolean`；`break` / `continue` 只能作用于最近循环 |
@@ -104,7 +104,7 @@ const x = announce(1);     // 拒绝：void 没有值可以绑
 | --- | --- |
 | `cap.any` | 参数、返回值或常量声明为 `any` / `unknown` |
 | `cap.type-escape` | `as`、`<T>x`、后缀 `!`（非空断言）、`satisfies` 这类绕过检查的写法 |
-| `cap.unsupported-syntax` | 对象、数组、字符串、`for` / `do`、未初始化的 `let`、`var`、`new`、嵌套函数等本阶段不支持的语法 |
+| `cap.unsupported-syntax` | 对象、数组、字符串、`for` / `do`、未初始化的 `let`、`var`、`new`、嵌套函数、匿名或默认导出的函数声明等本阶段不支持的语法 |
 | `cap.unknown-callee` | 调用目标不是本文件声明的函数、不是 `console.log`，也没有对上一条值导入绑定的项目模块导出 |
 | `cap.forbidden-global` | 调用 `eval` |
 | `cap.shadowed-console` | `console` 被本文件的声明遮蔽 |

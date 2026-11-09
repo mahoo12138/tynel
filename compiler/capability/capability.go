@@ -383,6 +383,9 @@ func (c *checker) node(n *frontend.Node) {
 		c.report(n.Start, "cap.unsupported-syntax", "new 表达式不在本阶段子集内")
 	case "FunctionExpression", "ArrowFunction", "ClassExpression":
 		c.report(n.Start, "cap.unsupported-syntax", "嵌套函数与类不在本阶段子集内")
+	case "FunctionDeclaration":
+		// 顶层具名函数已被前端提取成声明；骨架里的函数声明是匿名、默认导出或嵌套声明。
+		c.report(n.Start, "cap.unsupported-syntax", "函数声明不在本阶段子集内；只支持顶层具名函数声明")
 	default:
 		c.report(n.Start, "cap.unsupported-syntax", "语法 %s 不在本阶段子集内", n.Kind)
 	}

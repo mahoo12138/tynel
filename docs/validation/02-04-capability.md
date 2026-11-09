@@ -175,3 +175,9 @@ $ ./bin/tynel run --root examples/quote main.ts
 ```
 
 `docs/reference/capability.md` 补了「跨模块引用怎么核对」一节并更新两个错误码的说明，`docs/reference/module-bindings.md` 点明能力检查先用本文件的 `Imports` 挡一道、`modules.Build` 再复核导出表。本次未覆盖：默认导入、命名空间导入与再导出仍不在子集内；伪造事实里「导入与目标模块导出表不一致」由 `modules.Build` 的 `module.missing-export` 负责，能力层只核对本文件的导入绑定。仍只在 `darwin/arm64` 上验证。
+
+## 交付后的函数声明骨架诊断（2026-11-10）
+
+本节补记一次能力层改动，执行时间是 2026-11-10 00:07 CST，代码基于提交 `2fd4252` 的工作树，在 Windows 10 x64 与缓存的 go1.27.3 windows/amd64 上验证。完整的问题、修复与负向对照见[声明身份与事实](02-03-facts.md)的「交付后的匿名默认导出函数」一节。
+
+匿名 `export default function` 过去在前端事实提取阶段就 panic，走不到能力检查。修复后这类声明落到模块体骨架，成为 `FunctionDeclaration` 骨架节点；`capability.node()` 新增分支按 `cap.unsupported-syntax` 拒绝，措辞是「函数声明不在本阶段子集内；只支持顶层具名函数声明」。顶层具名函数已被前端提取成声明，不会进骨架，所以走到这个分支的一定是匿名、默认导出或嵌套函数声明。`TestFunctionDeclarationSkeletonRejected` 锁住骨架节点被拒绝，消费者夹具 `default-export-anon.ts` 与 `default-export-named.ts` 走真实前端断言退出 3。本次未覆盖：完整 `tests/source` 与 `./bridge/tsgo/check` 仍只在官方 `darwin/arm64` 上跑；默认导出与嵌套函数声明共用同一措辞，未单独细分。

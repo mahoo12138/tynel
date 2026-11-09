@@ -249,3 +249,90 @@ $ gofmt -l bridge/tsgo/_adapter bridge/tsgo/consumer tests/source
 ```
 
 本次未覆盖：运行时的数字拼写仍是 Go 的 `'g'` 格式与 `+Inf` / `-Inf`（接完整数值语义时一并改）；仍只在 `darwin/arm64` 上验证。适配包改动需要 `./tools/toolchain/prep --frontend-only` 重新同步到 `.work` 里的副本。
+
+## 交付后的匿名默认导出函数（2026-11-10）
+
+本节记录匿名 `export default function` 导致前端事实提取崩溃的一次修复，执行时间是 2026-11-10 00:07 CST，代码基于提交 `2fd4252` 的工作树。
+
+与前几节不同，这次在 Windows 上验证：系统 Windows 10（10.0.26200）x64，编译器用缓存的 go1.27.3 windows/amd64（`GOTOOLCHAIN=local` 直接调用工具链二进制，避开本机默认 Go 的版本委派）。前端仍是锁定的 `microsoft/typescript-go` 归档（SHA256 `5ccb47dbb3f68cd0da58b71e6f445eee36a50bd3e9f9f330cc23a97b88500119`，提交 `2bd066d8`），手动解压到 `.work/frontend/typescript-go` 并核对 `go.mod`、`LICENSE`、`program.go`、`lib.es5.d.ts` 四个标记与锁文件一致，再把修复后的适配包复制进 `tyneladapter/`。官方验收平台仍是 `darwin/arm64`；凡依赖隔离 SDK 报告或 zsh 驱动的全量流程在本机跑不了，下面逐项说明。
+
+`export default function (): number { return 42; }` 是合法的 TypeScript 模块语法。修复前 `collect()` 把所有 `FunctionDeclaration` 都交给 `declareFunction()`，后者取 `fn.Name()` 登记声明；匿名默认导出没有名字，`Name()` 返回 nil，`GetSymbolAtLocation(nil)` 在检查器里解引用崩溃，退出 2，根本走不到能力检查：
+
+```text
+$ consumer-baseline.exe -facts tests/source/testdata/errors/default-export-anon.ts
+panic: runtime error: invalid memory address or nil pointer dereference
+[signal 0xc0000005 code=0x0 addr=0x0]
+github.com/microsoft/typescript-go/internal/checker.(*Checker).GetSymbolAtLocation(...)
+github.com/microsoft/typescript-go/tyneladapter.(*factBuilder).declareFunction(...)
+    .work/frontend/typescript-go/tyneladapter/facts.go:373
+github.com/microsoft/typescript-go/tyneladapter.(*factBuilder).collect(...)
+    .work/frontend/typescript-go/tyneladapter/facts.go:232
+$ echo $?
+2
+```
+
+`-capability` 同样在取事实这一步崩溃，退出 2 而不是 3。
+
+修法是在事实提取阶段就把匿名与默认导出的函数声明挡在声明表之外。`collect()` 的分支改成只登记「顶层、具名、非默认导出」的函数：
+
+```go
+case ast.IsFunctionDeclaration(stmt) && stmt.Name() != nil && !ast.HasSyntacticModifier(stmt, ast.ModifierFlagsDefault):
+    queue = append(queue, b.declareFunction(stmt, ast.HasSyntacticModifier(stmt, ast.ModifierFlagsExport)))
+```
+
+匿名函数与默认导出落到原有的模块体骨架路径，成为模块 `Block` 下的一个 `FunctionDeclaration` 骨架节点；能力检查新增对应分支，按 `cap.unsupported-syntax` 拒绝。默认导出本就不在 SPEC 的命名导出子集内，这里不建立独立导出身份，只明确拒绝。这条守卫还顺带修掉一个潜在错认：`export default function answer()` 过去会被当成具名导出 `answer` 放行，现在同样按骨架拒绝。修复后：
+
+```text
+# 先生成宿主二进制，再运行它检查夹具。
+$ go build -o .work/frontend/bin/consumer.exe ./bridge/tsgo/consumer
+$ .work/frontend/bin/consumer.exe -capability tests/source/testdata/errors/default-export-anon.ts
+[
+  {
+    "line": 3, "column": 1,
+    "category": "能力限制",
+    "code": "cap.unsupported-syntax",
+    "message": "函数声明不在本阶段子集内；只支持顶层具名函数声明"
+  }
+]
+$ echo $?
+3
+```
+
+`default-export-named.ts`（带名字的默认导出）给出同样的退出 3 与错误码。`-facts` 不再崩溃，输出合法 JSON：匿名函数是模块 `Block` 的 `FunctionDeclaration` 子节点，`declarations` 为 null——它没有被登记成具名声明：
+
+```json
+{
+  "module": {"kind": "Block", "children": [{"kind": "FunctionDeclaration", "start": 199, "length": 51}]},
+  "declarations": null
+}
+```
+
+回归覆盖四层。`compiler/capability/capability_test.go` 的 `TestFunctionDeclarationSkeletonRejected` 直接构造一个 `FunctionDeclaration` 骨架节点，断言按 `cap.unsupported-syntax` 拒绝。`bridge/tsgo/consumer/capability_test.go` 的 `TestCapabilityFixtures` 加入 `default-export-anon.ts` 与 `default-export-named.ts` 两个夹具，走真实前端「检查 → 事实 → 能力」全程，两者都通过。`bridge/tsgo/check` 的能力循环加入这两项（zsh 驱动，本机未执行）。`tests/source` 加入同名两个端到端能力用例（`kind=capability`、`code=cap.unsupported-syntax`）；`TestManifest` 在本机通过，确认清单形状与夹具存在，完整的 `TestErrors` 需要 darwin 宿主。
+
+负向对照在 scratch 树副本里把 `HEAD` 的原始适配层换回（不动仓库源码），重新构建宿主：`-facts` 与 `-capability` 对匿名夹具都 panic、退出 2，`TestCapabilityFixtures/default-export-anon.ts` 以 nil 指针 panic 失败——说明新用例确实守住了缺陷。同一份原始适配层下，下面四个与本次改动无关的消费者用例失败方式与修复后完全一致，确认它们是 Windows 平台的既有问题，不是本次引入。
+
+本机能跑的全量检查如下。消费者套件 26 个顶层用例通过、4 个失败；适配包单测 `go test ./tyneladapter` 通过；纯编译器测试里 `capability`、`frontend`、`diagnostic`、`lower`、`merge`、`modules`、`nir`、`pipeline`、`source` 通过；`go vet` 对 `capability`、消费者、适配包均无输出；`gofmt -l` 对四个改动的 Go 文件无输出。
+
+```text
+# 消费者套件：真实前端，统计顶层通过/失败。
+$ go test -count=1 -v ./bridge/tsgo/consumer   # 在消费者模块内执行
+--- PASS: TestCapabilityFixtures (0.37s)        # 含 default-export-anon / default-export-named
+26 个 --- PASS，4 个 --- FAIL
+
+# 适配包单测：在源码树内执行。
+$ go test -count=1 ./tyneladapter
+ok  	github.com/microsoft/typescript-go/tyneladapter	0.643s
+
+# 纯编译器测试与静态检查。
+$ GOTOOLCHAIN=go1.27.3 go test -count=1 ./compiler/capability ./compiler/frontend
+ok  	github.com/Mahoo12138/tynel/compiler/capability	0.030s
+ok  	github.com/Mahoo12138/tynel/compiler/frontend	0.531s
+$ GOTOOLCHAIN=go1.27.3 go vet ./compiler/capability
+（无输出）
+$ gofmt -l bridge/tsgo/_adapter/facts.go compiler/capability/capability.go compiler/capability/capability_test.go bridge/tsgo/consumer/capability_test.go
+（无输出）
+```
+
+四个失败的消费者用例都是 Windows 平台差异，且与匿名函数无关：`TestTypeErrorCarriesCodeAndPosition` 与 `TestDependencyDiagnosticsAreReported` 断言用 `filepath.Join` 的反斜杠路径，前端诊断给的是正斜杠（`C:\…` 对 `C:/…`）；`TestPositionAfterChinesePrefixEndToEnd` 与 `TestTruncatedSourceIsSyntaxError` 的行列在本机算成 `0:0`。纯编译器测试里 `graph` 与 `project` 也有既有 Windows 失败：创建符号链接需要「客户端没有持有的特权」，`TestResolveRejects/绝对路径越界` 用的 `/tmp/outside.ts` 在 Windows 不存在，报 `project.missing` 而非 `project.outside-root`。这两个包本次未改动。
+
+本次未覆盖：完整的 `tests/source`（`TestErrors` / `TestPrograms`）、`./tools/test` 与 `./bridge/tsgo/check` 依赖隔离 SDK 报告或 zsh 驱动，只能在官方 `darwin/arm64` 上跑，本机仅验证到 `TestManifest`、真实前端消费者套件、适配包单测与纯编译器测试；默认导出仍不在子集内，没有建立独立导出身份；嵌套函数声明也由同一骨架分支拒绝，未单独区分子集措辞；本次只在 `windows/amd64` 上验证，`darwin/arm64` 的复核待补。适配包改动需要 `./tools/toolchain/prep --frontend-only` 重新同步到 `.work` 里的副本。

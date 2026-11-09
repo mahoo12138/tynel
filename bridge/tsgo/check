@@ -257,6 +257,7 @@ fi
 for pair in "any.ts:cap.any" "assert.ts:cap.type-escape" "object.ts:cap.unsupported-syntax" \
             "eval.ts:cap.forbidden-global" "dynamic-function.ts:cap.unsupported-syntax" \
             "library.ts:cap.unknown-callee" "uncalled.ts:cap.unsupported-syntax" \
+            "default-export-anon.ts:cap.unsupported-syntax" "default-export-named.ts:cap.unsupported-syntax" \
             "void-value.ts:cap.void-value" "shadowed-console.ts:cap.shadowed-console"; do
   file=${pair%%:*}
   want=${pair##*:}

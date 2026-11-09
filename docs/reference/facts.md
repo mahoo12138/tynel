@@ -59,7 +59,7 @@ const doubled: number = scale(answer);
 
 | `kind` | 来源 | `mutable` |
 | --- | --- | --- |
-| `function` | 顶层函数 | `false` |
+| `function` | 顶层具名函数 | `false` |
 | `parameter` | 函数参数 | `false` |
 | `const` | 模块级 `const` | `false` |
 | `local` | 块内 `const` | `false` |
@@ -181,5 +181,7 @@ const doubled: number = scale(answer);
 ## 目前不包含什么
 
 控制流、对象、字符串这些写法**会出现在骨架里**，但只作为「不认识或不允许的种类」——能力检查看到它们就拒绝，降低阶段也不会处理。事实描述的是源码的形状，不是编译器支持的范围；「支持什么」由[原生能力白名单](capability.md)定义。
+
+匿名函数声明与默认导出（`export default function …`）不进声明表：它们没有可用的具名身份，事实提取把它们留在模块体骨架里，成为一个 `FunctionDeclaration` 节点，由能力检查按 `cap.unsupported-syntax` 拒绝。这样前端不会对 nil 名字解引用崩溃，诊断也落在能力层而不是变成内部故障。
 
 降低阶段需要的常量值、const 折叠结果还没有单独的字段，等 02.05 加。到那时加字段，`Decode` 的严格解码会逼着适配层和本包一起改，不会出现一边加了字段另一边悄悄忽略的情况。

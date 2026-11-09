@@ -228,7 +228,11 @@ func (b *factBuilder) collect(file *ast.SourceFile) {
 	module := &factNode{Kind: "Block", Start: 0, Length: len(file.Text())}
 	for _, stmt := range file.Statements.Nodes {
 		switch {
-		case ast.IsFunctionDeclaration(stmt):
+		// 只有顶层具名函数进声明表。匿名函数声明（export default function(){}）
+		// 的名字是 nil，declareFunction 会对它解引用崩溃；默认导出本身也不在子集
+		// 内。这两类都落到下面的模块体骨架路径，由能力检查按 cap.unsupported-syntax
+		// 拒绝，而不是在前端事实提取阶段 panic。
+		case ast.IsFunctionDeclaration(stmt) && stmt.Name() != nil && !ast.HasSyntacticModifier(stmt, ast.ModifierFlagsDefault):
 			queue = append(queue, b.declareFunction(stmt, ast.HasSyntacticModifier(stmt, ast.ModifierFlagsExport)))
 		case ast.IsVariableStatement(stmt):
 			list := stmt.AsVariableStatement().DeclarationList.AsVariableDeclarationList()

@@ -842,3 +842,16 @@ func TestValueImportAllowed(t *testing.T) {
 		t.Fatalf("命名值导入应由模块符号表核对，不应在这里报能力限制：%v", findings)
 	}
 }
+
+// TestFunctionDeclarationSkeletonRejected 确认以骨架节点出现的函数声明按
+// cap.unsupported-syntax 拒绝。顶层具名函数被前端提取成声明，不会进骨架；
+// 走到这里的是匿名函数、默认导出或嵌套函数声明，都不在子集内。
+func TestFunctionDeclarationSkeletonRejected(t *testing.T) {
+	facts := base()
+	fn := node("FunctionDeclaration",
+		node("Block", node("ReturnStatement", typed("NumericLiteral", frontend.KindNumber))),
+	)
+	moduleNode := node("Block", fn)
+	facts.Module = &moduleNode
+	wantCode(t, check(t, facts), "cap.unsupported-syntax")
+}

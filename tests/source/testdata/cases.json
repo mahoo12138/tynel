@@ -116,6 +116,8 @@
     {"name": "any", "file": "errors/any.ts", "kind": "capability", "code": "cap.any", "note": "any 没有原生表示"},
     {"name": "void-value", "file": "errors/void-value.ts", "kind": "capability", "code": "cap.void-value", "note": "void 当作值"},
     {"name": "control-flow", "file": "errors/control.ts", "kind": "capability", "code": "cap.unsupported-syntax", "note": "for 循环"},
+    {"name": "default-export-anon", "file": "errors/default-export-anon.ts", "kind": "capability", "code": "cap.unsupported-syntax", "note": "匿名默认导出函数不能在前端事实提取崩溃"},
+    {"name": "default-export-named", "file": "errors/default-export-named.ts", "kind": "capability", "code": "cap.unsupported-syntax", "note": "默认导出不是命名导出，即使带名字也拒绝"},
     {"name": "missing-file", "file": "errors/missing.ts", "kind": "environment", "note": "文件不存在"}
   ]
 }
