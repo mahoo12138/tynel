@@ -19,5 +19,9 @@ dist/
 .env.*
 !.env.example
 
+# WorkBuddy 本地工作日志与导入会话附件，不属于项目源码
+.workbuddy/
+.cloud-attachments/
+
 # macOS 文件系统元数据
 .DS_Store
