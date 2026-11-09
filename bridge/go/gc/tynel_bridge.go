@@ -123,6 +123,19 @@ func inject(target *ir.Package, path string) error {
 		return fmt.Errorf("缺少固定支持函数 %s", supportBits)
 	}
 
+	// bridge/go/run 不经 compiler/nir 验证，入口的最基本规则在这里兜底：
+	// 存在、没有参数、返回 void。完整语义校验仍只在 compiler/nir。
+	if m.Entry == "" {
+		return fmt.Errorf("NIR 缺少 entry 字段")
+	}
+	entry, ok := funcs[m.Entry]
+	if !ok {
+		return fmt.Errorf("NIR 入口函数 %q 不存在", m.Entry)
+	}
+	if sig := entry.Type(); len(sig.Params()) != 0 || len(sig.Results()) != 0 {
+		return fmt.Errorf("NIR 入口函数 %q 必须没有参数且返回 void", m.Entry)
+	}
+
 	for _, f := range m.Functions {
 		if err := buildBody(funcs[f.Name], f, funcs, helper, boolHelper, bitsHelper, pos); err != nil {
 			return err
@@ -135,6 +148,31 @@ func inject(target *ir.Package, path string) error {
 		fn.Nname.Defn = fn
 		target.Funcs = append(target.Funcs, fn)
 	}
+
+	// Go 可执行程序从 main.main 开始。NIR 入口不叫 main 时生成一个包装
+	// 函数转发调用，entry 字段因此真正决定程序从哪里开始。
+	if m.Entry != "main" {
+		if err := injectMain(target, entry, m.Entry, pos); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// injectMain 生成 main.main：没有参数、没有返回，函数体只有对 NIR 入口的
+// 一次调用。它和用户函数一样直接建成 ir.Func，不生成 Go 源码。
+func injectMain(target *ir.Package, entry *ir.Func, entryName string, pos src.XPos) error {
+	sym := types.LocalPkg.Lookup("main")
+	if sym.Def != nil {
+		return fmt.Errorf("NIR 入口是 %q，但包内已有 main 声明，无法生成入口包装", entryName)
+	}
+	fn := ir.NewFunc(pos, pos, sym, types.NewSignature(nil, nil, nil))
+	fn.DeclareParams(true)
+	sym.Def = fn.Nname
+	fn.Body = []ir.Node{ir.NewCallExpr(pos, ir.OCALL, entry.Nname, nil)}
+	ir.WithFunc(fn, func() { typecheck.Stmts(fn.Body) })
+	fn.Nname.Defn = fn
+	target.Funcs = append(target.Funcs, fn)
 	return nil
 }
 

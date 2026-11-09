@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "entry": "startup",
+  "functions": [
+    {
+      "name": "main",
+      "params": [],
+      "result": "void",
+      "body": [
+        { "op": "return" }
+      ]
+    },
+    {
+      "name": "startup",
+      "params": [],
+      "result": "void",
+      "body": [
+        { "op": "return" }
+      ]
+    }
+  ]
+}

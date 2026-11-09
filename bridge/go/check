@@ -123,4 +123,29 @@ else
   fail "缺支持函数的错误信息不符：$msg"
 fi
 
+# 14. 非 main 入口：bridge 生成 main 包装转发到 entry，链路一路调到辅助函数。
+if out=$("$ROOT/bridge/go/run" "$ROOT/bridge/go/testdata/entry.nir.json" "$OUT/entry" 2>/dev/null) && [[ "$out" == "42" ]]; then
+  pass "非 main 入口经包装转发输出 42"
+else
+  fail "非 main 入口输出 \"${out-}\"，期望 42"
+fi
+
+# 15. 入口不存在：bridge/go/run 不经 nir.Verify，bridge 自己必须在编译期拒绝。
+if msg=$("$ROOT/bridge/go/run" "$ROOT/bridge/go/testdata/entry-missing.nir.json" "$OUT/entry-missing" 2>&1); then
+  fail "入口不存在的 NIR 竟然构建成功"
+elif [[ "$msg" == *"tynel bridge"*"入口函数"*"不存在"* ]]; then
+  pass "入口不存在在编译期被拒绝"
+else
+  fail "入口不存在的错误信息不符：$msg"
+fi
+
+# 16. 入口与 main 冲突：NIR 里已有 main 函数时不能再造包装，必须明确拒绝。
+if msg=$("$ROOT/bridge/go/run" "$ROOT/bridge/go/testdata/entry-conflict.nir.json" "$OUT/entry-conflict" 2>&1); then
+  fail "入口与 main 冲突的 NIR 竟然构建成功"
+elif [[ "$msg" == *"tynel bridge"*"无法生成入口包装"* ]]; then
+  pass "入口与 main 冲突在编译期被拒绝"
+else
+  fail "入口冲突的错误信息不符：$msg"
+fi
+
 exit $FAILED

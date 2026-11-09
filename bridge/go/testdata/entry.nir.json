@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "entry": "startup",
+  "functions": [
+    {
+      "name": "answer",
+      "params": [],
+      "result": "number",
+      "body": [
+        { "op": "return", "value": { "op": "number", "bits": "0x4045000000000000" } }
+      ]
+    },
+    {
+      "name": "startup",
+      "params": [],
+      "result": "void",
+      "body": [
+        { "op": "print", "value": { "op": "call", "function": "answer", "args": [] } },
+        { "op": "return" }
+      ]
+    }
+  ]
+}

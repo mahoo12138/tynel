@@ -113,3 +113,45 @@ $ go vet ./...
 - 只有直筒语句：没有分支、循环、局部变量和字符串，这些随 03、04 节点加入。
 - 没有 TypeScript 前端；NIR 仍然手写。
 - 没有发行版布局：修改版编译器只存在于 `.work/bridge/compile`，发行打包在 06.x。
+
+## 交付后的入口包装（2026-11-09）
+
+本节记录 `entry` 字段的一次修复，执行时间是 2026-11-09 23:30 CST，代码基于提交 `da3430d` 的工作树。环境仍是 macOS 26.6.2、arm64 与锁定的 go1.27.3，夹具放在不入库的 `.work/validation/nir-entry/`。
+
+`nir.Verify` 允许入口叫任意名字（存在、没有参数、返回 `void` 即可），但 `inject()` 只把函数逐个加入 `target.Funcs`，从不读 `m.Entry`；固定支持文件也不提供 `main`。入口不叫 `main` 时包里就没有 `main.main`，验证通过的 NIR 在链接期才失败。降低管道永远把入口命名为 `main`（`lower.EntryName`），所以这条路径只有手写 NIR 经 `build-ir` / `bridge/go/run` 才会走到。修复前基线（entry 为 `startup` 的合法 NIR）：
+
+```text
+$ ./bin/tynel build-ir .work/validation/nir-entry/startup.nir.json -o .work/validation/nir-entry/startup-app
+tynel: 内部故障 (tool.failed): 外部工具执行失败：go …（退出状态 1）
+  阶段: backend
+  原因: # github.com/Mahoo12138/tynel/bridge/go/support
+    runtime.main_main·f: function main is undeclared in the main package
+$ echo $?
+5
+```
+
+按选定的方案二修复：验证器保持 backend 中立，bridge 在入口不叫 `main` 时生成真正的 `main` 包装函数——没有参数、没有返回，函数体只有对 `m.Entry` 的一次调用——与用户函数一样直接建成 `ir.Func`，不生成 Go 源码。入口叫 `main` 时维持原路径，不生成包装。同时补上入口的最低限度校验（`bridge/go/run` 不经 `nir.Verify`）：`entry` 非空、指向存在的函数、没有参数且返回 `void`；包里已有 `main` 声明而入口另有其名时明确拒绝，而不是让链接器或运行时报错。修复后同一份 NIR：
+
+```text
+$ ./bin/tynel build-ir .work/validation/nir-entry/startup.nir.json -o .work/validation/nir-entry/startup-app
+已生成 .work/validation/nir-entry/startup-app（2429938 字节）
+$ .work/validation/nir-entry/startup-app
+42
+```
+
+回归覆盖在受控驱动 `bridge/go/check`：新增 `entry.nir.json`（入口 `startup` 调用辅助函数 `answer` 并打印其返回值，输出 42）、`entry-missing.nir.json`（入口不存在，编译期拒绝）、`entry-conflict.nir.json`（NIR 里已有 `main` 函数而入口是 `startup`，编译期拒绝「无法生成入口包装」）。冲突用例能通过 `nir.Verify`——它正是验证器管不到、只有 bridge 能拒的形状；经 `build-ir` 实测它在后端阶段报 bridge 的错误，而入口缺失在验证器阶段就报 `nir.entry-missing`（退出 1）。原有 13 项用例（含 entry 为 `main` 的全部夹具与「普通构建不受影响」）没有回归。
+
+修复前的失败基线即反向证据：同一份 NIR 在旧 bridge 下链接失败，新 bridge 下构建并运行正确。全量检查：
+
+```text
+$ ./bridge/go/check
+# 16 项全部 PASS（含 3 项新增）
+
+$ ./tools/test
+测试通过：20 个包
+
+$ gofmt -l bridge/go/gc
+（无输出）
+```
+
+`docs/reference/bridge.md` 的「固定支持文件建立了什么」一节改写了 `main` 的来源契约。本次未覆盖：包装函数调用的开销未做测量（一次直接调用，内联由编译器决定）；bridge 拒绝仍按既有口径归入后端工具失败，错误类别的细分不在本次范围；仍只在 `darwin/arm64` 上验证。bridge 源码改动需要 `./bridge/go/build` 重建修改版编译器并刷新戳记。

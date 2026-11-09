@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "entry": "ghost",
+  "functions": [
+    {
+      "name": "startup",
+      "params": [],
+      "result": "void",
+      "body": [
+        { "op": "return" }
+      ]
+    }
+  ]
+}
