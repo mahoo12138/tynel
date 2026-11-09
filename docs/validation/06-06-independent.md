@@ -1,25 +1,39 @@
 # 06.06 验收记录：验证生成物可以独立运行
 
-状态：**blocked**。本次已经实现验收器并完成产物身份与动态库预检，但当前执行环境不能应用限制性 macOS Seatbelt 配置，四个载荷均未在隔离环境中执行。不得把本记录解释成独立运行通过，也不得进入 06.07。
+状态：**passed**，06.06 标为 `verified`。2026-11-09 11:17（CST）在普通 macOS 终端的限制性 Seatbelt 环境中，四个载荷全部退出 0、stdout 逐字节匹配，源码与 Node 拒绝探针均生效。先前同一会话内的 `sandbox_apply` 受阻记录保留在文末，但不再代表当前结果。
 
 ## 环境与被测输入
-
-操作在 2026-11-08 11:58 至 2026-11-09 00:20（CST）执行。当前开发基线是 `1d990fd36cb1af837b3fe741c93b19e7f25ab765`，06.06 验收器在这个基线上新增，随后与测试边界修正一起保存在本地提交 `96545a2`；报告生成于该提交前的同内容工作区。产物来自 06.05 的干净构建提交 `236cbe63c37884463f78f6e79b06807d8372c03b`。
 
 | 项目 | 实际值 |
 | --- | --- |
 | 系统 | macOS 26.6.2，Darwin 25.6.0，`arm64` |
+| 硬件 | Apple M4 |
 | 沙箱入口 | `/usr/bin/sandbox-exec` |
+| 执行方式 | 未嵌套 Seatbelt 的普通终端 |
 | 产物目录 | `out/clean/06-05/outputs/` |
-| 最终受阻报告 | `.work/validation/06-06/final/report.json` |
-| 控制台日志 | `.work/validation/06-06/independent-final.log` |
-| Node | 宿主存在；验收器把它所在的用户目录列为禁止读取和禁止执行范围 |
+| 实际报告 | `.work/validation/06-06/host-run/report.json` |
+| 报告生成时间 | 2026-11-09T11:17:53+08:00 |
+| 被测产物 | 06.05 提交 `236cbe63c37884463f78f6e79b06807d8372c03b` 的四个 exe |
+| 验收器 | 实现提交 `96545a2`，入口和检查逻辑在本次运行前已落地 |
 
-验收器使用独立的期望输出，不读取 `tools/clean-build` 的期望值。输入 exe 与对应 `.build.json` 先核对 sha256 和字节数，再复制到新的 `payload/`；传输后的 exe 再计算一次 sha256。载荷目录不复制 TypeScript、NIR、Go SDK、Node 或编译器发行目录。
+验收命令：
 
-## 已完成的预检
+```zsh
+# 新目录只包含本次传输的 exe；已存在目录会被拒绝，避免复用旧结果。
+./tools/independent-run --out .work/validation/06-06/host-run
+```
 
-四个产物都通过构建记录、传输哈希和 Mach-O 检查：
+```text
+add: 退出 0, passed=true
+choices: 退出 0, passed=true
+collatz: 退出 0, passed=true
+quote: 退出 0, passed=true
+独立运行验收通过: 4 个程序
+```
+
+## 产物身份与运行依赖
+
+输入 exe 先与构建记录核对 sha256 和字节数，再复制到 `payload/`；传输后的 exe 重新计算哈希。`payload/` 的文件只有四个 exe，没有 `.ts`、NIR、Go SDK、Node 或编译器发行目录。
 
 | 程序 | 产物 sha256 | 字节 | 动态库 |
 | --- | --- | ---: | --- |
@@ -28,70 +42,58 @@
 | `collatz` | `37d8d94d0667174726558e7e3b4110299121873bb13bdba863c1197807794817` | 2,446,562 | libSystem、libresolv |
 | `quote` | `75995f63eb2e4a5cf6990fc90723a4a6e531c992af51a47bcfe648c1774f3058` | 2,446,626 | libSystem、libresolv |
 
-动态库的完整路径只有 `/usr/lib/libSystem.B.dylib` 和 `/usr/lib/libresolv.9.dylib`。因此，旧文档中的「完全静态链接」不准确：Go 代码与 Go 运行时已经链入 exe，但 macOS 程序仍动态加载这两个系统库。验收器用 `debug/macho` 读取实际 load command，遇到其他库会拒绝继续。
+动态库的完整路径只有 `/usr/lib/libSystem.B.dylib` 和 `/usr/lib/libresolv.9.dylib`。Go 代码和 Go 运行时已经链入 exe，但 macOS 系统库仍是动态依赖；不能把产物写成“完全静态链接”。验收器用 `debug/macho` 读取实际 load command，遇到白名单之外的库会拒绝继续。
 
-聚焦测试已执行：
+## 隔离边界
 
-```zsh
-# 测试产物身份、传输、动态库白名单、沙箱规则、输出上限和项目根解析。
-GOCACHE=.work/cache/independent-go-build .work/toolchain/go1.27.3-sdk-darwin-arm64/bin/go test -count=1 ./internal/independent ./tools/independent
-```
+每个载荷使用单独的 Seatbelt 配置和最小环境：
 
-```text
-ok  github.com/Mahoo12138/tynel/internal/independent
-ok  github.com/Mahoo12138/tynel/tools/independent
-```
+- 拒绝读取和写入项目根、用户目录、`/opt/homebrew`、`/usr/local`，只放行新 `payload/`；
+- 全局禁止启动子进程，只允许当前载荷自身；
+- 继承环境被清空，只设置载荷内的 `HOME`、`TMPDIR`、`LC_ALL=C` 和 `PATH=/nonexistent`；
+- 宿主 Node 为 `/Users/mahoo/.nvm/versions/node/v22.14.0/bin/node`，同时被显式拒绝；
+- 每个载荷限制 10 秒，stdout 或 stderr 超过 1 MiB 会使验收失败。
+
+| 探针 | 预期 | 实际 |
+| --- | --- | --- |
+| 限制性沙箱启动 `/usr/bin/true` | 退出 0 | 退出 0 |
+| 沙箱内读取 `forbidden/source-canary.ts` | 拒绝 | 退出 1，`Operation not permitted` |
+| 沙箱内读取宿主 Node | 拒绝 | 退出 1，`Operation not permitted` |
+
+源码探针在执行前先由宿主成功读取，排除“文件本来不存在”的假拒绝。载荷运行结果：
+
+| 程序 | 退出 | stdout | stderr | 超时或截断 |
+| --- | ---: | --- | --- | --- |
+| `add` | 0 | `42\n` | 空 | 否 |
+| `choices` | 0 | `-1\n0\n1\n1\nfalse\n3\ntrue\n` | 空 | 否 |
+| `collatz` | 0 | `111\n111\n8\n8\n0\n` | 空 | 否 |
+| `quote` | 0 | `90\n10\n100\n` | 空 | 否 |
+
+同一台物理 Mac 上完成的隔离方式是 Seatbelt 进程沙箱，不是另一台虚拟机。它证明了这批 exe 在无法访问项目源码、NIR、Node 和编译器目录的进程中仍能运行；没有声称已经验证另一台机器或另一个操作系统。
+
+## 先前受阻与恢复
+
+2026-11-08 的首次执行在工具宿主自带的嵌套沙箱中运行，限制性配置在 `sandbox_apply` 阶段退出 71。验收器当时按设计停止，四个载荷没有运行，节点标为 `blocked`，没有降级为普通 `exec`。该受阻报告仍保存在 `.work/validation/06-06/final/report.json`。
+
+在普通终端重跑后，限制性沙箱与全部探针通过，说明先前失败属于执行环境边界，不是 TypeScript 程序或原生后端错误。受阻记录没有删除，便于区分两次环境条件。
 
 ## 累计回归与测试边界
 
-首次运行 `./tools/test` 时，`go test ./...` 不仅测试当前源码，还进入了 `out/clean/06-05-failed/source/` 和 `out/clean/06-05-invalid-root/source/` 两个历史 worktree。这些残缺树缺少 `examples/ir/add.nir.json`，因此 NIR 示例测试失败。这是测试入口把生成目录当成源码输入的问题，不是当前编译器语义回归。
-
-`tools/test` 现在显式枚举 `./cmd/...`、`./compiler/...`、`./internal/...`、`./tests/...` 和 `./tools/...`。`go list` 核对得到 22 个当前源码包，没有 `out/` 下的包；2026-11-09 00:20 重跑累计测试，20 个含用例的包全部通过，`tools/release` 与 `tools/toolchain` 没有测试文件。`go vet ./...`、两个新增 shell 入口的 `zsh -n`、状态 JSON 解析和 `git diff --check` 也通过。
-
-这次修正只限制测试发现范围，不删除或改写历史 worktree。独立运行仍未验证，累计测试通过不改变 06.06 的 blocked 状态。
-
-## 受阻过程
+首次运行 `./tools/test` 时，`go test ./...` 进入了 `out/clean/06-05-failed/source/` 和 `out/clean/06-05-invalid-root/source/` 两个历史 worktree，因残缺树缺少 `examples/ir/add.nir.json` 而失败。`tools/test` 随后显式枚举 `./cmd/...`、`./compiler/...`、`./internal/...`、`./tests/...` 和 `./tools/...`，避免把生成目录当作当前源码。
 
 ```zsh
-# 用新的证据目录执行验收；目录已存在时工具会拒绝复用旧结果。
-./tools/independent-run --out .work/validation/06-06/final
+# 当前源码的累计测试。
+./tools/test
 ```
-
-实际结果：
 
 ```text
-add：已核对并传输 sha256 28b6a55a…，未运行
-choices：已核对并传输 sha256 f5105648…，未运行
-collatz：已核对并传输 sha256 37d8d94d…，未运行
-quote：已核对并传输 sha256 75995f63…，未运行
-独立运行验收受阻：限制性 sandbox-exec 无法启动（退出 71）：
-sandbox-exec: sandbox_apply: Operation not permitted
-shell 退出状态：3
+测试通过：20 个包
 ```
 
-普通 `(allow default)` 配置可以启动 `/usr/bin/true`，但 `deny default`、命名限制配置以及最小的路径拒绝配置都在 `sandbox_apply` 阶段失败。失败发生在载荷启动前，不是某个 TypeScript 程序返回了错误。
+`go vet ./...`、新增 shell 入口与修改后的测试入口的 `zsh -n`、状态 JSON 解析和 `git diff --check` 同时通过。20 个包指含测试文件的包；`tools/release` 与 `tools/toolchain` 报告 `[no test files]`。
 
-`tools/independent-run` 先构建再执行验收器，保留退出码 3；没有使用 `go run` 把它折叠成通用退出码 1。预检失败时没有回退成普通 `exec`，也没有把 06.05 已经观察到的 `42` 等输出复制到本报告。
+## 结论与范围
 
-## 沙箱通过后将检查什么
+06.06 的交付条件已满足：多个不同源程序在隔离环境中给出规定输出与顺序，源码、NIR、Node 和编译器目录访问被实际拒绝，系统动态库依赖已核对。06.07 可以开始，但 06 主节点仍需完成完整能力矩阵和第六篇笔记，现阶段不创建 `mvp/06-compiler-mvp` 标签。
 
-`internal/independent` 已保存以下实际检查逻辑：
-
-1. 用限制性配置启动 `/usr/bin/true`，确认沙箱本身可用。
-2. 先在宿主读取 `forbidden/source-canary.ts`，再要求沙箱内 `/bin/cat` 读取同一文件失败；`sandbox_apply` 自身失败不算拒绝探针通过。
-3. 宿主存在 Node 时，要求沙箱内读取 Node 失败；载荷只能执行自身，不能启动任何子进程。
-4. 清空继承环境，只设置载荷内的 `HOME`、`TMPDIR`、`LC_ALL=C` 和不存在的 `PATH`。
-5. 分别运行四个 exe，要求 stdout 逐字节等于独立期望、stderr 为空、退出 0、未超时且日志未截断。任一条件不符，报告为 `failed`。
-
-这些逻辑有单元测试，但源码拒绝探针、Node 拒绝探针和四个沙箱运行本次均未执行，不能写成已经通过。
-
-## 恢复条件
-
-在未嵌套 Seatbelt 的 macOS arm64 终端，或另一台匹配的 macOS arm64 环境中，使用一个新的证据目录重跑：
-
-```zsh
-# 前置：06.05 的 outputs 仍在；host-run 必须是尚不存在的新目录。
-./tools/independent-run --out .work/validation/06-06/host-run
-```
-
-只有命令退出 0、`host-run/report.json` 的 `status` 为 `passed`，并且四个 `artifacts[].run.passed` 都为 `true`，才能把 06.06 改为 `verified`。Linux 容器不能运行这些 Mach-O；仅隐藏 Node 的 `PATH`、仅复制 exe 后在普通进程运行、仅查看 Mach-O 文件头，都不能替代这项证据。
+本记录只覆盖 `darwin/arm64` 和四个 06.05 示例，不声明其他 macOS 版本、其他程序或交叉平台已经通过。

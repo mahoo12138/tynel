@@ -3,7 +3,7 @@
   "track": "mvp",
   "deliverable": "typescript-to-native-compiler",
   "phase": "implementation",
-  "currentImplementationNode": "06.06",
+  "currentImplementationNode": "06.07",
   "target": "darwin/arm64",
   "deferredTargets": [
     "windows/amd64"
@@ -688,7 +688,7 @@
       "dependsOn": [
         "05"
       ],
-      "status": "blocked",
+      "status": "active",
       "plannedNote": "docs/notes/06-compiler-mvp.md",
       "goal": "稳定命令、错误诊断、干净构建和二进制独立运行",
       "gateSubnode": "06.08",
@@ -800,7 +800,7 @@
             "06.05"
           ],
           "planSection": "PLAN.md#task-06-06",
-          "status": "blocked",
+          "status": "verified",
           "implementationCommits": [
             "96545a2"
           ],

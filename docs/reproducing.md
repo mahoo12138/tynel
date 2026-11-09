@@ -366,11 +366,11 @@ PY
 06.06 提供 `./tools/independent-run`。它只携带 06.05 构建的四个 exe，核对传输身份和 Mach-O 动态库，再用限制性 macOS 沙箱检查源码与 Node 不可读、子进程不可启动以及实际输出和退出状态。
 
 ```zsh
-# 在未嵌套 Seatbelt 的 macOS arm64 终端执行；host-run 必须是新目录。
-./tools/independent-run --out .work/validation/06-06/host-run
+# 在未嵌套 Seatbelt 的 macOS arm64 终端执行；每次复跑都必须使用新目录。
+./tools/independent-run --out .work/validation/06-06/rerun
 ```
 
-只有退出 0 且报告为 `status: passed` 才算通过。当前会话的沙箱预检失败，06.06 保持 blocked；受阻证据与恢复条件见[06.06 验收记录](validation/06-06-independent.md)。
+只有退出 0 且报告为 `status: passed` 才算通过。普通终端中的实际复跑已通过，四个载荷和两个拒绝探针都符合预期；完整证据与先前嵌套沙箱的受阻记录见[06.06 验收记录](validation/06-06-independent.md)。
 
 ## 前置条件
 
