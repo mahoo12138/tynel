@@ -82,4 +82,6 @@ MVP 的交付物是编译器本身：通过 `tynel build input.ts -o out/program
 
 06.06 已完成：四个 06.05 产物在限制性 macOS Seatbelt 环境中脱离源码、NIR、Node 和编译器目录运行，`add`、`choices`、`collatz`、`quote` 全部退出 0 且输出逐字节匹配；源码与 Node 拒绝探针也实际生效。产物只动态依赖 `libSystem` 和 `libresolv`。完整结果见[06.06 验收记录](docs/validation/06-06-independent.md)。
 
-06.07 已完成：最终源码通过 517 项 Go 测试、96 项前端检查、13 项后端检查、49/49 个 Node 差分、9 项 CLI 故障与边界检查和 15 秒 NIR 模糊测试。验收中修正了 `-x` 与用户函数 `main` 被误报为内部故障的问题，现在分别按 `cap.bad-unary` 和 `cap.entry-name` 退出 3。能力追踪见[06.07 验收记录](docs/validation/06-07-mvp.md)，下一步进入 06.08。
+06.07 已完成：最终源码通过 517 项 Go 测试、96 项前端检查、13 项后端检查、49/49 个 Node 差分、9 项 CLI 故障与边界检查和 15 秒 NIR 模糊测试。验收中修正了 `-x` 与用户函数 `main` 被误报为内部故障的问题，现在分别按 `cap.bad-unary` 和 `cap.entry-name` 退出 3。能力追踪见[06.07 验收记录](docs/validation/06-07-mvp.md)。
+
+06.08 已完成：MVP 交付实验从当前源码打包 15,674 个文件的 `darwin/arm64` 编译器目录，搬到含空格和中文的路径后复核清单；包内编译器成功构建独立的四文件项目，只复制 exe 到空目录并清空环境后仍输出 `90,10,100`。类型错误构建退出 1 且保留旧产物，修正后重建得到 `42`。第六篇见[把编译器交给下一位使用者](docs/notes/06-compiler-mvp.md)，最终验收见[06.08 验收记录](docs/validation/06-compiler-mvp.md)。节点 06 建立完成标签 `mvp/06-compiler-mvp`。

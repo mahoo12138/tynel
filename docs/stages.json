@@ -688,7 +688,7 @@
       "dependsOn": [
         "05"
       ],
-      "status": "active",
+      "status": "completed",
       "plannedNote": "docs/notes/06-compiler-mvp.md",
       "goal": "稳定命令、错误诊断、干净构建和二进制独立运行",
       "gateSubnode": "06.08",
@@ -844,9 +844,14 @@
             "06.07"
           ],
           "planSection": "PLAN.md#task-06-08",
-          "status": "planned",
+          "status": "verified",
           "implementationCommits": [],
-          "evidence": []
+          "evidence": [
+            "docs/notes/06-compiler-mvp.md",
+            "docs/validation/06-compiler-mvp.md",
+            "docs/reference/support.md",
+            "README.md"
+          ]
         }
       ]
     }
