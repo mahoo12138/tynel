@@ -14,6 +14,7 @@
     "void": {"comparison": "shared"},
     "discard": {"comparison": "shared"},
     "big": {"comparison": "shared"},
+    "numeric-literals": {"comparison": "shared"},
     "boolean": {"comparison": "shared"},
     "boolean-literal": {"comparison": "shared"},
     "compare": {"comparison": "shared"},

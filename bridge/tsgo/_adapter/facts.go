@@ -10,12 +10,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"strconv"
 	"strings"
 
 	"github.com/microsoft/typescript-go/internal/ast"
 	"github.com/microsoft/typescript-go/internal/checker"
 	"github.com/microsoft/typescript-go/internal/compiler"
+	"github.com/microsoft/typescript-go/internal/jsnum"
 	"github.com/microsoft/typescript-go/internal/scanner"
 )
 
@@ -852,30 +852,19 @@ func operatorText(k ast.Kind) string {
 
 // numericBits 把 TypeScript 的数字字面量文本转成 binary64 位模式。
 //
+// 转换规则与检查器给字面量类型取值时用的是同一个 jsnum.FromString：
+// 任意精度的整数按最近偶数舍入到 binary64，上溢得到 Infinity。不能用
+// ParseUint/ParseFloat 自行解析——前者把合法的大字面量误判为溢出，后者
+// 把 1e400 这样的合法上溢写成错误。扫描器通常已把文本归一化成十进制，
+// 但这里不依赖这一点：原始写法进来也得到同样的位模式。
+//
 // 只在字面量上做这件事：值就写在源码里，按字面量的写法解析不会丢信息。
 // 类型字符串不这样处理——那需要理解类型语义，本阶段不做。
 func numericBits(text string) (uint64, error) {
-	s := strings.ReplaceAll(text, "_", "")
-	lower := strings.ToLower(s)
-	base := 10
-	switch {
-	case strings.HasPrefix(lower, "0x"):
-		base, s = 16, s[2:]
-	case strings.HasPrefix(lower, "0b"):
-		base, s = 2, s[2:]
-	case strings.HasPrefix(lower, "0o"):
-		base, s = 8, s[2:]
+	// jsnum.FromString 不认识数字分隔符；扫描器会剥掉，直接调用时可能还在。
+	v := jsnum.FromString(strings.ReplaceAll(text, "_", ""))
+	if v.IsNaN() {
+		return 0, fmt.Errorf("不是合法的数字文本 %q", text)
 	}
-	if base != 10 {
-		v, err := strconv.ParseUint(s, base, 64)
-		if err != nil {
-			return 0, err
-		}
-		return math.Float64bits(float64(v)), nil
-	}
-	v, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return 0, err
-	}
-	return math.Float64bits(v), nil
+	return math.Float64bits(float64(v)), nil
 }

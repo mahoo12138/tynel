@@ -201,3 +201,51 @@ $ ./.work/toolchain/go1.27.3-sdk-darwin-arm64/bin/gofmt -l compiler/frontend com
 ```
 
 已有跨模块程序没有回归，`modules / merge / init / alias / linear / diamond` 分别输出 `41 42`、`55`、`1 3 2 4 23`、`42`、`2`、`5`。`docs/reference/facts.md` 补了「参数语义与实参数量」，`docs/reference/capability.md` 补了「参数与实参数量」与 `cap.unsupported-parameter` 错误码。本次未覆盖：默认初始化表达式本身不进语法骨架，后端没有合成缺省值的能力；rest 参数仍由 `cap.bad-type` 拒绝，没有独立语义字段；仍只在 `darwin/arm64` 上验证。适配包改动需要 `./tools/toolchain/prep --frontend-only` 重新同步到 `.work` 里的副本。
+
+## 交付后的数字字面量语义（2026-11-09）
+
+本节记录 `numericBits` 的一次修复，执行时间是 2026-11-09 22:32 CST，代码基于提交 `ac5ee65` 的工作树。环境仍是 macOS 26.6.2、arm64 与锁定的 go1.27.3，夹具放在不入库的 `.work/validation/numeric-literals/`。
+
+问题报告称 `const n: number = 0x10000000000000000` 会在生成事实时失败：适配层用 `strconv.ParseUint(s, base, 64)` 解析非十进制字面量，2^64 超出 uint64。实测发现真实现象被一层上游行为掩盖：扫描器的 `scanBigIntSuffix()` 对每个数字字面量先做 `jsnum.FromString(...).String()`，交给适配层的 `node.Text()` 已经是归一化的十进制文本（`0x10000000000000000` 变成 `18446744073709552000`），所以 `ParseUint` 分支在真实管道里走不到，用户的例子在修复前就能通过。但分支里的错误是真实存在的：任何原始非十进制文本直接进来都会报溢出，十进制支路的 `ParseFloat` 也把 `1e400` 这样的合法上溢误判为错误。用隔离探针逐字复制旧实现确认了两条路径都返回 `strconv.ErrRange`。
+
+修法是把 `numericBits` 整体委托给 `jsnum.FromString`——检查器给字面量类型取值用的正是同一个函数（`checker.go` 的 `getNumberLiteralType(jsnum.FromString(node.Text()))`），事实位模式与检查器字面值因此共用一条规则：任意精度整数经 `big.Int` 按最近偶数舍入到 binary64，上溢得到 Infinity，下溢得到零。数字分隔符仍先剥掉（`jsnum.FromString` 不认识 `_`）；返回 NaN 的文本不是合法字面量，报错。修复后用户的例子直接编译运行：
+
+```text
+$ ./bin/tynel run .work/validation/numeric-literals/main.ts
+1.8446744073709552e+19
+$ ./bin/tynel dump facts .work/validation/numeric-literals/main.ts
+# 声明 n 的初始化表达式位模式：0x43f0000000000000（2^64）
+```
+
+回归覆盖四层。`bridge/tsgo/_adapter/facts_test.go` 新增 22 个正向用例直接拿原始文本测 `numericBits`：超出 uint64 的十六进制 / 二进制 / 八进制（都是 2^64）、uint64 上界舍入、2^53+1 与 2^53+3 的最近偶数舍入（2^53 处间距为 2，2^53+4 的位模式是 `0x4340000000000002`）、53 位以内精确表示、三种进制的上溢、十进制上下溢、分隔符与扫描器归一化文本；另有 4 个非法文本负向用例。真实前端里扫描器会先归一化文本，只有这一层能覆盖「原始写法进来」的路径。`bridge/tsgo/consumer/facts_test.go` 的 `TestFactsNumericLiteralBits` 走真实前端断言 8 个声明的位模式。`tests/source` 新增 `numeric-literals.ts` 端到端程序：大数的十进制拼写两个运行时不同（Tynel 用 Go 的 `'g'` 格式），所以只输出比较结果与归一后的商，与 Node 逐字节一致（`shared` 对照通过）。`bridge/tsgo/check` 新增第 2b 步，在源码树里跑 `go test ./tyneladapter`，适配包单测进入受控驱动。
+
+把源码树副本里的 `numericBits` 临时换回旧实现后，新单测按预期失败：
+
+```text
+--- FAIL: TestNumericBits/超出_uint64_的十六进制
+    numericBits("0x10000000000000000") 报错：strconv.ParseUint: parsing "10000000000000000": value out of range
+--- FAIL: TestNumericBits/超出_uint64_的二进制
+--- FAIL: TestNumericBits/超出_uint64_的八进制
+--- FAIL: TestNumericBits/十六进制上溢
+--- FAIL: TestNumericBits/二进制上溢
+--- FAIL: TestNumericBits/十进制上溢
+    numericBits("1e400") 报错：strconv.ParseFloat: parsing "1e400": value out of range
+```
+
+恢复修复后的全量检查：
+
+```text
+$ ./tools/test
+测试通过：20 个包
+
+$ ./bridge/tsgo/check
+全部通过
+
+$ go vet ./tyneladapter   # 在源码树内执行；消费者模块与根模块 ./tests/... 同样无输出
+（无输出）
+
+$ gofmt -l bridge/tsgo/_adapter bridge/tsgo/consumer tests/source
+（无输出）
+```
+
+本次未覆盖：运行时的数字拼写仍是 Go 的 `'g'` 格式与 `+Inf` / `-Inf`（接完整数值语义时一并改）；仍只在 `darwin/arm64` 上验证。适配包改动需要 `./tools/toolchain/prep --frontend-only` 重新同步到 `.work` 里的副本。

@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Mahoo12138/tynel/compiler/frontend"
@@ -179,6 +180,60 @@ console.log(add(1));
 	for _, call := range facts.Calls {
 		if call.Callee == callee.ID && !facts.ArityOf(callee).Allows(len(call.Arguments)) {
 			t.Errorf("add 的 %d 个实参应被允许：%+v", len(call.Arguments), call)
+		}
+	}
+}
+
+// TestFactsNumericLiteralBits 确认真实前端给大数字面量产出正确的 binary64
+// 位模式：超出 uint64 的非十进制、2^53 以上的舍入、上溢与下溢都不丢值。
+func TestFactsNumericLiteralBits(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "numbers.ts")
+	src := `const hex: number = 0x10000000000000000;
+const bin: number = 0b1_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000_0000;
+const oct: number = 0o2000000000000000000000;
+const tie: number = 0x20000000000001;
+const even: number = 0x20000000000003;
+const over: number = 1e400;
+const huge: number = 0x1` + strings.Repeat("0", 300) + `;
+const under: number = 1e-400;
+console.log(hex);
+`
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	facts := loadFacts(t, path)
+
+	want := map[string]string{
+		"hex":   "0x43f0000000000000", // 2^64，超出 uint64
+		"bin":   "0x43f0000000000000", // 二进制的 2^64
+		"oct":   "0x43f0000000000000", // 八进制的 2^64
+		"tie":   "0x4340000000000000", // 2^53+1 舍入到 2^53
+		"even":  "0x4340000000000002", // 2^53+3 按最近偶数舍入到 2^53+4
+		"over":  "0x7ff0000000000000", // 1e400 上溢为 +Inf
+		"huge":  "0x7ff0000000000000", // 2^1200 上溢为 +Inf
+		"under": "0x0000000000000000", // 1e-400 下溢为 +0
+	}
+	seen := map[string]bool{}
+	for _, d := range facts.Declarations {
+		if d.Kind != frontend.DeclConst {
+			continue
+		}
+		bits, ok := want[d.Name]
+		if !ok {
+			continue
+		}
+		seen[d.Name] = true
+		if d.Body == nil {
+			t.Fatalf("%s 缺少初始化表达式", d.Name)
+		}
+		if d.Body.Bits != bits {
+			t.Errorf("%s 的位模式 = %s，期望 %s", d.Name, d.Body.Bits, bits)
+		}
+	}
+	for name := range want {
+		if !seen[name] {
+			t.Errorf("缺少 %s 的声明事实", name)
 		}
 	}
 }
