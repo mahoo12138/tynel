@@ -3,7 +3,7 @@
   "track": "mvp",
   "deliverable": "typescript-to-native-compiler",
   "phase": "implementation",
-  "currentImplementationNode": "06.07",
+  "currentImplementationNode": "06.08",
   "target": "darwin/arm64",
   "deferredTargets": [
     "windows/amd64"
@@ -820,9 +820,20 @@
             "06.06"
           ],
           "planSection": "PLAN.md#task-06-07",
-          "status": "planned",
+          "status": "verified",
           "implementationCommits": [],
-          "evidence": []
+          "evidence": [
+            "docs/validation/06-07-mvp.md",
+            "SPEC.md",
+            "compiler/capability/capability.go",
+            "compiler/capability/capability_test.go",
+            "tests/source/testdata/cases.json",
+            "tests/source/testdata/unary.ts",
+            "tests/source/testdata/errors/syntax.ts",
+            "tests/source/testdata/errors/console-arity.ts",
+            "tests/source/testdata/errors/unary-variable.ts",
+            "tests/source/testdata/errors/entry-name.ts"
+          ]
         },
         {
           "id": "06.08",

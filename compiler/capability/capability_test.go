@@ -326,6 +326,21 @@ func TestBangRequiresBoolean(t *testing.T) {
 	}
 }
 
+func TestUnarySignRequiresNumericLiteral(t *testing.T) {
+	facts := base()
+	neg := typed("PrefixUnaryExpression", frontend.KindNumber, ident("a", 2))
+	neg.Op = "-"
+	body := node("Block", node("ReturnStatement", neg))
+	facts.Declarations[0].Body = &body
+	wantCode(t, check(t, facts), "cap.bad-unary")
+}
+
+func TestUserMainFunctionIsRejected(t *testing.T) {
+	facts := base()
+	facts.Declarations[0].Name = "main"
+	wantCode(t, check(t, facts), "cap.entry-name")
+}
+
 // TestDiscardedStatementsPass 确认「求值但丢弃」不是错误：调用语句与裸标识符
 // 都只是把结果丢掉，副作用仍然保留。
 func TestDiscardedStatementsPass(t *testing.T) {

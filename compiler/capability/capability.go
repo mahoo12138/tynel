@@ -70,9 +70,17 @@ type checker struct {
 	loopDepth  int
 }
 
+// EntryName 是固定宿主入口使用的名字。用户函数不能占用它；这不是 TypeScript
+// 规则，因此必须在能力层明确拒绝，而不是让降低阶段报内部故障。
+const EntryName = "main"
+
 func (c *checker) declaration(d *frontend.Declaration) {
 	switch d.Kind {
 	case frontend.DeclFunction:
+		if d.Name == EntryName {
+			c.report(d.Start, "cap.entry-name", "用户函数不能占用固定入口名 %q", EntryName)
+			return
+		}
 		c.declaredType(d.Result, d.Start, "函数 %q 的返回类型", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindVoid)
 	case frontend.DeclParameter:
 		c.declaredType(d.Type, d.Start, "参数 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean)
@@ -314,7 +322,11 @@ func (c *checker) node(n *frontend.Node) {
 			c.report(n.Start, "cap.unsupported-syntax", "一元运算有 %d 个操作数", len(n.Children))
 			return
 		}
-		c.valueNode(&n.Children[0], "一元 "+n.Op+" 的操作数")
+		operand := &n.Children[0]
+		if operand.Kind != "NumericLiteral" || operand.Bits == "" {
+			c.report(n.Start, "cap.bad-unary", "一元 %q 只支持数字字面量；变量取负需要额外的取负操作", n.Op)
+			return
+		}
 	case "Identifier":
 		c.identifier(n)
 	case "NumericLiteral", "TrueKeyword", "FalseKeyword":

@@ -81,3 +81,5 @@ MVP 的交付物是编译器本身：通过 `tynel build input.ts -o out/program
 06.05 已完成：在干净目录重建工具和示例。`./tools/clean-build --tests` 从提交 `236cbe6` 建立新的 detached worktree，拒绝已有输出和未提交的跟踪文件；在全新的 `.work`、Go 构建缓存和模块缓存中下载并核验 go1.27.3 SDK、Go 源码和 typescript-go 归档，重建 bridge 与 CLI，18 个 Go 测试包通过。四个示例和新打包的 15,674 文件发行目录都通过；把发行目录复制到 `搬移 后的编译器` 后，`tynel build examples/add.ts` 仍输出 `42`。缺网退出 5、同尺寸坏哈希退出 6、错误 SDK 退出 8，旧式 `.tynel/compile` 诱饵没有参与构建。步骤见[复现指南](docs/reproducing.md#在干净目录重建)，验收见[06.05 验收记录](docs/validation/06-05-clean.md)。
 
 06.06 已完成：四个 06.05 产物在限制性 macOS Seatbelt 环境中脱离源码、NIR、Node 和编译器目录运行，`add`、`choices`、`collatz`、`quote` 全部退出 0 且输出逐字节匹配；源码与 Node 拒绝探针也实际生效。产物只动态依赖 `libSystem` 和 `libresolv`。完整结果见[06.06 验收记录](docs/validation/06-06-independent.md)。
+
+06.07 已完成：最终源码通过 517 项 Go 测试、96 项前端检查、13 项后端检查、49/49 个 Node 差分、9 项 CLI 故障与边界检查和 15 秒 NIR 模糊测试。验收中修正了 `-x` 与用户函数 `main` 被误报为内部故障的问题，现在分别按 `cap.bad-unary` 和 `cap.entry-name` 退出 3。能力追踪见[06.07 验收记录](docs/validation/06-07-mvp.md)，下一步进入 06.08。
