@@ -119,6 +119,78 @@ func TestLoadTypeOnlyEdge(t *testing.T) {
 	}
 }
 
+// 值依赖加反向类型依赖不是运行时环：入口值导入 b.ts，b.ts 只用 import type
+// 指回入口。初始化顺序可以是 b.ts 在前、入口在后，图必须接受并保留全部边。
+func TestLoadAcceptsReverseTypeEdge(t *testing.T) {
+	root, entry := setup(t, map[string]string{
+		"main.ts": "import { run } from './b.ts';\nimport type { B } from './b.ts';\nexport interface A { value: B }\nrun();",
+		"b.ts":    "import type { A } from './main.ts';\nexport interface B { value: A }\nexport function run(): void {}",
+	})
+	scan := fakeScanner{
+		"main.ts": {{Specifier: "./b.ts"}, {Specifier: "./b.ts", TypeOnly: true}},
+		"b.ts":    {{Specifier: "./main.ts", TypeOnly: true}},
+	}
+	g, err := Load(root, entry, scan)
+	if err != nil {
+		t.Fatalf("值依赖加反向类型边应能载入：%v", err)
+	}
+	if len(g.Files) != 2 || len(g.Edges) != 3 {
+		t.Fatalf("文件 %d 条、边 %d 条，期望 2 与 3", len(g.Files), len(g.Edges))
+	}
+	back := g.Edges[1]
+	if !back.TypeOnly || back.From != "b.ts" || back.To != "main.ts" {
+		t.Fatalf("反向类型边没有保留：%+v", back)
+	}
+}
+
+// 纯类型循环合法：类型边只负责让检查器看到声明，不产生运行时依赖。
+func TestLoadAcceptsTypeOnlyCycle(t *testing.T) {
+	root, entry := setup(t, map[string]string{
+		"main.ts": "import type { A } from './a.ts';\nexport type Main = A;",
+		"a.ts":    "import type { B } from './b.ts';\nexport interface A { value: B }",
+		"b.ts":    "import type { A } from './a.ts';\nexport interface B { value: A }",
+	})
+	scan := fakeScanner{
+		"main.ts": {{Specifier: "./a.ts", TypeOnly: true}},
+		"a.ts":    {{Specifier: "./b.ts", TypeOnly: true}},
+		"b.ts":    {{Specifier: "./a.ts", TypeOnly: true}},
+	}
+	g, err := Load(root, entry, scan)
+	if err != nil {
+		t.Fatalf("纯类型循环应能载入：%v", err)
+	}
+	if len(g.Files) != 3 || len(g.Edges) != 3 {
+		t.Fatalf("文件 %d 条、边 %d 条，期望 3 与 3", len(g.Files), len(g.Edges))
+	}
+	for _, edge := range g.Edges {
+		if !edge.TypeOnly {
+			t.Fatalf("类型循环里混入了值边：%+v", edge)
+		}
+	}
+}
+
+// 只经类型边才能到达的值环也不拒绝：这些模块不会进入初始化顺序，与
+// modules.Plan 从入口只走值边的规则一致。
+func TestLoadAcceptsValueCycleBehindTypeEdge(t *testing.T) {
+	root, entry := setup(t, map[string]string{
+		"main.ts": "import type { T } from './a.ts';\nexport type Main = T;",
+		"a.ts":    "import { b } from './b.ts';\nexport const a = b + 1;\nexport interface T { value: number }",
+		"b.ts":    "import { a } from './a.ts';\nexport const b = a + 1;",
+	})
+	scan := fakeScanner{
+		"main.ts": {{Specifier: "./a.ts", TypeOnly: true}},
+		"a.ts":    {{Specifier: "./b.ts"}},
+		"b.ts":    {{Specifier: "./a.ts"}},
+	}
+	g, err := Load(root, entry, scan)
+	if err != nil {
+		t.Fatalf("类型边背后的值环不影响入口初始化，应能载入：%v", err)
+	}
+	if len(g.Files) != 3 || len(g.Edges) != 3 {
+		t.Fatalf("文件 %d 条、边 %d 条，期望 3 与 3", len(g.Files), len(g.Edges))
+	}
+}
+
 func TestLoadRejectsCycle(t *testing.T) {
 	root, entry := setup(t, map[string]string{
 		"main.ts": "import { a } from './a.ts';",

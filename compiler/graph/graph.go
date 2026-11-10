@@ -1,5 +1,5 @@
 // Package graph 在项目根下递归发现显式相对导入，固定每个文件的字节快照，
-// 并在进入检查和降低之前拒绝缺失目标与依赖环。
+// 并在进入检查和降低之前拒绝缺失目标与值依赖环。
 //
 // 图只认 tsgo 给出的导入声明：调用方通过 Scanner 提供每条导入的 specifier、
 // 位置和 type-only 标记。路径解析仍由 project 负责，所以裸模块、越界和大小写
@@ -66,26 +66,22 @@ type Report struct {
 	Hash  string     `json:"hash"`
 }
 
-// Load 从 entry 出发递归载入依赖。遇到缺失目标、越界路径或环时返回错误，
-// 不返回半个图。
+// Load 从 entry 出发递归载入依赖。遇到缺失目标、越界路径或值依赖环时返回
+// 错误，不返回半个图。类型边同样递归载入，让检查器看到全部声明，但不参与
+// 环检测。
 func Load(root *project.Root, entry project.File, scan Scanner) (*Graph, error) {
 	if root == nil || scan == nil {
 		return nil, diagnostic.New(diagnostic.Internal, "graph.missing-input", "依赖图缺少项目根或扫描器")
 	}
 	g := &Graph{Entry: entry}
-	state := make(map[string]int) // 0 未访问，1 正在访问，2 完成
-	var stack []project.File
+	seen := make(map[string]bool)
 
 	var visit func(project.File) error
 	visit = func(file project.File) error {
-		switch state[file.Path] {
-		case 1:
-			return diagnostic.New(diagnostic.Source, "graph.cycle", "依赖环：%s", cycleText(stack, file))
-		case 2:
+		if seen[file.Path] {
 			return nil
 		}
-		state[file.Path] = 1
-		stack = append(stack, file)
+		seen[file.Path] = true
 		g.Files = append(g.Files, file)
 
 		imports, err := scan.Imports(file)
@@ -113,11 +109,12 @@ func Load(root *project.Root, entry project.File, scan Scanner) (*Graph, error) 
 				return err
 			}
 		}
-		stack = stack[:len(stack)-1]
-		state[file.Path] = 2
 		return nil
 	}
 	if err := visit(entry); err != nil {
+		return nil, err
+	}
+	if err := checkValueCycle(g); err != nil {
 		return nil, err
 	}
 	infos := make([]FileInfo, 0, len(g.Files))
@@ -126,6 +123,44 @@ func Load(root *project.Root, entry project.File, scan Scanner) (*Graph, error) 
 	}
 	g.Hash = HashFiles(infos)
 	return g, nil
+}
+
+// checkValueCycle 从入口只沿值边检测环，与 modules.Plan 的初始化规则一致：
+// 类型边不产生执行顺序，纯类型环和只经类型边才能到达的环都不拒绝。
+func checkValueCycle(g *Graph) error {
+	files := make(map[string]project.File, len(g.Files))
+	for _, file := range g.Files {
+		files[file.Path] = file
+	}
+	deps := make(map[string][]string)
+	for _, edge := range g.Edges {
+		if !edge.TypeOnly {
+			deps[edge.From] = append(deps[edge.From], edge.To)
+		}
+	}
+	state := make(map[string]int) // 0 未访问，1 正在访问，2 完成
+	var stack []project.File
+
+	var visit func(string) error
+	visit = func(path string) error {
+		switch state[path] {
+		case 1:
+			return diagnostic.New(diagnostic.Source, "graph.cycle", "依赖环：%s", cycleText(stack, files[path]))
+		case 2:
+			return nil
+		}
+		state[path] = 1
+		stack = append(stack, files[path])
+		for _, dep := range deps[path] {
+			if err := visit(dep); err != nil {
+				return err
+			}
+		}
+		stack = stack[:len(stack)-1]
+		state[path] = 2
+		return nil
+	}
+	return visit(g.Entry.Path)
 }
 
 // cycleText 从第一次进入环的位置开始列出完整文件路径。只用文件名会在

@@ -136,7 +136,7 @@ main.ts 先导入 discount.ts，再导入 shipping.ts
 | `project.outside-root` | 导入或符号链接越出项目根 |
 | `project.case-conflict` | 请求大小写与磁盘条目不一致 |
 | `project.non-ts` | 目标不是 `.ts` 文件 |
-| `graph.cycle` | 值依赖或类型依赖成环；消息列出完整路径 |
+| `graph.cycle` | 入口沿值边可达的依赖成环；消息列出完整路径。类型边不参与环检测 |
 | `graph.resolution-mismatch` | tsgo 与项目解析指向不同文件 |
 | `module.missing-export` | 导入的模块没有该导出；消息给出导出和导入文件路径 |
 | `module.missing-module` | 导入指向依赖图里不存在的模块 |
