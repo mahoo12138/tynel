@@ -25,6 +25,13 @@ type factType struct {
 	Kind string `json:"kind"`
 }
 
+type factDependency struct {
+	Module   string `json:"module"`
+	TypeOnly bool   `json:"typeOnly,omitempty"`
+	Start    int    `json:"start"`
+	Length   int    `json:"length"`
+}
+
 type factImport struct {
 	Local    string `json:"local"`
 	Imported string `json:"imported"`
@@ -65,17 +72,18 @@ type factDeclaration struct {
 // 名字判断支持与否。只保留语句、表达式和变量声明这三类结构，类型节点、
 // 修饰符、名字令牌都不进树——它们不参与能力判断。
 type factNode struct {
-	Kind     string     `json:"kind"`
-	Start    int        `json:"start"`
-	Length   int        `json:"length"`
-	Op       string     `json:"op,omitempty"`
-	Name     string     `json:"name,omitempty"`
-	Target   int        `json:"target,omitempty"`
-	Decl     int        `json:"decl,omitempty"`
-	Bits     string     `json:"bits,omitempty"`
-	TypeOnly bool       `json:"typeOnly,omitempty"`
-	Type     *factType  `json:"type,omitempty"`
-	Children []factNode `json:"children,omitempty"`
+	Kind       string     `json:"kind"`
+	Start      int        `json:"start"`
+	Length     int        `json:"length"`
+	Op         string     `json:"op,omitempty"`
+	Name       string     `json:"name,omitempty"`
+	Target     int        `json:"target,omitempty"`
+	Decl       int        `json:"decl,omitempty"`
+	Bits       string     `json:"bits,omitempty"`
+	TypeOnly   bool       `json:"typeOnly,omitempty"`
+	ImportKind string     `json:"importKind,omitempty"`
+	Type       *factType  `json:"type,omitempty"`
+	Children   []factNode `json:"children,omitempty"`
 }
 
 type factReference struct {
@@ -117,6 +125,7 @@ type factsPayload struct {
 	File          string            `json:"file"`
 	ModulePath    string            `json:"modulePath,omitempty"`
 	Module        *factNode         `json:"module,omitempty"`
+	Dependencies  []factDependency  `json:"dependencies,omitempty"`
 	Imports       []factImport      `json:"imports,omitempty"`
 	Exports       []factExport      `json:"exports,omitempty"`
 	Declarations  []factDeclaration `json:"declarations"`
@@ -295,18 +304,14 @@ func (b *factBuilder) collect(file *ast.SourceFile) {
 	}
 }
 
-// declareImport 记录命名导入的本地名、目标导出名和解析后的模块。默认导入和
-// 命名空间导入暂不进入事实；能力检查会按导入节点拒绝不支持的形状。
+// declareImport 记录一条模块依赖边，以及命名导入产生的本地绑定。
+//
+// 每条导入声明都会执行目标模块，所以依赖边与绑定分开记：副作用导入没有
+// ImportClause，默认导入和命名空间导入没有命名绑定，但它们同样产生依赖边；
+// 只有命名导入额外记录本地名、目标导出名和解析后的模块。
 func (b *factBuilder) declareImport(node *ast.Node) {
 	decl := node.AsImportDeclaration()
 	clause := decl.ImportClause
-	if clause == nil || clause.AsImportClause().NamedBindings == nil {
-		return
-	}
-	named := clause.AsImportClause().NamedBindings
-	if named.Kind != ast.KindNamedImports {
-		return
-	}
 	module := ""
 	if decl.ModuleSpecifier != nil {
 		if resolved := b.program.GetResolvedModuleFromModuleSpecifier(b.file, decl.ModuleSpecifier); resolved != nil {
@@ -315,6 +320,24 @@ func (b *factBuilder) declareImport(node *ast.Node) {
 		if module == "" && ast.IsStringLiteralLike(decl.ModuleSpecifier) {
 			module = decl.ModuleSpecifier.AsStringLiteral().Text
 		}
+	}
+	// 解析不到模块说明源码本身有错，交给诊断报告；依赖边不能带着空模块
+	// 进入事实校验，否则源码错误会被内部故障顶替。
+	if module == "" {
+		return
+	}
+	b.payload.Dependencies = append(b.payload.Dependencies, factDependency{
+		Module:   module,
+		TypeOnly: importIsTypeOnly(clause),
+		Start:    b.startOf(node),
+		Length:   node.End() - b.startOf(node),
+	})
+	if clause == nil || clause.AsImportClause().NamedBindings == nil {
+		return
+	}
+	named := clause.AsImportClause().NamedBindings
+	if named.Kind != ast.KindNamedImports {
+		return
 	}
 	for _, element := range named.AsNamedImports().Elements.Nodes {
 		if !ast.IsImportSpecifier(element) {
@@ -525,8 +548,9 @@ func (b *factBuilder) fillVariable(item pending) {
 	b.walk(decl.Initializer)
 }
 
-// walk 只走函数体和初始化表达式，不走类型注解：类型注解里的 number、void
-// 是类型名，不是对变量的引用，混进来会造出假的引用事实。
+// walk 只收集运行时名称，不进入类型空间：类型注解里的 Quantity、number
+// 是类型名，不是对值的引用。References 因此是纯运行时引用；把类型名混进来
+// 会让 import type 被后续阶段误判成「当值使用」。
 func (b *factBuilder) walk(node *ast.Node) {
 	if node == nil {
 		return
@@ -547,6 +571,11 @@ func (b *factBuilder) walk(node *ast.Node) {
 		b.expression(node, "binary")
 	}
 	node.ForEachChild(func(child *ast.Node) bool {
+		// 类型节点是整棵类型子树（TypeReference、KeywordTypeNode 等），
+		// 直接跳过，不把里面的限定名或类型参数当成运行时引用。
+		if ast.IsTypeNode(child) {
+			return false
+		}
 		b.walk(child)
 		return false
 	})
@@ -681,6 +710,7 @@ func (b *factBuilder) bodyNode(node *ast.Node) *factNode {
 	}
 	if ast.IsImportDeclaration(node) {
 		out.TypeOnly = importIsTypeOnly(node.AsImportDeclaration().ImportClause)
+		out.ImportKind = importKind(node.AsImportDeclaration())
 	}
 	if ast.IsExpression(node) {
 		typ := b.typeOf(b.checker.GetTypeAtLocation(node))

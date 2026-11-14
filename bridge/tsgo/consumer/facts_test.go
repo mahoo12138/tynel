@@ -237,3 +237,128 @@ console.log(hex);
 		}
 	}
 }
+
+// TestFactsRecordDependencyEdgesWithoutBindings 确认每条导入声明都产生依赖边，
+// 与本地绑定分开建模：副作用导入没有绑定，但目标模块仍要先执行；纯类型导入
+// 只产生类型边。
+func TestFactsRecordDependencyEdgesWithoutBindings(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := filepath.Join(dir, "main.ts")
+	registerPath := filepath.Join(dir, "register.ts")
+	typesPath := filepath.Join(dir, "types.ts")
+	mainSource := `import "./register.ts";
+import type { T } from "./types.ts";
+
+const value: T = 1;
+console.log(value);
+`
+	registerSource := "console.log(2);\n"
+	typesSource := "export type T = number;\n"
+	for path, source := range map[string]string{mainPath: mainSource, registerPath: registerSource, typesPath: typesSource} {
+		if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	session, err := tyneladapter.Open(tyneladapter.Options{
+		FileName: mainPath,
+		Source:   []byte(mainSource),
+		Files: []tyneladapter.Input{
+			{FileName: mainPath, Source: []byte(mainSource)},
+			{FileName: registerPath, Source: []byte(registerSource)},
+			{FileName: typesPath, Source: []byte(typesSource)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("建立会话失败：%v", err)
+	}
+	raw, err := session.Facts()
+	if err != nil {
+		t.Fatalf("读取事实失败：%v", err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatalf("关闭会话失败：%v", err)
+	}
+	facts, err := frontend.Decode(raw)
+	if err != nil {
+		t.Fatalf("解码事实失败：%v", err)
+	}
+
+	deps := map[string]frontend.Dependency{}
+	for _, dep := range facts.Dependencies {
+		deps[dep.Module] = dep
+	}
+	register, ok := deps[registerPath]
+	if !ok || register.TypeOnly {
+		t.Fatalf("副作用导入应产生运行时依赖边：%+v", facts.Dependencies)
+	}
+	types, ok := deps[typesPath]
+	if !ok || !types.TypeOnly {
+		t.Fatalf("纯类型导入应产生类型依赖边：%+v", facts.Dependencies)
+	}
+	for _, imp := range facts.Imports {
+		if imp.Module == registerPath {
+			t.Fatalf("副作用导入不应产生本地绑定：%+v", imp)
+		}
+	}
+}
+
+// TestFactsSkipTypeAnnotationNames 确认 walk 不把类型注解里的名字记成运行时
+// 引用：`const q: Quantity = 1` 只在类型空间使用 Quantity，References 里
+// 不应出现它，否则 import type 会被模块阶段误判成当值使用。
+func TestFactsSkipTypeAnnotationNames(t *testing.T) {
+	dir := t.TempDir()
+	mainPath := filepath.Join(dir, "main.ts")
+	typesPath := filepath.Join(dir, "types.ts")
+	mainSource := `import type { Quantity } from "./types.ts";
+
+function display(): void {
+  const q: Quantity = 1;
+  console.log(q);
+}
+
+display();
+`
+	typesSource := "export type Quantity = number;\n"
+	for path, source := range map[string]string{mainPath: mainSource, typesPath: typesSource} {
+		if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	session, err := tyneladapter.Open(tyneladapter.Options{
+		FileName: mainPath,
+		Source:   []byte(mainSource),
+		Files: []tyneladapter.Input{
+			{FileName: mainPath, Source: []byte(mainSource)},
+			{FileName: typesPath, Source: []byte(typesSource)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("建立会话失败：%v", err)
+	}
+	raw, err := session.Facts()
+	if err != nil {
+		t.Fatalf("读取事实失败：%v", err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatalf("关闭会话失败：%v", err)
+	}
+	facts, err := frontend.Decode(raw)
+	if err != nil {
+		t.Fatalf("解码事实失败：%v", err)
+	}
+
+	for _, ref := range facts.References {
+		if ref.Name == "Quantity" || ref.TargetModule == typesPath {
+			t.Fatalf("类型注解不应产生运行时引用：%+v", ref)
+		}
+	}
+	typeOnly := false
+	for _, imp := range facts.Imports {
+		if imp.Local == "Quantity" && imp.TypeOnly {
+			typeOnly = true
+		}
+	}
+	if !typeOnly {
+		t.Fatalf("import type 绑定应被记录为 type-only：%+v", facts.Imports)
+	}
+}

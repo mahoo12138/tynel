@@ -80,8 +80,9 @@ replace github.com/microsoft/typescript-go => ../../../.work/frontend/typescript
 
 宿主的生命周期由 `internal/host` 管：
 
-- 宿主二进制固定在 `.work/frontend/bin/consumer`，旁边有一份戳记，记录二进制自身与全部源码文件（消费者模块的 `.go`、`go.mod`、`go.sum` 和适配包源码）的 sha256。
+- 宿主二进制固定在 `.work/frontend/bin/consumer`，旁边有一份戳记，记录二进制自身与全部编译输入的 sha256：消费者模块的 `.go`/`go.mod`/`go.sum`、适配包源码、`compiler` 包，以及 `replace` 指向的整棵前端源码树——树里的非测试 `.go`、`go:embed` 的声明库 `.d.ts` 和模块文件。
 - 戳记不匹配、二进制缺失，或者源码树里的适配包副本与 `bridge/tsgo/_adapter` 不一致时，命令行先重建或直接拒绝。用旧宿主检查新代码，结论不可信。
+- 前端树的身份只覆盖编译输入：`testdata` 与 `_`/`.` 开头的目录不会被 go 工具发现，改它们不影响宿主二进制，也不进入戳记。整棵树有五万多个文件，逐字节哈希会让每次命令多花数秒，因此不按字面意义上的「全部文件」计算，而是按「会被编进二进制或影响编译的文件」计算。
 - 重建用隔离工具链的 `go`，模块缓存放在 `.work/frontend/gomodcache`，代理默认 `https://goproxy.cn`，可用 `TYNEL_GOPROXY` 覆盖。进度写到标准错误。
 
 结果协议在 `compiler/pipeline`：

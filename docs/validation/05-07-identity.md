@@ -227,3 +227,45 @@ ok  github.com/Mahoo12138/tynel/internal/build
 - 最终复核与后端读取之间仍有一个很小的替换窗口；本节点不把构建声明为密封沙箱。
 - 只在 `darwin/arm64` 上验证。
 - 纯类型变化导致的「同一 NIR、同一产物」只在本地测试和上面的注释实验中观察，没有扩展成跨平台差异测试。
+
+## 交付后的构建环境受控修复（2026-11-11）
+
+本节记录构建结果受未纳入身份哈希的 Go 环境变量影响的一次修复，执行时间是 2026-11-11 13:29 CST，代码基于提交 `7855d58` 的工作树。环境：Mac mini（Apple M4，arm64）、macOS 26.6.2、隔离 go1.27.3、前端 typescript/v7.0.2。上文「边界」中「不覆盖编译器之外的任意环境变量」自本节起收窄：会改变构建的宿主变量被移除或强制为受控值。
+
+`build.Run` 过去把 `os.Environ()` 原样传给隔离 SDK 的 `go build`，只追加 `TYNEL_NIR` 与 `TYNEL_COMPILE`。身份只记录锁定目标与工具链内容哈希，不约束实际影响构建的环境变量，于是相同 `ArtifactSHA256` 可能对应不同产物：
+
+```zsh
+# 修复前：宿主变量让 Go 交叉编译，记录却仍写锁定目标。
+GOOS=linux GOARCH=amd64 GOFLAGS=-v ./bin/tynel build examples/add.ts -o /tmp/…/app
+file /tmp/…/app                 # ELF 64-bit LSB executable, x86-64
+# app.build.json 的 config.target 与 toolchain.target 仍是 darwin/arm64。
+```
+
+`GOROOT` 可让 go 用另一套标准库，`GOOS`/`GOARCH` 可改变产物平台，`GOFLAGS`/`GOEXPERIMENT`/`GCFLAGS` 可注入额外参数，都不进入身份。
+
+修复新增 `goBuildEnv`：先从继承环境移除所有 `GO*`、`CGO*` 以及 `CC`/`CXX`/`GCFLAGS`，再显式设置 `GOROOT` 为隔离 SDK 目录、`GOOS`/`GOARCH` 为锁定目标（解析 `report.Target`）、`CGO_ENABLED=0`、`GOFLAGS` 清空、`GOTOOLCHAIN=local`；其余变量（`PATH`、`HOME`、`TMPDIR` 等）保留。固定支持文件是纯 Go，关闭 cgo 让产物不依赖宿主 C 编译器。`Config` 新增 `cgoEnabled` 字段并进入身份哈希，`IdentitySchemaVersion` 升到 2。
+
+修复后同一组 hostile 变量不再改变构建：
+
+```zsh
+GOOS=linux GOARCH=amd64 GOFLAGS=-v GOROOT=/nonexistent CGO_ENABLED=1 \
+  ./bin/tynel build examples/add.ts -o /tmp/…/app
+file /tmp/…/app                 # Mach-O 64-bit executable arm64
+/tmp/…/app                      # 42
+# config = {target: darwin/arm64, supportDir: bridge/go/support, cgoEnabled: 0}
+```
+
+新增回归 `TestBuildEnvIsControlled`（`internal/build`）：用 `t.Setenv` 注入 `GOROOT`/`GOOS`/`GOARCH`/`GOFLAGS`/`GOEXPERIMENT`/`CGO_ENABLED`/`GOTOOLCHAIN`/`GCFLAGS`，断言传给后端的环境里 `GOROOT` 为隔离 SDK、`GOOS`/`GOARCH` 为 `darwin/arm64`、`CGO_ENABLED=0`、`GOFLAGS` 空、`GOTOOLCHAIN=local`，`GOEXPERIMENT`/`GCFLAGS` 被移除，且 `Config` 记录受控值。旧实现原样继承环境，该用例失败。
+
+累计验证：
+
+| 入口 | 结果 |
+| --- | --- |
+| `./tools/test` | 20 个包全部通过（含 `tests/native`、`tests/source` 的真实原生构建，CGO=0 下产物运行正常） |
+| `go test -count=1 ./internal/build` | 37 个顶层测试通过（含新增 1 个） |
+| `./bridge/tsgo/check` | 103 项全过 |
+| `./bridge/go/check` | 16 项全过 |
+| `go vet ./...` | 无输出 |
+| `gofmt` | 无差异 |
+
+本次未覆盖：只在 `darwin/arm64` 上验证；`CGO_ENABLED` 固定为 0，未提供按目标切换 cgo 的配置；前端宿主构建（`internal/host`）仍继承环境，不属于本节点的用户产物构建路径；非 Unix 平台无构建锁实现。

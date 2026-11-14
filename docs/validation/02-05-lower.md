@@ -118,3 +118,62 @@ PASS  手写 NIR 与源码生成的 NIR 输出一致
 - **`console.log` 的降低提前到了 02.05**。02.06 的交付里包含「单个 number 参数的 console 输出」，但 02.05 的验收要求 `add.ts` 与手写 NIR 行为一致——不打印就没有行为可比。现在降低把 `console.log(x)` 映射成 NIR 的 `print`；02.06 仍负责 void 函数、无值 `return`、丢弃结果的表达式语句和输出格式。
 - **一元负号只支持字面量**。NIR 没有取负指令，`-x` 需要一条新操作；本阶段按「保留负零」的验收只折字面量，其余情况在能力与降低两层都拒绝。
 - **函数内不能引用模块级常量**。NIR 没有全局变量，把模块常量降到 `main` 的局部值之后，其他函数看不到它。能力检查报 `cap.module-const-in-function`，降低报 `lower.module-const-in-function`，两层一致。
+
+## 交付后的临时名冲突修复（2026-11-11）
+
+本节记录降低器临时名与用户合法标识符冲突的一次修复，执行时间是 2026-11-11 09:38 CST，代码基于提交 `7855d58` 的工作树。环境：Mac mini（Apple M4，arm64）、macOS 26.6.2、隔离 go1.27.3、前端 typescript/v7.0.2、Node v22.14.0。
+
+`tempName()` 过去固定从 `_tmp_1` 递增。`_tmp_1` 是合法的 TypeScript 参数名或局部值名，能力检查没有保留这段命名空间，于是下面这段合法源码会被拒绝：
+
+```typescript
+function both(_tmp_1: boolean): boolean {
+  return _tmp_1 && true;
+}
+
+console.log(both(false));
+```
+
+修复前运行报内部故障（退出 5）：短路降低生成名为 `_tmp_1` 的 NIR 局部值，与函数参数重名，`nir.Verify` 报 `nir.duplicate-name`，`Lower` 把它包装成 `lower.invalid-output`。冲突不止参数：先声明或后声明的局部值、模块常量、嵌套块里的同名值，以及连续短路/三元/实参物化生成的多个临时值，都会撞上同一套固定序号。
+
+修复引入临时名分配器：`Lower` 与 `LowerMerged` 在降低前把这份事实里所有声明名登记进 `reserved`，`tempName()` 递增序号并跳过被占用的名字。序号在整个降低单元里单调递增，临时值之间也不会重名。登记整个单元而不是当前作用域是安全的：多绕开几个名字只改变临时名序号，不改变任何用户代码的含义。NIR 局部值仍按名字寻址；改用独立数值 ID、名字只作调试展示是更彻底的长期方案，本轮不做。
+
+新增回归 `TestTempNamesAvoidUserNames`（`compiler/lower`）覆盖六种形状：参数名占用 `_tmp_1`、局部值先于临时值声明、局部值后于临时值声明、连续短路与三元避开多个占用名、嵌套块局部占用后续序号、模块常量占用 `_tmp_1`。每个子用例都断言降低成功、临时名数量正确、不与用户声明名冲突且互不重复。把 `lower.go` 临时换回 `HEAD` 的旧实现后，六个子用例全部失败：
+
+```text
+--- FAIL: TestTempNamesAvoidUserNames/参数名占用__tmp_1
+    降低失败：内部故障 (lower.invalid-output)（详情：nir.duplicate-name: 函数 "f" 里 "_tmp_1" 与参数重复）
+--- FAIL: TestTempNamesAvoidUserNames/局部值先于临时值声明
+    … nir.duplicate-name: 函数 "f" 里 "_tmp_1" 重复定义
+--- FAIL: TestTempNamesAvoidUserNames/局部值后于临时值声明
+    … nir.duplicate-name: 函数 "f" 里 "_tmp_1" 重复定义
+--- FAIL: TestTempNamesAvoidUserNames/连续短路与三元避开多个占用名
+    … nir.duplicate-name: 函数 "f" 里 "_tmp_1" 重复定义
+--- FAIL: TestTempNamesAvoidUserNames/嵌套块局部占用后续序号
+    … nir.duplicate-name: 函数 "f" 里 "_tmp_2" 重复定义
+--- FAIL: TestTempNamesAvoidUserNames/模块常量占用__tmp_1
+    … nir.duplicate-name: 函数 "main" 里 "_tmp_1" 重复定义
+```
+
+恢复修复后全部通过。端到端新增 `tests/source/testdata/temp-names.ts`（清单名 `temp-names`），把参数、先后声明的局部值、嵌套块局部值、模块常量和连续短路/三元放进同一个程序：
+
+```zsh
+# 源码 → 原生 → 运行，输出与 Node 逐字节一致。
+./bin/tynel run --root tests/source/testdata temp-names.ts
+# false
+# 111
+# false
+```
+
+累计验证：
+
+| 入口 | 结果 |
+| --- | --- |
+| `./tools/test` | 20 个包全部通过 |
+| `go test -count=1 ./compiler/lower` | 17 个顶层测试通过（含新增 1 个、6 个子用例） |
+| `tests/source` | 119 个用例；`temp-names` 的 TestPrograms 与 TestNodeReference 均通过 |
+| `./bridge/tsgo/check` | 101 项全过 |
+| `./bridge/go/check` | 16 项全过 |
+| `go vet ./...` | 无输出 |
+| `gofmt` | 无差异 |
+
+本次未覆盖：只在 `darwin/arm64` 上验证；NIR 局部值仍按名字寻址，数值 ID 方案留待后续；临时名序号跨函数单调递增，未做按函数重置（重置需要额外维护已用名集合，本轮不需要）。

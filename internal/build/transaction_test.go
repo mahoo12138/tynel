@@ -89,6 +89,14 @@ func TestRunRejectsConcurrentOutput(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(output), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// 锁键按规范路径生成：Run 会先解析输出目录（macOS 的临时目录本身经过
+	// /var -> /private/var 符号链接）。测试持有锁时也用同一条规范路径，
+	// 才能模拟同一个输出上的并发构建。
+	canonicalDir, err := filepath.EvalSymlinks(filepath.Dir(output))
+	if err != nil {
+		t.Fatal(err)
+	}
+	output = filepath.Join(canonicalDir, filepath.Base(output))
 	lock, err := acquireOutputLock(output)
 	if err != nil {
 		t.Fatalf("无法取得测试锁：%v", err)
@@ -348,4 +356,80 @@ func TestRunIgnoresLegacyArchiveDirectories(t *testing.T) {
 	if !strings.Contains(record.Input.Path, filepath.FromSlash(".work/build/snapshots")) {
 		t.Errorf("快照应来自 .work：%q", record.Input.Path)
 	}
+}
+
+// TestRunRejectsConcurrentOutputThroughDirSymlink 确认目录符号链接不能绕过
+// 构建锁：真实目录与指向它的 symlink 解析到同一个目录项，锁键必须一致，
+// 第二个构建无法并发进入发布阶段。filepath.Abs 不解析目录 symlink，旧实现
+// 用未解析的路径字符串生成锁键，两条路径各拿一把锁，会同时替换同一产物与
+// 记录，失败回滚还可能删掉另一个进程刚发布的文件。
+func TestRunRejectsConcurrentOutputThroughDirSymlink(t *testing.T) {
+	root, runner := newProject(t)
+	runner.writeOutput = true
+	realDir := filepath.Join(root, "dist")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(root, "output-link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatal(err)
+	}
+	// 锁键按规范路径生成（生产里 Run 会先解析目录）；测试持有锁时也用它，
+	// 模拟「真实目录上已有一个构建在发布」。
+	canonicalReal, err := filepath.EvalSymlinks(realDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	realOutput := filepath.Join(canonicalReal, "app")
+	linkOutput := filepath.Join(linkDir, "app")
+
+	lock, err := acquireOutputLock(realOutput)
+	if err != nil {
+		t.Fatalf("无法取得测试锁：%v", err)
+	}
+	defer lock.release()
+
+	_, err = Run(Options{Root: root, InputData: exampleNIR(t), Output: linkOutput}, runner)
+	if err == nil {
+		t.Fatal("经目录 symlink 指向同一输出时应当拒绝并发构建")
+	}
+	var d *diagnostic.Diagnostic
+	if !errors.As(err, &d) || d.Code != "build.output-busy" {
+		t.Fatalf("错误码应为 build.output-busy：%v", err)
+	}
+	if runner.calls != 0 {
+		t.Errorf("持有锁时不应启动后端，实际 %d 次", runner.calls)
+	}
+	if _, statErr := os.Stat(realOutput); !os.IsNotExist(statErr) {
+		t.Errorf("持有锁时不应产出文件")
+	}
+}
+
+// TestRunPublishesThroughDirSymlink 确认经目录 symlink 的构建仍把产物与记录
+// 发布到真实目录，且两者配对一致。
+func TestRunPublishesThroughDirSymlink(t *testing.T) {
+	root, runner := newProject(t)
+	runner.writeOutput = true
+	realDir := filepath.Join(root, "dist")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(root, "output-link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatal(err)
+	}
+	linkOutput := filepath.Join(linkDir, "app")
+
+	if _, err := Run(Options{Root: root, InputData: exampleNIR(t), Output: linkOutput}, runner); err != nil {
+		t.Fatalf("经 symlink 构建失败：%v", err)
+	}
+	canonicalReal, err := filepath.EvalSymlinks(realDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	realOutput := filepath.Join(canonicalReal, "app")
+	if err := VerifyPair(realOutput); err != nil {
+		t.Errorf("真实目录上的产物与记录应配对一致：%v", err)
+	}
+	assertNoTransactionFiles(t, canonicalReal)
 }

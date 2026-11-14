@@ -372,3 +372,54 @@ $ gofmt -l compiler/frontend/facts.go compiler/frontend/facts_test.go
 真实前端没有回归：消费者套件仍是 26 个顶层用例通过、4 个失败，失败项与上一节完全相同（Windows 路径分隔符与行列的既有问题），事实、能力夹具与降低用例全部通过——适配层产出的本就是单份 JSON 文档，尾随检查不影响正常路径。
 
 本次未覆盖：这是协议层加固，正常生成的单份事实不受影响，构造的尾随输入只由单测覆盖，没有端到端夹具；完整 `tests/source` 与 `./bridge/tsgo/check` 仍只在官方 `darwin/arm64` 上跑；本次只在 `windows/amd64` 上验证。`docs/reference/facts.md` 的「校验做什么」补了 JSON 外壳严格性一段（`facts.decode` 与 `facts.trailing`）。
+
+## 交付后的类型引用误记修复（2026-11-15）
+
+本节记录局部类型注解被误记成运行时引用的一次修复，执行时间是 2026-11-15 04:39 CST，代码基于提交 `7855d58` 的工作树。环境：Mac mini（Apple M4，arm64）、macOS 26.6.2、隔离 go1.27.3、前端 typescript/v7.0.2。
+
+```typescript
+// types.ts
+export type Quantity = number;
+
+// main.ts
+import type { Quantity } from "./types.ts";
+
+function display(): void {
+  const q: Quantity = 1;
+  console.log(q);
+}
+```
+
+这段程序只在类型空间使用 `Quantity`。但事实提取器的 `walk()` 用 `ForEachChild` 递归所有 AST 子节点，没有过滤类型节点，于是 `const q: Quantity = 1` 的类型注解被记成普通 `Reference`（`targetModule` 指向 `types.ts`）。`modules.Plan()` 的 `checkTypeValueMix` 看到这个引用就把 `import type` 判成当值使用，报 `init.type-value-mix` 拒绝合法程序；同一个假引用还可能触发 `init.uninitialized`（类型模块不进入执行顺序）。事实契约与 `walk` 注释都写着「类型注解里的名字不算引用」，实现没有做到。
+
+修复在提取阶段显式区分：`walk()` 遍历子节点时遇到 `ast.IsTypeNode(child)` 直接跳过整棵类型子树，类型空间的名字不再进入 `References`。`References` 因此是纯运行时引用，后续模块阶段不需要再按名称和目标模块猜测引用来源。能力检查、降低和合并都只消费运行时引用，无需改动。
+
+修复前 `./bin/tynel check --root … main.ts` 报 `init.type-value-mix`（退出 1）；修复后通过：
+
+```zsh
+./bin/tynel dump facts --root compiler/graph/testdata/type-annotation main.ts
+# references 只有 console、log、q；没有 Quantity
+./bin/tynel run --root compiler/graph/testdata/type-annotation main.ts
+# 1
+```
+
+新增回归：
+
+| 入口 | 用例 | 结果 |
+| --- | --- | --- |
+| `bridge/tsgo/consumer` | `TestFactsSkipTypeAnnotationNames` | 通过；类型注解不产生 `Reference`，`import type` 绑定仍是 type-only |
+| `bridge/tsgo/check` | 「局部类型注解不触发运行时依赖」 | 通过；`type-annotation` 夹具构建运行输出 `1` |
+| `compiler/modules` | `TestPlanRejectsTypeValueMix`（既有） | 通过；真实的运行时引用仍报 `init.type-value-mix` |
+
+累计验证：
+
+| 入口 | 结果 |
+| --- | --- |
+| `./tools/test` | 20 个包全部通过 |
+| `bridge/tsgo/consumer` | 32 个顶层测试通过（含新增 1 个） |
+| `./bridge/tsgo/check` | 105 项全过（含新增 1 项） |
+| `./bridge/go/check` | 16 项全过 |
+| `go vet ./...` | 无输出 |
+| `gofmt` | 无差异 |
+
+本次未覆盖：只在 `darwin/arm64` 上验证；`References` 保持纯运行时语义，没有另外增加「类型引用」事实列表（当前没有消费者需要它）；类型断言、局部类型别名等不在子集内的写法仍由能力检查拒绝。

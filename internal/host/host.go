@@ -242,47 +242,103 @@ func build(root, binary string, runner toolchain.Runner) error {
 }
 
 // hashSources 汇总宿主编译真正用到的源码：消费者模块的 .go 与 go.mod/go.sum、
-// 适配包源码，以及宿主通过 replace 链接的 compiler 包。键是仓库内相对路径，
-// 值是该文件的 sha256。
+// 适配包源码、宿主通过 replace 链接的 compiler 包，以及 replace 指向的整棵
+// 前端源码树。
 //
 // compiler 目录必须一起算：宿主不是只编译 consumer 和适配包，它还链接
 // capability、lower、nir 等包。少算这些文件，改了它们之后宿主不会重建，命令行
 // 就会继续用旧的能力规则。
+//
+// 前端源码树同理，而且更隐蔽：consumer/go.mod 用 replace 把上游模块指向
+// .work/frontend/typescript-go，宿主实际编译的是那棵目录里的代码。只算仓库
+// 内三个目录时，改了上游实现既不触发重建，也不会写进戳记。
 func hashSources(root string) (map[string]string, error) {
 	out := make(map[string]string)
-	for _, dir := range []string{ConsumerDir, AdapterDir, "compiler"} {
-		full := filepath.Join(root, filepath.FromSlash(dir))
-		err := filepath.Walk(full, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return err
-			}
-			if info.IsDir() {
-				return nil
-			}
-			name := info.Name()
-			if strings.HasSuffix(name, "_test.go") {
-				// 测试文件不参与宿主编译，改它们不该触发重建。
-				return nil
-			}
-			if !strings.HasSuffix(name, ".go") && name != "go.mod" && name != "go.sum" {
-				return nil
-			}
-			rel, err := filepath.Rel(root, path)
-			if err != nil {
-				return err
-			}
-			sum, err := hashFile(path)
-			if err != nil {
-				return err
-			}
-			out[filepath.ToSlash(rel)] = sum
-			return nil
-		})
-		if err != nil {
-			return nil, diagnostic.New(diagnostic.Environment, "host.no-source", "无法读取 %s", dir).WithDetail(err.Error())
+	sets := []sourceSet{
+		{dir: ConsumerDir, include: goSourceFile},
+		{dir: AdapterDir, include: goSourceFile},
+		{dir: "compiler", include: goSourceFile},
+		{dir: TreeDir, include: frontendSourceFile},
+	}
+	for _, set := range sets {
+		if err := hashSourceSet(root, set, out); err != nil {
+			return nil, err
 		}
 	}
 	return out, nil
+}
+
+// sourceSet 是一组要纳入宿主身份的目录与文件过滤规则。include 收到相对该
+// 目录的斜杠路径与文件名。
+type sourceSet struct {
+	dir     string
+	include func(rel, name string) bool
+}
+
+func hashSourceSet(root string, set sourceSet, out map[string]string) error {
+	full := filepath.Join(root, filepath.FromSlash(set.dir))
+	err := filepath.Walk(full, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(full, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if !set.include(rel, info.Name()) {
+			return nil
+		}
+		repoRel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		sum, err := hashFile(path)
+		if err != nil {
+			return err
+		}
+		out[filepath.ToSlash(repoRel)] = sum
+		return nil
+	})
+	if err != nil {
+		return diagnostic.New(diagnostic.Environment, "host.no-source", "无法读取 %s", set.dir).WithDetail(err.Error())
+	}
+	return nil
+}
+
+// goSourceFile 是仓库内参与宿主编译的 Go 源码与模块文件。测试文件不参与
+// 宿主编译，改它们不该触发重建。
+func goSourceFile(_, name string) bool {
+	if strings.HasSuffix(name, "_test.go") {
+		return false
+	}
+	return strings.HasSuffix(name, ".go") || name == "go.mod" || name == "go.sum"
+}
+
+// frontendSourceFile 是上游模块参与宿主编译的文件：非测试 Go 源码、通过
+// go:embed 编进二进制的声明库（.d.ts）和模块文件。go 工具不发现 testdata
+// 以及以 _ 或 . 开头的目录，这些目录里的源码与声明库不会进入产物；整棵树有
+// 五万多个文件，逐字节哈希会让每次命令多花数秒，因此身份只覆盖编译输入。
+func frontendSourceFile(rel, name string) bool {
+	if ignoredPath(rel) || strings.HasSuffix(name, "_test.go") {
+		return false
+	}
+	return strings.HasSuffix(name, ".go") || strings.HasSuffix(name, ".d.ts") ||
+		name == "go.mod" || name == "go.sum"
+}
+
+// ignoredPath 报告路径是否落在 go 工具忽略的位置：任何一层叫 testdata，或以
+// _ / . 开头，都不会被包发现或嵌入。
+func ignoredPath(rel string) bool {
+	for _, part := range strings.Split(rel, "/") {
+		if part == "testdata" || strings.HasPrefix(part, "_") || strings.HasPrefix(part, ".") {
+			return true
+		}
+	}
+	return false
 }
 
 // verifyAdapter 确认源码树里的适配包副本与仓库源一致。副本被改过时不能继续：

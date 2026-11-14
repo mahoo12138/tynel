@@ -60,6 +60,9 @@ if [[ -z "${GO:-}" || ! -x "$GO" ]]; then
   exit 1
 fi
 print -- "使用 $("$GO" version)"
+# 子进程（例如 tools/toolchain/prep）直接调用 go。把隔离工具链放进 PATH，
+# 不要求宿主机另装 Go。
+export PATH="$(dirname "$GO"):$PATH"
 
 # 1. 源码身份与适配包副本
 if "$ROOT/tools/toolchain/prep" --verify-only --quiet >/dev/null 2>&1; then
@@ -258,7 +261,8 @@ for pair in "any.ts:cap.any" "assert.ts:cap.type-escape" "object.ts:cap.unsuppor
             "eval.ts:cap.forbidden-global" "dynamic-function.ts:cap.unsupported-syntax" \
             "library.ts:cap.unknown-callee" "uncalled.ts:cap.unsupported-syntax" \
             "default-export-anon.ts:cap.unsupported-syntax" "default-export-named.ts:cap.unsupported-syntax" \
-            "void-value.ts:cap.void-value" "shadowed-console.ts:cap.shadowed-console"; do
+            "void-value.ts:cap.void-value" "shadowed-console.ts:cap.shadowed-console" \
+            "ambient-function.ts:cap.unsupported-declaration" "ambient-const.ts:cap.unsupported-declaration"; do
   file=${pair%%:*}
   want=${pair##*:}
   out=$("$BIN" -capability "$CAP/$file" 2>&1); code=$?
@@ -526,6 +530,28 @@ INITTYPE
     fail "纯类型依赖初始化计划不符合预期（退出 $code）"
   fi
 
+  "$CLI" dump init --root "$ROOT/compiler/graph/testdata/init" side-effect-main.ts >"$cli_tmp/init-side-effect.json" 2>"$cli_tmp/err"; code=$?
+  if [[ $code -eq 0 ]] && python3 - "$cli_tmp/init-side-effect.json" <<'INITSIDE'
+import json, sys
+data = json.load(open(sys.argv[1]))
+order = [path.rsplit("/", 1)[-1] for path in data["order"]]
+assert order == ["side-effect.ts", "side-effect-main.ts"], data
+assert [item["value"] for item in data["prints"]] == ["2", "1"], data
+INITSIDE
+  then
+    pass "副作用导入进入初始化顺序"
+  else
+    fail "副作用导入初始化计划不符合预期（退出 $code）"
+  fi
+
+  out=$("$CLI" run --root "$ROOT/compiler/graph/testdata/init" side-effect-main.ts 2>&1); code=$?
+  if [[ $code -eq 0 && "$out" == $'2
+1' ]]; then
+    pass "副作用导入模块先于入口执行"
+  else
+    fail "副作用导入应先打印 2 再打印 1，实际退出 $code：$out"
+  fi
+
   out=$("$CLI" run --root "$ROOT/compiler/graph/testdata/merge" main.ts 2>&1); code=$?
   if [[ $code -eq 0 && "$out" == "55" ]]; then
     pass "跨模块 sumTo(10) 合并为原生 55"
@@ -550,6 +576,35 @@ INITTYPE
     pass "同名 helper 通过模块前缀调用到正确目标"
   else
     fail "同名函数调用输出不符合预期（退出 $code）：$out"
+  fi
+
+  out=$("$CLI" run --root "$ROOT/compiler/graph/testdata/const-init" main.ts 2>&1); code=$?
+  if [[ $code -eq 0 && "$out" == $'7
+41' ]]; then
+    pass "导出常量的副作用初始化只执行一次"
+  else
+    fail "导出常量应只初始化一次（7 后 41），实际退出 $code：$out"
+  fi
+
+  out=$("$CLI" run --root "$ROOT/compiler/graph/testdata/const-names" main.ts 2>&1); code=$?
+  if [[ $code -eq 0 && "$out" == "30" ]]; then
+    pass "同名导出常量按模块存储互不覆盖"
+  else
+    fail "同名常量应输出 30，实际退出 $code：$out"
+  fi
+
+  out=$("$CLI" check --root "$ROOT/compiler/graph/testdata/namespace-console" main.ts 2>&1); code=$?
+  if [[ $code -eq 3 ]] && print -- "$out" | grep -q "cap.unsupported-syntax"; then
+    pass "命名空间导入被拒绝，不冒充内置 console"
+  else
+    fail "命名空间导入应按能力限制退出 3，实际退出 $code：$out"
+  fi
+
+  out=$("$CLI" run --root "$ROOT/compiler/graph/testdata/type-annotation" main.ts 2>&1); code=$?
+  if [[ $code -eq 0 && "$out" == "1" ]]; then
+    pass "局部类型注解不触发运行时依赖"
+  else
+    fail "类型注解不应产生运行时依赖，实际退出 $code：$out"
   fi
 
   if "$CLI" build "$ROOT/bridge/tsgo/testdata/add.ts" -o "$cli_tmp/app" >/dev/null 2>&1 && [[ "$("$cli_tmp/app")" == "42" ]]; then

@@ -139,3 +139,57 @@ ok  	github.com/Mahoo12138/tynel/bridge/tsgo/consumer	0.505s
 - **锁文件没有另开一份**。「锁文件的前端部分」写在 `tools/toolchain/go.lock.json` 的 `frontend` 段，而不是新建 `frontend.lock.json`：两处各记一份身份，迟早会漂移。文件名保留 01.01 建立时的 `go.lock.json`，不为了改名去改动已有的验证记录。
 - **适配包用复制而不是 overlay**。01.05 的 bridge 可以用 `-overlay` 是因为它只被一个 `go build` 使用；这里要产出能被外部模块 `import` 的包，overlay 无法让 `go build` 在模块外看到它。
 - **声明库缺失只能在准备阶段发现**。声明库由 `go:embed` 编进二进制，运行期不存在「找不到 lib」的状态；所以这条负向验收落在源码准备检查上，而不是会话行为上。
+
+## 交付后的宿主身份补全（2026-11-15）
+
+本节记录前端源码树没有纳入宿主构建身份的一次修复，执行时间是 2026-11-15 05:02 CST，代码基于提交 `7855d58` 的工作树。环境：Mac mini（Apple M4，arm64）、macOS 26.6.2、隔离 go1.27.3、前端 typescript/v7.0.2。
+
+`internal/host` 的 `hashSources()` 只哈希 `bridge/tsgo/consumer`、`bridge/tsgo/_adapter` 和 `compiler` 三个仓库内目录；`host.Ensure()` 在开发模式下只确认 `.work/frontend/typescript-go` 目录存在，并单独核对适配包副本。但 `consumer/go.mod` 的 `replace` 把上游模块指向这棵目录，宿主实际编译的是它。结果是：树里的非 marker `.go` 或 `.d.ts` 被修改后，`hashSources()` 看不到变化，旧宿主继续被复用；即使因别处源码变化触发重建，戳记也没有记录上游文件的哈希，无法描述实际使用的源码。
+
+修复把前端源码树纳入 `hashSources()`：树里的非测试 `.go`、`go:embed` 编进二进制的声明库 `.d.ts`、`go.mod`/`go.sum` 都参与身份；`testdata` 与以 `_`/`.` 开头的目录被 go 工具忽略，不计入。`Ensure()` 每次调用都会重新计算并比对，戳记因此记录全部编译输入。适配包副本的字节核对保留，位置在哈希之前的快速失败路径。
+
+不按字面「整棵树的所有文件」哈希是刻意的：这棵树有五万多个文件、约 180 MB，逐字节读取约 5.7 秒，而一条 `check` 会多次调用 `Ensure()`；`testdata`、脚本与扩展资源不进入 `go build`，改了不可能改变宿主二进制。身份覆盖的是「会被编进二进制或影响编译」的文件集合。
+
+新增回归（`internal/host`）：
+
+| 用例 | 结果 |
+| --- | --- |
+| `TestEnsureRebuildsWhenFrontendSourceChanges` | 通过；改上游 `.go` 或内嵌 `.d.ts` 都触发重建 |
+| `TestEnsureIgnoresFrontendNonBuildFiles` | 通过；`testdata`、`_extension` 与 `_test.go` 变化不触发重建 |
+| `TestStampCoversFrontendSourceTree` | 通过；戳记包含树的编译输入，且不含 testdata |
+
+把 `host.go` 临时换回旧实现后，前两个用例分别报「前端源码变化后应尝试重建，实际 0」和「戳记缺少前端源码…」；恢复后通过。
+
+真实 CLI 复核（可逆实验）：
+
+```zsh
+# 首次 check：戳记从旧格式升级为覆盖前端树的格式。
+./bin/tynel check examples/add.ts
+# 前端宿主需要重建（源码有变化或尚未构建）
+# 戳记 sources 639 项，其中前端树 616 项；不含 testdata/_extension，含 bundled d.ts。
+
+# 再跑一次：复用宿主，不打印重建行。
+./bin/tynel check examples/add.ts
+
+# 在上游非 marker 文件末尾追加一行注释，触发重建。
+printf '\n// probe\n' >> .work/frontend/typescript-go/internal/ast/utilities.go
+./bin/tynel check examples/add.ts
+# 前端宿主需要重建（源码有变化或尚未构建）
+
+# 恢复原文件，再次重建；之后复用。
+./bin/tynel check examples/add.ts   # 前端宿主需要重建
+./bin/tynel check examples/add.ts   # 复用
+```
+
+累计验证：
+
+| 入口 | 结果 |
+| --- | --- |
+| `./tools/test` | 20 个包全部通过 |
+| `go test -count=1 ./internal/host` | 14 个顶层测试通过（含新增 3 个） |
+| `./bridge/tsgo/check` | 107 项全过 |
+| `./bridge/go/check` | 16 项全过 |
+| `go vet ./...` | 无输出 |
+| `gofmt` | 无差异 |
+
+本次未覆盖：只在 `darwin/arm64` 上验证；身份覆盖编译输入而非工作树的每一个文件，`testdata`、脚本与扩展资源不参与；树的身份记录的是「构建时实际读取的源码」，没有额外把这批哈希与锁文件归档逐字节比对——锁文件的 marker 抽查仍由 `tools/toolchain/prep` 负责。

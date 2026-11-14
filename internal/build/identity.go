@@ -16,7 +16,7 @@ import (
 
 // IdentitySchemaVersion 是构建身份结构的版本。字段含义变化时递增，不把新旧
 // 记录当成同一种输入。
-const IdentitySchemaVersion = 1
+const IdentitySchemaVersion = 2
 
 // File 是一份参与构建的源码或依赖。Path 是项目内相对路径，SHA256 是建立依赖
 // 图时固定下来的内容哈希。类型边和值边的文件都列进来：检查需要前者，运行
@@ -30,6 +30,9 @@ type File struct {
 type Config struct {
 	Target     string `json:"target"`
 	SupportDir string `json:"supportDir"`
+	// CGOEnabled 是构建时强制使用的 CGO_ENABLED 值。它影响运行时与标准库
+	// 的编译结果，必须进入身份，不能让宿主环境悄悄改变它。
+	CGOEnabled string `json:"cgoEnabled"`
 }
 
 // Toolchain 是这次真正执行构建的工具身份。路径不进入哈希，内容会。

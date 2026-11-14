@@ -70,6 +70,11 @@ func (f *Facts) Validate() error {
 		byID[d.ID] = d
 	}
 
+	for _, dep := range f.Dependencies {
+		if dep.Module == "" || dep.Start < 0 || dep.Length <= 0 {
+			return diagnostic.New(diagnostic.Internal, "facts.bad-dependency", "模块依赖 %q 的字段不完整", dep.Module)
+		}
+	}
 	for _, imp := range f.Imports {
 		if imp.Local == "" || imp.Imported == "" || imp.Module == "" || imp.Start < 0 || imp.Length <= 0 {
 			return diagnostic.New(diagnostic.Internal, "facts.bad-import", "导入绑定 %q 的字段不完整", imp.Local)

@@ -7,6 +7,7 @@ import (
 
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
 	"github.com/Mahoo12138/tynel/compiler/frontend"
+	"github.com/Mahoo12138/tynel/compiler/merge"
 	"github.com/Mahoo12138/tynel/compiler/nir"
 	"github.com/Mahoo12138/tynel/compiler/source"
 )
@@ -887,5 +888,292 @@ func TestRejectsComparisonMismatches(t *testing.T) {
 				t.Fatalf("错误码应为 lower.bad-type，实际 %v", err)
 			}
 		})
+	}
+}
+
+// tempFacts 构造 function f(flag: boolean): boolean { body }，模块体打印
+// f(true)。extra 是 body 或模块体引用的额外声明。
+func tempFacts(body frontend.Node, extra ...frontend.Declaration) *frontend.Facts {
+	boolean := frontend.Type{Kind: frontend.KindBoolean}
+	fn := frontend.Declaration{ID: 1, Kind: frontend.DeclFunction, Name: "f", Start: 0, Length: 60, Result: &boolean, Parameters: []int{2}, Body: &body}
+	param := frontend.Declaration{ID: 2, Kind: frontend.DeclParameter, Name: "flag", Start: 4, Length: 4, Type: &boolean}
+	call := typed("CallExpression", frontend.KindBoolean, ident("f", 1), boolLiteral(true))
+	module := node("Block", node("ExpressionStatement", consoleLog(call)))
+	return &frontend.Facts{
+		SchemaVersion: 1, Session: "s", File: "/tmp/t.ts", Module: &module,
+		Declarations: append([]frontend.Declaration{fn, param}, extra...),
+	}
+}
+
+// boolLocal 返回一个布尔局部 const 的声明和它的 VariableStatement 骨架。
+func boolLocal(id int, name string, init frontend.Node) (frontend.Declaration, frontend.Node) {
+	boolean := frontend.Type{Kind: frontend.KindBoolean}
+	decl := frontend.Declaration{ID: id, Kind: frontend.DeclLocal, Name: name, Start: 20, Length: 12, Type: &boolean}
+	stmt := node("VariableDeclaration", init)
+	stmt.Decl = id
+	return decl, node("VariableStatement", node("VariableDeclarationList", stmt))
+}
+
+func boolTernary(cond, then, els frontend.Node) frontend.Node {
+	return typed("ConditionalExpression", frontend.KindBoolean, cond, then, els)
+}
+
+// collectTempNames 收集降低器生成的临时名（_tmp_ 前缀且不是用户声明名），
+// 递归进入 if、while、short 右侧与 select 分支。
+func collectTempNames(stmts []nir.Stmt, user map[string]bool, out *[]string) {
+	for i := range stmts {
+		s := &stmts[i]
+		if (s.Op == nir.OpLet || s.Op == nir.OpShort || s.Op == nir.OpSelect) && strings.HasPrefix(s.Name, "_tmp_") && !user[s.Name] {
+			*out = append(*out, s.Name)
+		}
+		collectTempNames(s.Then, user, out)
+		collectTempNames(s.Else, user, out)
+		collectTempNames(s.Right, user, out)
+		collectTempNames(s.CondPre, user, out)
+		collectTempNames(s.Body, user, out)
+	}
+}
+
+// TestTempNamesAvoidUserNames 锁住临时名分配器：_tmp_1 是合法的用户标识符，
+// 参数、局部值（先声明或后声明）、模块常量和嵌套块里的同名值都不能与临时名
+// 冲突；连续生成的临时名之间也不能重名。旧实现固定从 _tmp_1 递增，这些用例
+// 都会撞上 nir.duplicate-name，被包装成 lower.invalid-output 内部故障。
+func TestTempNamesAvoidUserNames(t *testing.T) {
+	cases := []struct {
+		name      string
+		facts     func() *frontend.Facts
+		wantTemps int
+	}{
+		{
+			name: "参数名占用 _tmp_1",
+			facts: func() *frontend.Facts {
+				body := node("Block", node("ReturnStatement", shortNode("&&", boolIdent("_tmp_1", 2), boolLiteral(true))))
+				f := tempFacts(body)
+				f.Declarations[1].Name = "_tmp_1"
+				return f
+			},
+			wantTemps: 1,
+		},
+		{
+			name: "局部值先于临时值声明",
+			facts: func() *frontend.Facts {
+				decl, stmt := boolLocal(3, "_tmp_1", boolLiteral(true))
+				body := node("Block", stmt, node("ReturnStatement", shortNode("&&", boolIdent("flag", 2), boolIdent("_tmp_1", 3))))
+				return tempFacts(body, decl)
+			},
+			wantTemps: 1,
+		},
+		{
+			name: "局部值后于临时值声明",
+			facts: func() *frontend.Facts {
+				after, afterStmt := boolLocal(3, "_tmp_1", boolLiteral(true))
+				y, yStmt := boolLocal(4, "y", shortNode("&&", boolIdent("flag", 2), boolLiteral(true)))
+				body := node("Block", yStmt, afterStmt, node("ReturnStatement", boolIdent("y", 4)))
+				return tempFacts(body, after, y)
+			},
+			wantTemps: 1,
+		},
+		{
+			name: "连续短路与三元避开多个占用名",
+			facts: func() *frontend.Facts {
+				d1, s1 := boolLocal(3, "_tmp_1", boolLiteral(true))
+				d2, s2 := boolLocal(4, "_tmp_2", boolLiteral(true))
+				da, sa := boolLocal(5, "a", shortNode("&&", boolIdent("flag", 2), boolLiteral(true)))
+				db, sb := boolLocal(6, "b", boolTernary(boolIdent("flag", 2), boolLiteral(true), boolLiteral(false)))
+				body := node("Block", s1, s2, sa, sb,
+					node("ReturnStatement", shortNode("||", boolIdent("a", 5), boolIdent("b", 6))))
+				return tempFacts(body, d1, d2, da, db)
+			},
+			wantTemps: 3,
+		},
+		{
+			name: "嵌套块局部占用后续序号",
+			facts: func() *frontend.Facts {
+				da, sa := boolLocal(3, "a", shortNode("&&", boolIdent("flag", 2), boolLiteral(true)))
+				d4, s4 := boolLocal(4, "_tmp_2", boolLiteral(true))
+				thenBlock := node("Block", s4, node("ReturnStatement", shortNode("&&", boolIdent("_tmp_2", 4), boolIdent("flag", 2))))
+				elseBlock := node("Block", node("ReturnStatement", boolIdent("a", 3)))
+				body := node("Block", sa, node("IfStatement", boolIdent("flag", 2), thenBlock, elseBlock))
+				return tempFacts(body, da, d4)
+			},
+			wantTemps: 2,
+		},
+		{
+			name: "模块常量占用 _tmp_1",
+			facts: func() *frontend.Facts {
+				boolean := frontend.Type{Kind: frontend.KindBoolean}
+				init := boolLiteral(true)
+				decl := frontend.Declaration{ID: 3, Kind: frontend.DeclConst, Name: "_tmp_1", Start: 0, Length: 20, Type: &boolean, Body: &init}
+				constNode := node("Const")
+				constNode.Decl = 3
+				module := node("Block", constNode,
+					node("ExpressionStatement", consoleLog(shortNode("&&", boolLiteral(true), boolLiteral(false)))))
+				f := tempFacts(node("Block", node("ReturnStatement", boolLiteral(true))), decl)
+				f.Module = &module
+				return f
+			},
+			wantTemps: 1,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			facts := c.facts()
+			module := lowerFacts(t, facts)
+			user := map[string]bool{}
+			for _, d := range facts.Declarations {
+				user[d.Name] = true
+			}
+			var temps []string
+			for i := range module.Functions {
+				collectTempNames(module.Functions[i].Body, user, &temps)
+			}
+			if len(temps) != c.wantTemps {
+				t.Fatalf("应生成 %d 个临时值，实际 %d：%v", c.wantTemps, len(temps), temps)
+			}
+			seen := map[string]bool{}
+			for _, name := range temps {
+				if user[name] {
+					t.Fatalf("临时名 %q 与用户声明冲突", name)
+				}
+				if seen[name] {
+					t.Fatalf("临时名 %q 重复", name)
+				}
+				seen[name] = true
+			}
+		})
+	}
+}
+
+// TestMergedConstInitializedOnce 锁住跨模块导出 const 的运行时存储：依赖模块
+// 的初始化表达式只求值一次，入口读取的是已经算好的局部值，而不是重新展开
+// 初始化表达式。旧实现把每个模块体降成独立的 __init$N，入口读不到依赖的
+// 常量存储，会重新降低 decl.Body，带副作用的初始化函数因此被执行两次。
+func TestMergedConstInitializedOnce(t *testing.T) {
+	number := frontend.Type{Kind: frontend.KindNumber}
+
+	// dep.ts：function init(): number { return 41; } export const value = init();
+	initBody := node("Block", node("ReturnStatement", literal("0x4044800000000000")))
+	initCall := typed("CallExpression", frontend.KindNumber, ident("init", 1))
+	constNode := node("Const")
+	constNode.Decl = 2
+	depModule := node("Block", constNode)
+	dep := &frontend.Facts{
+		SchemaVersion: 1, Session: "dep", File: "dep.ts", ModulePath: "dep.ts",
+		Module: &depModule,
+		Declarations: []frontend.Declaration{
+			{ID: 1, Module: "dep.ts", Kind: frontend.DeclFunction, Name: "init", Start: 0, Length: 20, Result: &number, Body: &initBody},
+			{ID: 2, Module: "dep.ts", Kind: frontend.DeclConst, Name: "value", Start: 30, Length: 20, Type: &number, Body: &initCall},
+		},
+		Exports: []frontend.Export{{Name: "value", ID: 2, Start: 30, Length: 20}},
+		Calls:   []frontend.Call{{Start: 10, Length: 6, Callee: 1, Result: number}},
+	}
+
+	// main.ts：import { value } from "./dep.ts"; value;（丢弃结果，读取常量）
+	valueIdent := ident("value", 0)
+	mainModule := node("Block", node("ExpressionStatement", valueIdent))
+	main := &frontend.Facts{
+		SchemaVersion: 1, Session: "main", File: "main.ts", ModulePath: "main.ts",
+		Module:       &mainModule,
+		Imports:      []frontend.Import{{Local: "value", Imported: "value", Module: "dep.ts", Start: 0, Length: 1}},
+		Dependencies: []frontend.Dependency{{Module: "dep.ts", Start: 0, Length: 1}},
+		References:   []frontend.Reference{{Name: "value", Start: 10, Length: 5, TargetModule: "dep.ts", TargetName: "value"}},
+	}
+
+	merged, err := merge.Build([]merge.Unit{
+		{Snapshot: snapshot(t), Facts: main},
+		{Snapshot: snapshot(t), Facts: dep},
+	}, []string{"dep.ts", "main.ts"})
+	if err != nil {
+		t.Fatalf("合并失败：%v", err)
+	}
+	module, err := LowerMerged(merged.Facts, merged.Snapshots, merged.Bodies, []string{"dep.ts", "main.ts"})
+	if err != nil {
+		t.Fatalf("合并降低失败：%v", err)
+	}
+
+	var initFn *nir.Function
+	for i := range module.Functions {
+		if module.Functions[i].Name == mergedInitName {
+			initFn = &module.Functions[i]
+		}
+	}
+	if initFn == nil {
+		t.Fatalf("缺少共享初始化函数 %s：%+v", mergedInitName, module.Functions)
+	}
+
+	// 初始化函数里对 init 的调用只能有一次（依赖模块求值 value 时）。
+	calls := 0
+	var discard *nir.Stmt
+	for i := range initFn.Body {
+		s := &initFn.Body[i]
+		if s.Op == nir.OpDiscard {
+			discard = s
+		}
+		countInitCalls(s, &calls)
+	}
+	if calls != 1 {
+		t.Fatalf("初始化函数里 init 应只调用一次，实际 %d 次：%+v", calls, initFn.Body)
+	}
+	if discard == nil || discard.Value == nil || discard.Value.Op != nir.OpLocal {
+		t.Fatalf("入口读取常量应是 local 读已存储的值，而不是重新求值：%+v", discard)
+	}
+}
+
+// countInitCalls 递归统计语句里对初始化函数（名字含 $init）的调用次数。
+func countInitCalls(s *nir.Stmt, calls *int) {
+	if s.Value != nil {
+		countInitCallsExpr(s.Value, calls)
+	}
+	for i := range s.Then {
+		countInitCalls(&s.Then[i], calls)
+	}
+	for i := range s.Else {
+		countInitCalls(&s.Else[i], calls)
+	}
+	for i := range s.Right {
+		countInitCalls(&s.Right[i], calls)
+	}
+	for i := range s.Body {
+		countInitCalls(&s.Body[i], calls)
+	}
+}
+
+func countInitCallsExpr(e *nir.Expr, calls *int) {
+	if e == nil {
+		return
+	}
+	if e.Op == nir.OpCall && strings.HasSuffix(e.Function, "$init") {
+		*calls++
+	}
+	countInitCallsExpr(e.Left, calls)
+	countInitCallsExpr(e.Right, calls)
+	countInitCallsExpr(e.Operand, calls)
+	for i := range e.Args {
+		countInitCallsExpr(&e.Args[i], calls)
+	}
+}
+
+// TestBuiltinConsoleIdentity 确认降低阶段也按符号身份识别内置 console：全局
+// console（名称引用解析到声明库）降成 print；导入遮蔽的 console（引用解析到
+// 项目模块）不是受限输出，不能降成 print。旧实现只看 Target==0，会把命名
+// 空间导入的 console 当成内置对象。
+func TestBuiltinConsoleIdentity(t *testing.T) {
+	build := func(refModule string) *frontend.Facts {
+		call := consoleLog(literal("0x3ff0000000000000"))
+		module := node("Block", node("ExpressionStatement", call))
+		return &frontend.Facts{
+			SchemaVersion: 1, Session: "s", File: "/tmp/t.ts", Module: &module,
+			References: []frontend.Reference{{Name: "console", Start: 10, Length: 7, TargetModule: refModule, TargetName: "console"}},
+		}
+	}
+	m := lowerFacts(t, build("bundled:///libs/lib.dom.d.ts"))
+	main := m.Functions[len(m.Functions)-1]
+	if main.Body[0].Op != nir.OpPrint {
+		t.Fatalf("全局 console.log 应降成 print：%+v", main.Body[0])
+	}
+	_, err := Lower(snapshot(t), build("/proj/logger.ts"))
+	var d *diagnostic.Diagnostic
+	if !errors.As(err, &d) || d.Code != "lower.unknown-callee" {
+		t.Fatalf("导入遮蔽的 console 不应降成 print，实际 %v", err)
 	}
 }

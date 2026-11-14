@@ -491,3 +491,59 @@ func TestRunRejectsMissingArguments(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildEnvIsControlled 确认传给后端的环境由锁定输入决定，宿主里会改变
+// Go 构建的变量（GOROOT、GOOS/GOARCH、GOFLAGS、GOEXPERIMENT、CGO_ENABLED、
+// GOTOOLCHAIN、GCFLAGS）都被移除或强制为受控值。旧实现原样继承 os.Environ()，
+// 这些变量能交叉编译或注入参数，却不进入构建身份。
+func TestBuildEnvIsControlled(t *testing.T) {
+	root, runner := newProject(t)
+	runner.writeOutput = true
+	t.Setenv("GOROOT", "/nonexistent-goroot")
+	t.Setenv("GOOS", "linux")
+	t.Setenv("GOARCH", "amd64")
+	t.Setenv("GOFLAGS", "-ldflags=-s")
+	t.Setenv("GOEXPERIMENT", "rangefunc")
+	t.Setenv("CGO_ENABLED", "1")
+	t.Setenv("GOTOOLCHAIN", "go1.99.0")
+	t.Setenv("GCFLAGS", "-N")
+
+	output := filepath.Join(root, "out", "app")
+	record, err := Run(Options{Root: root, InputData: exampleNIR(t), Output: output}, runner)
+	if err != nil {
+		t.Fatalf("构建失败：%v", err)
+	}
+	env := map[string]string{}
+	for _, kv := range runner.lastEnv {
+		k, v, _ := strings.Cut(kv, "=")
+		env[k] = v
+	}
+	sdkDir := filepath.Join(root, ".work", "toolchain", "go1.27.3-sdk-darwin-arm64")
+	if env["GOROOT"] != sdkDir {
+		t.Errorf("GOROOT 应为隔离 SDK %s，实际 %q", sdkDir, env["GOROOT"])
+	}
+	if env["GOOS"] != "darwin" || env["GOARCH"] != "arm64" {
+		t.Errorf("GOOS/GOARCH 应为锁定目标 darwin/arm64，实际 %s/%s", env["GOOS"], env["GOARCH"])
+	}
+	if env["CGO_ENABLED"] != "0" {
+		t.Errorf("CGO_ENABLED 应强制为 0，实际 %q", env["CGO_ENABLED"])
+	}
+	if env["GOFLAGS"] != "" {
+		t.Errorf("GOFLAGS 应清空，实际 %q", env["GOFLAGS"])
+	}
+	if env["GOTOOLCHAIN"] != "local" {
+		t.Errorf("GOTOOLCHAIN 应固定 local，实际 %q", env["GOTOOLCHAIN"])
+	}
+	if _, ok := env["GOEXPERIMENT"]; ok {
+		t.Error("GOEXPERIMENT 不应进入构建环境")
+	}
+	if _, ok := env["GCFLAGS"]; ok {
+		t.Error("GCFLAGS 不应进入构建环境")
+	}
+	if env["TYNEL_NIR"] == "" || env["TYNEL_COMPILE"] == "" {
+		t.Errorf("缺少 NIR/编译器环境变量：%+v", env)
+	}
+	if record.Identity.Config.CGOEnabled != "0" || record.Identity.Config.Target != "darwin/arm64" {
+		t.Errorf("构建配置应记录受控值：%+v", record.Identity.Config)
+	}
+}

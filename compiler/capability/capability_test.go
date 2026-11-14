@@ -234,8 +234,9 @@ func TestDeclaredTypesAreChecked(t *testing.T) {
 	wantCode(t, check(t, facts), "cap.bad-type")
 
 	facts = base()
+	labelInit := typed("NumericLiteral", frontend.KindNumber)
 	facts.Declarations = append(facts.Declarations,
-		frontend.Declaration{ID: 4, Kind: frontend.DeclConst, Name: "label", Start: 30, Length: 5, Type: &stringType},
+		frontend.Declaration{ID: 4, Kind: frontend.DeclConst, Name: "label", Start: 30, Length: 5, Type: &stringType, Body: &labelInit},
 	)
 	wantCode(t, check(t, facts), "cap.bad-type")
 }
@@ -249,8 +250,9 @@ func TestBooleanDeclarationsPass(t *testing.T) {
 	facts.Declarations[1].Type = &boolean
 	body := node("Block", node("ReturnStatement", boolIdent("a", 2)))
 	facts.Declarations[0].Body = &body
+	flagInit := boolLiteral(true)
 	facts.Declarations = append(facts.Declarations,
-		frontend.Declaration{ID: 4, Kind: frontend.DeclConst, Name: "flag", Start: 30, Length: 4, Type: &boolean},
+		frontend.Declaration{ID: 4, Kind: frontend.DeclConst, Name: "flag", Start: 30, Length: 4, Type: &boolean, Body: &flagInit},
 	)
 	if findings := check(t, facts); len(findings) != 0 {
 		t.Fatalf("boolean 声明应通过，实际 %v", codes(findings))
@@ -854,4 +856,73 @@ func TestFunctionDeclarationSkeletonRejected(t *testing.T) {
 	moduleNode := node("Block", fn)
 	facts.Module = &moduleNode
 	wantCode(t, check(t, facts), "cap.unsupported-syntax")
+}
+
+// consoleFacts 造一个函数体为 console.log(number) 的事实，console 标识符的
+// Target 与名称引用目标由参数决定，用来区分内置、本地遮蔽与导入遮蔽。
+func consoleFacts(consoleTarget int, refModule string, withRef bool) *frontend.Facts {
+	call := typed("CallExpression", frontend.KindVoid,
+		propertyAccess("log", ident("console", consoleTarget)),
+		typed("NumericLiteral", frontend.KindNumber),
+	)
+	facts := base()
+	body := node("Block", node("ExpressionStatement", call))
+	facts.Declarations[0].Body = &body
+	if withRef {
+		facts.References = []frontend.Reference{{Name: "console", Start: 10, Length: 7, TargetModule: refModule, TargetName: "console"}}
+	}
+	return facts
+}
+
+// TestConsoleIdentity 确认内置 console 按符号身份识别，而不是 Target==0：
+// 全局 console 的名称引用解析到声明库；命名导入、命名空间导入的 console
+// 解析到项目模块或没有目标；本地声明让 Target 非 0。后三者都不是内置输出。
+func TestConsoleIdentity(t *testing.T) {
+	if f := check(t, consoleFacts(0, "bundled:///libs/lib.dom.d.ts", true)); len(f) != 0 {
+		t.Fatalf("全局 console.log 应通过：%v", codes(f))
+	}
+	wantCode(t, check(t, consoleFacts(0, "/proj/logger.ts", true)), "cap.shadowed-console")
+	wantCode(t, check(t, consoleFacts(0, "", true)), "cap.shadowed-console")
+	wantCode(t, check(t, consoleFacts(2, "", false)), "cap.shadowed-console")
+}
+
+// TestImportShapes 确认默认导入与命名空间导入被拒绝，命名导入与副作用导入
+// 放行。旧实现对所有 ImportDeclaration 无条件放行，命名空间导入的 console
+// 会冒充内置对象。
+func TestImportShapes(t *testing.T) {
+	for _, kind := range []string{"default", "namespace"} {
+		facts := base()
+		imp := node("ImportDeclaration")
+		imp.ImportKind = kind
+		module := node("Block", imp)
+		facts.Module = &module
+		wantCode(t, check(t, facts), "cap.unsupported-syntax")
+	}
+	for _, kind := range []string{"named", "side-effect"} {
+		facts := base()
+		imp := node("ImportDeclaration")
+		imp.ImportKind = kind
+		module := node("Block", imp)
+		facts.Module = &module
+		if f := check(t, facts); len(f) != 0 {
+			t.Fatalf("%s 导入不应被拒绝：%v", kind, codes(f))
+		}
+	}
+}
+
+// TestAmbientDeclarationsAreRejected 确认只有类型、没有运行时实现的 ambient
+// 声明在能力层被拒绝：declare function 没有函数体，declare const 没有初始化
+// 表达式。旧实现只在降低阶段报 lower.missing-body / lower.missing-value，
+// 把合法 TypeScript 写法变成内部故障。
+func TestAmbientDeclarationsAreRejected(t *testing.T) {
+	facts := base()
+	facts.Declarations[0].Body = nil
+	wantCode(t, check(t, facts), "cap.unsupported-declaration")
+
+	number := frontend.Type{Kind: frontend.KindNumber}
+	facts = base()
+	facts.Declarations = append(facts.Declarations,
+		frontend.Declaration{ID: 4, Kind: frontend.DeclConst, Name: "answer", Start: 30, Length: 6, Type: &number},
+	)
+	wantCode(t, check(t, facts), "cap.unsupported-declaration")
 }

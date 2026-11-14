@@ -31,6 +31,10 @@ const (
 	SnapshotDir  = ".work/build/snapshots"
 )
 
+// cgoEnabled 是构建强制使用的 CGO_ENABLED 值。固定支持文件是纯 Go，关闭 cgo
+// 让产物不依赖宿主的 C 编译器，构建环境因此完全由锁定输入决定。
+const cgoEnabled = "0"
+
 // Options 是一次构建的输入。
 //
 // Input 与 InputData 二选一：前者读文件，后者直接用内存里的 NIR 字节。从
@@ -213,6 +217,7 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 	identity, err := newIdentity(entry, files, inputSHA, Config{
 		Target:     report.Target,
 		SupportDir: SupportDir,
+		CGOEnabled: cgoEnabled,
 	}, Toolchain{
 		GoVersion:      report.LockedVersion,
 		GoSHA256:       goSHA,
@@ -250,6 +255,16 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return nil, diagnostic.New(diagnostic.Environment, "build.output-unwritable", "无法创建输出目录 %s", outDir).WithDetail(err.Error())
 	}
+	// filepath.Abs 不解析目录符号链接：/project/dist/app 与
+	// /project/output-link/app（output-link -> dist）字符串不同，却指向同一个
+	// 目录项。创建目录后解析真实路径，锁键、临时文件、备份和发布目标都统一
+	// 用这条规范路径，同一目标才能互斥，回滚也才不会误删另一个进程的产物。
+	realDir, err := filepath.EvalSymlinks(outDir)
+	if err != nil {
+		return nil, diagnostic.New(diagnostic.Environment, "build.output-unwritable", "无法解析输出目录 %s", outDir).WithDetail(err.Error())
+	}
+	outDir = realDir
+	output = filepath.Join(realDir, filepath.Base(output))
 	// 同一输出同时只允许一个构建。锁覆盖临时文件、发布和恢复；第二个构建
 	// 立即被拒绝，而不是两个进程互相覆盖产物或记录。
 	lock, err := acquireOutputLock(output)
@@ -276,7 +291,12 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 	// build tag。NIR、配置或工具链变化都会换标签；源码文件清单只影响完整
 	// 身份，不改变同一份 NIR 的产物，因此不参与标签。
 	tag := "tynel_" + identity.ArtifactSHA256
-	env := append(os.Environ(),
+	env, err := goBuildEnv(sdkDir, report.Target)
+	if err != nil {
+		os.Remove(tmpPath)
+		return nil, err
+	}
+	env = append(env,
 		"TYNEL_NIR="+snapshot,
 		"TYNEL_COMPILE="+compiler,
 	)
@@ -376,6 +396,35 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 		return nil, err
 	}
 	return record, nil
+}
+
+// goBuildEnv 构造隔离 SDK 的 go build 环境。构建身份只记录 NIR、配置与工具链
+// 内容，实际传给 go 的环境必须由这些输入决定，不能继承宿主里会改变构建的
+// 变量：GOROOT 可能指向另一套标准库，GOOS/GOARCH 可能交叉编译出别的平台，
+// GOFLAGS/GOEXPERIMENT/GCFLAGS 可能注入额外参数。这里移除所有 GO* 与 CGO*
+// 变量以及 CC/CXX/GCFLAGS，再按锁定目标与隔离 SDK 显式设置受控值；GOFLAGS
+// 清空，GOTOOLCHAIN 固定 local，避免外部参数或自动换工具链绕过项目约束。
+func goBuildEnv(sdkDir, target string) ([]string, error) {
+	goos, goarch, ok := strings.Cut(target, "/")
+	if !ok || goos == "" || goarch == "" || strings.ContainsAny(goarch, "/ ") {
+		return nil, diagnostic.New(diagnostic.Internal, "build.bad-target", "锁定目标 %q 不是 GOOS/GOARCH 形式", target)
+	}
+	env := make([]string, 0, len(os.Environ())+8)
+	for _, kv := range os.Environ() {
+		key, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(key, "GO") || strings.HasPrefix(key, "CGO") || key == "GCFLAGS" || key == "CC" || key == "CXX" {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env,
+		"GOROOT="+sdkDir,
+		"GOOS="+goos,
+		"GOARCH="+goarch,
+		"CGO_ENABLED="+cgoEnabled,
+		"GOFLAGS=",
+		"GOTOOLCHAIN=local",
+	), nil
 }
 
 // checkContext 把取消转换成环境类诊断，避免把它误报成源码或工具故障。

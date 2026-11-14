@@ -109,13 +109,19 @@ func TestPlanKeepsSourceImportOrderAndSharedOnce(t *testing.T) {
 	b := facts("b.ts")
 	b.Exports = []frontend.Export{{Name: "b", ID: 1, Start: 0, Length: 1}}
 	b.Imports = []frontend.Import{{Local: "s", Imported: "shared", Module: "shared.ts", Start: 0, Length: 1}}
+	b.Dependencies = []frontend.Dependency{{Module: "shared.ts", Start: 0, Length: 1}}
 	a := facts("a.ts")
 	a.Exports = []frontend.Export{{Name: "a", ID: 1, Start: 0, Length: 1}}
 	a.Imports = []frontend.Import{{Local: "s", Imported: "shared", Module: "shared.ts", Start: 0, Length: 1}}
+	a.Dependencies = []frontend.Dependency{{Module: "shared.ts", Start: 0, Length: 1}}
 	main := facts("main.ts")
 	main.Imports = []frontend.Import{
 		{Local: "b", Imported: "b", Module: "b.ts", Start: 0, Length: 1},
 		{Local: "a", Imported: "a", Module: "a.ts", Start: 2, Length: 1},
+	}
+	main.Dependencies = []frontend.Dependency{
+		{Module: "b.ts", Start: 0, Length: 1},
+		{Module: "a.ts", Start: 2, Length: 1},
 	}
 	table, err := Build(main, []*frontend.Facts{b, a, shared})
 	if err != nil {
@@ -140,6 +146,7 @@ func TestPlanTypeOnlyDoesNotExecute(t *testing.T) {
 	types := facts("types.ts")
 	main := facts("main.ts")
 	main.Imports = []frontend.Import{{Local: "T", Imported: "T", Module: "types.ts", TypeOnly: true, Start: 0, Length: 1}}
+	main.Dependencies = []frontend.Dependency{{Module: "types.ts", TypeOnly: true, Start: 0, Length: 1}}
 	table, err := Build(main, []*frontend.Facts{types})
 	if err != nil {
 		t.Fatal(err)
@@ -148,8 +155,28 @@ func TestPlanTypeOnlyDoesNotExecute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Order) != 1 || plan.Order[0] != "main.ts" || len(plan.TypeEdges) != 1 {
+	if len(plan.Order) != 1 || plan.Order[0] != "main.ts" || len(plan.TypeEdges) != 1 || len(plan.ValueEdges) != 0 {
 		t.Fatalf("计划为 %+v", plan)
+	}
+}
+
+func TestPlanRunsSideEffectDependency(t *testing.T) {
+	register := facts("register.ts")
+	main := facts("main.ts")
+	main.Dependencies = []frontend.Dependency{{Module: "register.ts", Start: 0, Length: 20}}
+	table, err := Build(main, []*frontend.Facts{register})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := Plan(table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Order) != 2 || plan.Order[0] != "register.ts" || plan.Order[1] != "main.ts" {
+		t.Fatalf("顺序为 %v", plan.Order)
+	}
+	if len(plan.ValueEdges) != 1 || len(plan.TypeEdges) != 0 {
+		t.Fatalf("边为 %+v", plan)
 	}
 }
 
@@ -160,6 +187,8 @@ func TestPlanRejectsCycle(t *testing.T) {
 	b.Exports = []frontend.Export{{Name: "b", ID: 1, Start: 0, Length: 1}}
 	a.Imports = []frontend.Import{{Local: "b", Imported: "b", Module: "b.ts", Start: 0, Length: 1}}
 	b.Imports = []frontend.Import{{Local: "a", Imported: "a", Module: "a.ts", Start: 0, Length: 1}}
+	a.Dependencies = []frontend.Dependency{{Module: "b.ts", Start: 0, Length: 1}}
+	b.Dependencies = []frontend.Dependency{{Module: "a.ts", Start: 0, Length: 1}}
 	table, err := Build(a, []*frontend.Facts{b})
 	if err != nil {
 		t.Fatal(err)
@@ -173,6 +202,7 @@ func TestPlanRejectsTypeValueMix(t *testing.T) {
 	types := facts("types.ts")
 	main := facts("main.ts")
 	main.Imports = []frontend.Import{{Local: "T", Imported: "T", Module: "types.ts", TypeOnly: true, Start: 0, Length: 1}}
+	main.Dependencies = []frontend.Dependency{{Module: "types.ts", TypeOnly: true, Start: 0, Length: 1}}
 	main.References = []frontend.Reference{{Name: "T", Start: 0, Length: 1, TargetModule: "types.ts", TargetName: "T"}}
 	table, err := Build(main, []*frontend.Facts{types})
 	if err != nil {

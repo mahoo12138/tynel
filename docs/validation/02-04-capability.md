@@ -181,3 +181,55 @@ $ ./bin/tynel run --root examples/quote main.ts
 本节补记一次能力层改动，执行时间是 2026-11-10 00:07 CST，代码基于提交 `2fd4252` 的工作树，在 Windows 10 x64 与缓存的 go1.27.3 windows/amd64 上验证。完整的问题、修复与负向对照见[声明身份与事实](02-03-facts.md)的「交付后的匿名默认导出函数」一节。
 
 匿名 `export default function` 过去在前端事实提取阶段就 panic，走不到能力检查。修复后这类声明落到模块体骨架，成为 `FunctionDeclaration` 骨架节点；`capability.node()` 新增分支按 `cap.unsupported-syntax` 拒绝，措辞是「函数声明不在本阶段子集内；只支持顶层具名函数声明」。顶层具名函数已被前端提取成声明，不会进骨架，所以走到这个分支的一定是匿名、默认导出或嵌套函数声明。`TestFunctionDeclarationSkeletonRejected` 锁住骨架节点被拒绝，消费者夹具 `default-export-anon.ts` 与 `default-export-named.ts` 走真实前端断言退出 3。本次未覆盖：完整 `tests/source` 与 `./bridge/tsgo/check` 仍只在官方 `darwin/arm64` 上跑；默认导出与嵌套函数声明共用同一措辞，未单独细分。
+
+## 交付后的 ambient 声明诊断修复（2026-11-15）
+
+本节记录 ambient 声明通过能力检查、最终变成内部错误的一次修复，执行时间是 2026-11-15 04:47 CST，代码基于提交 `7855d58` 的工作树。环境：Mac mini（Apple M4，arm64）、macOS 26.6.2、隔离 go1.27.3、前端 typescript/v7.0.2。
+
+```typescript
+declare function hostValue(n: number): number;
+
+console.log(hostValue(1));
+```
+
+```typescript
+declare const answer: number;
+
+console.log(answer);
+```
+
+两者都是 TypeScript 允许的声明形式，但没有运行时实现。事实提取会给 `declare function` 登记签名、`Body` 为空；`declare const` 登记类型、没有初始化表达式。能力检查只核对返回类型与常量类型，不看实现是否存在，于是一路走到降低阶段，分别以 `lower.missing-body` 与 `lower.missing-value` 内部故障退出 5。
+
+修复在能力层统一拒绝没有运行时实现的声明：`DeclFunction` 的 `Body` 为空（ambient 或重载签名）报 `cap.unsupported-declaration`，`DeclConst` 没有初始化表达式同样报 `cap.unsupported-declaration`。诊断落在声明位置，退出 3，不再把合法 TypeScript 写法变成内部编译错误。顶层 `let`/`var` 的同类路径此前已由 `cap.module-let`、`cap.unsupported-syntax` 拦住，局部 `let x;` 也由「必须有且只有一个初始值」拒绝，本次只补函数与常量两个缺口。
+
+修复后：
+
+```zsh
+./bin/tynel check --root … main.ts
+# main.ts:1:1: 能力限制 cap.unsupported-declaration: 函数 "hostValue" 只有声明没有实现（ambient 或重载签名），本阶段不支持
+# 退出 3
+```
+
+新增回归：
+
+| 入口 | 用例 | 结果 |
+| --- | --- | --- |
+| `compiler/capability` | `TestAmbientDeclarationsAreRejected` | 通过；无函数体的函数、无初始化表达式的常量均报 `cap.unsupported-declaration` |
+| `bridge/tsgo/check` | `ambient-function.ts`、`ambient-const.ts` | 通过；真实前端夹具按退出 3 拒绝 |
+| `tests/source` | `ambient-declaration` | 通过；能力类别与错误码正确 |
+
+为保持合成事实的形态真实，`TestDeclaredTypesAreChecked` 与 `TestBooleanDeclarationsPass` 里的常量补上了初始化表达式——真实事实里的顶层常量总有初始值。
+
+累计验证：
+
+| 入口 | 结果 |
+| --- | --- |
+| `./tools/test` | 20 个包全部通过 |
+| `go test -count=1 ./compiler/capability` | 37 个顶层测试通过（含新增 1 个） |
+| `tests/source` | 120 个用例（含新增 1 个） |
+| `./bridge/tsgo/check` | 107 项全过（含新增 2 项） |
+| `./bridge/go/check` | 16 项全过 |
+| `go vet ./...` | 无输出 |
+| `gofmt` | 无差异 |
+
+本次未覆盖：只在 `darwin/arm64` 上验证；重载签名与 ambient 声明共用同一诊断上限，未单独实现重载；函数实现的缺失靠 `Body == nil` 判断，真实前端总会如实给出。

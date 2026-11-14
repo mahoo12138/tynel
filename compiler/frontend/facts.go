@@ -80,8 +80,21 @@ type Node struct {
 	Decl     int    `json:"decl,omitempty"`
 	Bits     string `json:"bits,omitempty"`
 	TypeOnly bool   `json:"typeOnly,omitempty"`
-	Type     *Type  `json:"type,omitempty"`
-	Children []Node `json:"children,omitempty"`
+	// ImportKind 只出现在 ImportDeclaration 骨架节点上：named、default、
+	// namespace 或 side-effect。能力检查据此拒绝不在子集内的导入形状。
+	ImportKind string `json:"importKind,omitempty"`
+	Type       *Type  `json:"type,omitempty"`
+	Children   []Node `json:"children,omitempty"`
+}
+
+// Dependency 是一条模块依赖边：目标模块必须先于本模块执行。它只描述初始化
+// 顺序，不携带本地绑定。副作用导入（import "./a.ts"）只有依赖边，没有
+// Import 记录；具名导入既有绑定，也有依赖边。
+type Dependency struct {
+	Module   string `json:"module"`
+	TypeOnly bool   `json:"typeOnly,omitempty"`
+	Start    int    `json:"start"`
+	Length   int    `json:"length"`
 }
 
 // Import 是一条导入绑定。Module 是解析后的绝对文件名；Imported 是目标
@@ -173,6 +186,7 @@ type Facts struct {
 	File          string        `json:"file"`
 	Module        *Node         `json:"module,omitempty"`
 	ModulePath    string        `json:"modulePath,omitempty"`
+	Dependencies  []Dependency  `json:"dependencies,omitempty"`
 	Imports       []Import      `json:"imports,omitempty"`
 	Exports       []Export      `json:"exports,omitempty"`
 	Declarations  []Declaration `json:"declarations"`
@@ -228,6 +242,7 @@ func Combine(a, b *Facts) (*Facts, error) {
 		Session:       a.Session,
 		File:          a.File,
 		ModulePath:    a.ModulePath,
+		Dependencies:  append(append([]Dependency{}, a.Dependencies...), b.Dependencies...),
 		Imports:       append(append([]Import{}, a.Imports...), b.Imports...),
 		Exports:       append(append([]Export{}, a.Exports...), b.Exports...),
 		Declarations:  append(append([]Declaration{}, a.Declarations...), b.Declarations...),

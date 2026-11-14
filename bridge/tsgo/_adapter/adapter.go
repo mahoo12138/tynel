@@ -271,6 +271,27 @@ func importIsTypeOnly(clause *ast.Node) bool {
 	return true
 }
 
+// importKind 归类导入声明的形状：side-effect（无子句）、default（含默认绑定，
+// 包括 import x, {y}）、namespace（import * as x）或 named（import {x}）。
+// 能力检查据此拒绝默认导入和命名空间导入。
+func importKind(decl *ast.ImportDeclaration) string {
+	clause := decl.ImportClause
+	if clause == nil {
+		return "side-effect"
+	}
+	if clause.Name() != nil {
+		return "default"
+	}
+	named := clause.AsImportClause().NamedBindings
+	if named == nil {
+		return "default"
+	}
+	if named.Kind == ast.KindNamespaceImport {
+		return "namespace"
+	}
+	return "named"
+}
+
 // newSessionID 给每次检查一个短标识。事实带上它，把两份来自不同会话的事实
 // 拼在一起时就能被发现，而不是悄悄混用。
 func newSessionID() string {

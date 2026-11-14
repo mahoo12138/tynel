@@ -7,11 +7,12 @@ import (
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
 )
 
-// InitEdge 是初始化计划里的一条导入边。Value 为真时目标模块必须先执行。
+// InitEdge 是初始化计划里的一条模块依赖边。依赖来自每条导入声明：具名导入、
+// 默认导入、命名空间导入和副作用导入都会让目标模块先执行，类型导入只记入
+// TypeEdges。Value 为真时目标模块必须先执行。
 type InitEdge struct {
 	From   string `json:"from"`
 	To     string `json:"to"`
-	Local  string `json:"local"`
 	Value  bool   `json:"value"`
 	Type   bool   `json:"typeOnly"`
 	Start  int    `json:"start"`
@@ -36,7 +37,8 @@ type InitPlan struct {
 }
 
 // Plan 从入口构建初始化顺序。它按源码导入顺序深度优先：先完成值依赖，再
-// 记录当前模块；同一个模块只执行一次。类型导入不触发执行。
+// 记录当前模块；同一个模块只执行一次。依赖边来自 Facts.Dependencies，副作用
+// 导入也有边；类型导入只记入 TypeEdges，不触发执行。
 func Plan(t *Table) (*InitPlan, error) {
 	if t == nil {
 		return nil, diagnostic.New(diagnostic.Internal, "init.no-table", "缺少模块符号表")
@@ -59,17 +61,17 @@ func Plan(t *Table) (*InitPlan, error) {
 		}
 		state[path] = 1
 		stack = append(stack, path)
-		for _, imp := range facts.Imports {
-			edge := InitEdge{From: path, To: imp.Module, Local: imp.Local, Value: !imp.TypeOnly, Type: imp.TypeOnly, Start: imp.Start, Length: imp.Length}
-			if imp.TypeOnly {
+		for _, dep := range facts.Dependencies {
+			edge := InitEdge{From: path, To: dep.Module, Value: !dep.TypeOnly, Type: dep.TypeOnly, Start: dep.Start, Length: dep.Length}
+			if dep.TypeOnly {
 				plan.TypeEdges = append(plan.TypeEdges, edge)
 				continue
 			}
-			if _, ok := t.Modules[imp.Module]; !ok {
-				return diagnostic.New(diagnostic.Source, "init.missing-module", "模块 %s 的值依赖 %s 不存在", path, imp.Module)
+			if _, ok := t.Modules[dep.Module]; !ok {
+				return diagnostic.New(diagnostic.Source, "init.missing-module", "模块 %s 的值依赖 %s 不存在", path, dep.Module)
 			}
 			plan.ValueEdges = append(plan.ValueEdges, edge)
-			if err := visit(imp.Module); err != nil {
+			if err := visit(dep.Module); err != nil {
 				return err
 			}
 		}

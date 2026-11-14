@@ -333,3 +333,91 @@ func TestAnalyzeRejectsUnknownFields(t *testing.T) {
 		t.Errorf("错误码应为 host.bad-result：%v", err)
 	}
 }
+
+func writeTreeFile(t *testing.T, root, rel, content string) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestEnsureRebuildsWhenFrontendSourceChanges 确认 replace 指向的前端源码树
+// 参与宿主身份：改上游 Go 实现或内嵌声明库都要触发重建。旧实现只哈希仓库内
+// 三个目录，改了这棵树仍会复用旧宿主。
+func TestEnsureRebuildsWhenFrontendSourceChanges(t *testing.T) {
+	cases := []struct {
+		name string
+		rel  string
+	}{
+		{"上游 Go 源码", ".work/frontend/typescript-go/internal/compiler/program.go"},
+		{"内嵌声明库", ".work/frontend/typescript-go/internal/bundled/libs/lib.es5.d.ts"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root := newRoot(t)
+			stampBinary(t, root)
+			writeTreeFile(t, root, c.rel, "package compiler\n// changed\n")
+			runner := &fakeRunner{exit: 1, stderr: "compile failed"}
+			_, err := Ensure(root, runner, nil)
+			if exitOf(err) != diagnostic.ExitEnvironment {
+				t.Fatalf("前端源码变化后应尝试重建，实际 %d（%v）", exitOf(err), err)
+			}
+			if runner.calls != 1 {
+				t.Errorf("前端源码变化后应重建一次，实际 %d 次", runner.calls)
+			}
+		})
+	}
+}
+
+// TestEnsureIgnoresFrontendNonBuildFiles 确认身份只覆盖编译输入：testdata 与
+// 测试文件不参与 go build，改它们不触发重建。
+func TestEnsureIgnoresFrontendNonBuildFiles(t *testing.T) {
+	root := newRoot(t)
+	stampBinary(t, root)
+	writeTreeFile(t, root, ".work/frontend/typescript-go/testdata/fixtures/lib.d.ts", "interface X {}\n")
+	writeTreeFile(t, root, ".work/frontend/typescript-go/_extension/src/proposed.d.ts", "interface Y {}\n")
+	writeTreeFile(t, root, ".work/frontend/typescript-go/internal/compiler/program_test.go", "package compiler\n")
+	runner := &fakeRunner{}
+	if _, err := Ensure(root, runner, nil); err != nil {
+		t.Fatalf("非编译文件变化不应触发重建：%v", err)
+	}
+	if runner.calls != 0 {
+		t.Errorf("非编译文件变化不应重建，实际 %d 次", runner.calls)
+	}
+}
+
+// TestStampCoversFrontendSourceTree 确认戳记实际记录前端源码树的编译输入，
+// 而不只是几个 marker 文件。
+func TestStampCoversFrontendSourceTree(t *testing.T) {
+	root := newRoot(t)
+	writeTreeFile(t, root, ".work/frontend/typescript-go/internal/compiler/program.go", "package compiler\n")
+	writeTreeFile(t, root, ".work/frontend/typescript-go/internal/bundled/libs/lib.es5.d.ts", "interface X {}\n")
+	stampBinary(t, root)
+
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(StampPath)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st stamp
+	if err := json.Unmarshal(data, &st); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		".work/frontend/typescript-go/tyneladapter/adapter.go",
+		".work/frontend/typescript-go/internal/compiler/program.go",
+		".work/frontend/typescript-go/internal/bundled/libs/lib.es5.d.ts",
+	} {
+		if _, ok := st.Sources[want]; !ok {
+			t.Errorf("戳记缺少前端源码 %s（共 %d 项）", want, len(st.Sources))
+		}
+	}
+	for key := range st.Sources {
+		if strings.HasPrefix(key, ".work/frontend/typescript-go/testdata/") {
+			t.Errorf("戳记不应包含不参与构建的 testdata：%s", key)
+		}
+	}
+}

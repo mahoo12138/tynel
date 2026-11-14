@@ -11,6 +11,7 @@ package lower
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
 	"github.com/Mahoo12138/tynel/compiler/frontend"
@@ -20,6 +21,10 @@ import (
 
 // EntryName 是模块入口的名字。用户函数不能占用它。
 const EntryName = "main"
+
+// mergedInitName 是合并降低里共享的初始化函数名。所有模块体按顺序降进它，
+// 模块级 const 在其中求值一次，供后续模块读取。
+const mergedInitName = "__init"
 
 // maxDepth 是表达式嵌套的降低上限。事实校验已经限制过一次，这里再兜一层：
 // 降低是递归的，深树会先把栈吃光。
@@ -39,6 +44,7 @@ func Lower(snapshot *source.Snapshot, facts *frontend.Facts) (*nir.Module, error
 		facts:    facts,
 		names:    make(map[int]string, len(facts.Declarations)),
 	}
+	l.reserveNames(facts)
 	module := &nir.Module{SchemaVersion: nir.SchemaVersion, Entry: EntryName}
 
 	for i := range facts.Declarations {
@@ -77,8 +83,10 @@ func Lower(snapshot *source.Snapshot, facts *frontend.Facts) (*nir.Module, error
 	return module, nil
 }
 
-// LowerMerged 把一个或多个模块的事实降低成单个 NIR。每个模块体变成
-// __init$N，入口 main 按 order 依次调用；函数名已经由 merge 加了模块前缀。
+// LowerMerged 把一个或多个模块的事实降低成单个 NIR。所有模块体按 order 降进
+// 同一个初始化函数 __init，共享一个作用域：模块级 const 求值一次并绑定成带
+// 模块前缀的局部值，跨模块读取按声明 ID 命中同一个局部值，不会重新执行初始化
+// 表达式。入口 main 调用 __init；函数名已经由 merge 加了模块前缀。
 func LowerMerged(facts *frontend.Facts, snapshots map[string]*source.Snapshot, bodies map[string]*frontend.Node, order []string) (*nir.Module, error) {
 	if facts == nil || len(order) == 0 {
 		return nil, diagnostic.New(diagnostic.Internal, "lower.missing-input", "合并降低缺少事实或模块顺序")
@@ -91,6 +99,7 @@ func LowerMerged(facts *frontend.Facts, snapshots map[string]*source.Snapshot, b
 		facts:     facts,
 		names:     make(map[int]string, len(facts.Declarations)),
 	}
+	l.reserveNames(facts)
 	if len(snapshots) > 0 {
 		l.snapshot = snapshots[order[0]]
 	}
@@ -114,24 +123,27 @@ func LowerMerged(facts *frontend.Facts, snapshots map[string]*source.Snapshot, b
 		module.Functions = append(module.Functions, *fn)
 	}
 
-	var initNames []string
+	initFn := &nir.Function{Name: mergedInitName, Result: nir.TypeVoid}
+	sc := &scope{params: map[int]string{}, locals: map[int]string{}, mutable: map[int]bool{}}
+	l.inInit = true
 	for i, path := range order {
-		name := fmt.Sprintf("__init$%d", i)
-		init, err := l.entryWith(name, bodies[path], path)
+		// 模块前缀让不同模块的同名常量在共享作用域里不冲突；声明 ID 仍是
+		// 全局唯一身份，跨模块读取按 ID 命中同一个局部值。
+		stmts, err := l.initBody(bodies[path], path, sc, fmt.Sprintf("m%d$", i))
 		if err != nil {
 			return nil, err
 		}
-		module.Functions = append(module.Functions, *init)
-		initNames = append(initNames, name)
+		initFn.Body = append(initFn.Body, stmts...)
 	}
+	l.inInit = false
+	initFn.Body = append(initFn.Body, nir.Stmt{Op: nir.OpReturn})
+	module.Functions = append(module.Functions, *initFn)
 
 	mainFn := &nir.Function{Name: EntryName, Result: nir.TypeVoid}
-	for _, name := range initNames {
-		mainFn.Body = append(mainFn.Body, nir.Stmt{
-			Op:    nir.OpDiscard,
-			Value: &nir.Expr{Op: nir.OpCall, Function: name},
-		})
-	}
+	mainFn.Body = append(mainFn.Body, nir.Stmt{
+		Op:    nir.OpDiscard,
+		Value: &nir.Expr{Op: nir.OpCall, Function: mergedInitName},
+	})
 	mainFn.Body = append(mainFn.Body, nir.Stmt{Op: nir.OpReturn})
 	module.Functions = append(module.Functions, *mainFn)
 
@@ -147,11 +159,12 @@ type lowerer struct {
 	facts         *frontend.Facts
 	currentModule string
 	inInit        bool
-	names         map[int]string // 函数声明 ID → NIR 函数名
-	result        string         // 当前正在降低的函数的返回类型
-	temp          int            // 短路结果与实参物化的临时名序号
-	loops         []int          // 当前函数内由内到外的循环 id
-	nextLoop      int            // 下一个循环 id
+	names         map[int]string  // 函数声明 ID → NIR 函数名
+	result        string          // 当前正在降低的函数的返回类型
+	temp          int             // 短路结果与实参物化的临时名序号
+	reserved      map[string]bool // 用户声明占用的名字，临时名必须绕开
+	loops         []int           // 当前函数内由内到外的循环 id
+	nextLoop      int             // 下一个循环 id
 }
 
 // scope 是当前可见的声明。用声明 ID 而不是名字做键：两个函数里同名的参数是
@@ -259,14 +272,27 @@ func (l *lowerer) entryWith(name string, body *frontend.Node, module string) (*n
 	sc := &scope{params: map[int]string{}, locals: map[int]string{}, mutable: map[int]bool{}}
 	l.inInit = true
 	defer func() { l.inInit = false }()
+	stmts, err := l.initBody(body, module, sc, "")
+	if err != nil {
+		return nil, err
+	}
+	fn.Body = append(stmts, nir.Stmt{Op: nir.OpReturn})
+	return fn, nil
+}
+
+// initBody 把一个模块体降低成初始化语句，写进共享作用域 sc。模块级 const
+// 求值一次并绑定成局部值，声明 ID 是它的身份；prefix 非空时局部名加上模块
+// 前缀，让不同模块的同名常量在共享作用域里不冲突。跨模块读取按同一个 ID
+// 命中这个局部值，因此不会重新执行初始化表达式。
+func (l *lowerer) initBody(body *frontend.Node, module string, sc *scope, prefix string) ([]nir.Stmt, error) {
 	if snapshot := l.snapshots[module]; snapshot != nil {
 		l.snapshot = snapshot
 	}
 	l.currentModule = module
 	if body == nil {
-		fn.Body = []nir.Stmt{{Op: nir.OpReturn}}
-		return fn, nil
+		return nil, nil
 	}
+	var out []nir.Stmt
 	for i := range body.Children {
 		stmt := &body.Children[i]
 		switch stmt.Kind {
@@ -300,21 +326,21 @@ func (l *lowerer) entryWith(name string, body *frontend.Node, module string) (*n
 			if err != nil {
 				return nil, err
 			}
-			fn.Body = append(fn.Body, pre...)
-			fn.Body = append(fn.Body, nir.Stmt{Op: nir.OpLet, Name: decl.Name, Value: value, Pos: l.pos(stmt.Start)})
-			sc.locals[decl.ID] = decl.Name
+			name := prefix + decl.Name
+			out = append(out, pre...)
+			out = append(out, nir.Stmt{Op: nir.OpLet, Name: name, Value: value, Pos: l.pos(stmt.Start)})
+			sc.locals[decl.ID] = name
 		case "ExpressionStatement":
-			stmt, err := l.statement(stmt, sc)
+			s, err := l.statement(stmt, sc)
 			if err != nil {
 				return nil, err
 			}
-			fn.Body = append(fn.Body, stmt...)
+			out = append(out, s...)
 		default:
 			return nil, l.fail(stmt.Start, "lower.unsupported-statement", "模块级语句 %s 不在本阶段子集内", stmt.Kind)
 		}
 	}
-	fn.Body = append(fn.Body, nir.Stmt{Op: nir.OpReturn})
-	return fn, nil
+	return out, nil
 }
 
 func (l *lowerer) block(block *frontend.Node, sc *scope, result string) ([]nir.Stmt, error) {
@@ -608,10 +634,25 @@ func (l *lowerer) consoleLog(call *frontend.Node) (*frontend.Node, bool, error) 
 		return nil, false, nil
 	}
 	base := &callee.Children[0]
-	if base.Kind != "Identifier" || base.Name != "console" || base.Target != 0 {
+	if base.Kind != "Identifier" || base.Name != "console" || !l.builtinConsole(base) {
 		return nil, false, nil
 	}
 	return &call.Children[1], true, nil
+}
+
+// builtinConsole 与能力检查同一判据：本地声明让 Target 非 0；内置 console 的
+// 名称引用解析到声明库（bundled lib），导入绑定解析到项目模块或没有目标。
+// 没有名称引用时按内置处理，兜底手写事实；真实事实总会记录引用。
+func (l *lowerer) builtinConsole(base *frontend.Node) bool {
+	if base.Target != 0 {
+		return false
+	}
+	for _, ref := range l.facts.References {
+		if ref.Start == base.Start && ref.Name == base.Name {
+			return strings.HasPrefix(ref.TargetModule, "bundled:")
+		}
+	}
+	return true
 }
 
 func (l *lowerer) expr(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir.Stmt, error) {
@@ -685,10 +726,11 @@ func (l *lowerer) identifier(n *frontend.Node, sc *scope, depth int) (*nir.Expr,
 		if name, ok := sc.lookup(decl.ID); ok {
 			return &nir.Expr{Op: nir.OpLocal, Name: name, Pos: l.pos(n.Start)}, nil, nil
 		}
-		if l.inInit && decl.Body != nil {
-			// 初始化阶段读取另一个模块的顶层 const。简单纯表达式可以在这里
-			// 内联；函数读取模块常量仍由 capability/modules 拒绝。
-			return l.expr(decl.Body, sc, depth+1)
+		if l.inInit {
+			// 初始化作用域共享所有模块的常量存储，跨模块读取按声明 ID 命中
+			// 依赖模块已经算好的局部值。读不到说明依赖顺序或声明身份出了
+			// 问题；不能重新展开初始化表达式，那会重复执行其中的副作用。
+			return nil, nil, l.fail(n.Start, "lower.unknown-name", "模块常量 %q 在初始化作用域里不可见", n.Name)
 		}
 		return nil, nil, l.fail(n.Start, "lower.module-const-in-function", "模块常量 %q 在函数内不可见", n.Name)
 	case frontend.DeclLocal, frontend.DeclLet:
@@ -863,9 +905,27 @@ func (l *lowerer) shortCircuit(n *frontend.Node, sc *scope, depth int) (*nir.Exp
 	return &nir.Expr{Op: nir.OpLocal, Name: name, Pos: l.pos(n.Start)}, pre, nil
 }
 
+// reserveNames 登记这份事实里所有声明名。NIR 的局部值按名字寻址，参数、
+// 局部值和模块常量都可能叫 _tmp_1；_tmp_ 不是语言保留字，编译器不能占用
+// 用户的标识符空间。登记整个降低单元的名字（而不是当前作用域）是安全的：
+// 多绕开几个名字只改变临时名序号，不会改变任何用户代码的含义。
+func (l *lowerer) reserveNames(facts *frontend.Facts) {
+	l.reserved = make(map[string]bool, len(facts.Declarations))
+	for _, decl := range facts.Declarations {
+		l.reserved[decl.Name] = true
+	}
+}
+
+// tempName 分配一个不与用户名字冲突的临时名。序号在整个降低单元里单调
+// 递增，所以临时值之间也不会重名。
 func (l *lowerer) tempName() string {
-	l.temp++
-	return fmt.Sprintf("_tmp_%d", l.temp)
+	for {
+		l.temp++
+		name := fmt.Sprintf("_tmp_%d", l.temp)
+		if !l.reserved[name] {
+			return name
+		}
+	}
 }
 
 // pairOperands 降低二元运算的两个操作数。只要右侧带准备语句，左侧最终值

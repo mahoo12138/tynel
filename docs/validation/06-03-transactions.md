@@ -156,3 +156,44 @@ tynel: 环境缺失 (build.output-busy): 另一个构建正在写 /…/.work/val
 - 没有验证网络文件系统、跨文件系统改名、磁盘写满或断电后的持久性；这些环境下的失败会走诊断和回滚，但没有实测。
 - 没有业务级产物缓存，因此没有缓存命中率或跨机器缓存复用数据；这里只验证同一输入重复构建和工具变化失效。
 - 没有做发行目录搬移或独立机器运行；分别属于 06.04 和 06.06。
+
+## 交付后的目录符号链接锁键修复（2026-11-11）
+
+本节记录输出路径经过目录符号链接时构建锁无法识别同一目标的一次修复，执行时间是 2026-11-11 12:10 CST，代码基于提交 `7855d58` 的工作树。环境：Mac mini（Apple M4，arm64）、macOS 26.6.2、隔离 go1.27.3、前端 typescript/v7.0.2。上文「输出锁」中锁键按「输出路径绝对值」生成的说法，自本节起改为按规范化路径生成。
+
+`build.Run` 过去用 `filepath.Abs(opts.Output)` 得到输出路径，再直接用这个字符串生成锁键与发布路径。`filepath.Abs` 不解析目录符号链接：`/project/dist/app` 与 `/project/output-link/app`（`output-link -> dist`）字符串不同，却指向同一个目录项。`newPublication` 按字符串 sha256 生成 `.lock`、`.pending` 和备份名，于是两个进程各拿一把锁，都能进入发布阶段，同时替换同一产物与记录；两个事务备份名不同，失败回滚还可能删掉另一个进程刚发布的文件，破坏产物与记录的配对。
+
+修复在创建输出目录之后用 `filepath.EvalSymlinks` 解析真实目录，再以「规范目录 + 文件名」重建输出路径；锁键、临时文件、备份、发布目标和记录路径都统一用这条规范路径。`acquireOutputLock` 与 `newPublication` 仍从传入的输出路径派生一切，因此只需在 `Run` 里规范化一次。macOS 的临时目录本身经过 `/var -> /private/var` 符号链接，规范化也顺带消除了这类等价路径。
+
+新增回归（`internal/build/transaction_test.go`）：
+
+| 用例 | 结果 |
+| --- | --- |
+| `TestRunRejectsConcurrentOutputThroughDirSymlink` | 通过；真实目录上持有锁时，经目录 symlink 指向同一输出的构建以 `build.output-busy` 拒绝，后端调用 0 次、不产出文件 |
+| `TestRunPublishesThroughDirSymlink` | 通过；经 symlink 的构建把产物与记录发布到真实目录，`VerifyPair` 配对一致，无残留发布临时文件 |
+
+把 `build.go` 临时换回旧实现后，`TestRunRejectsConcurrentOutputThroughDirSymlink` 失败（经 symlink 的构建绕过锁继续执行），复现了并发漏洞；恢复修复后通过。既有的 `TestRunRejectsConcurrentOutput` 改为按规范路径持有测试锁，与 `Run` 的锁键一致，继续覆盖同一输出的并发拒绝。
+
+端到端复核（真实 CLI）：
+
+```zsh
+# 经目录 symlink 构建，产物、记录与锁都落在真实目录，只有一把锁。
+./bin/tynel build examples/add.ts -o /tmp/…/link/app
+ls -a /tmp/…/dist        # .tynel-<hash>.lock  app  app.build.json
+/tmp/…/dist/app          # 42
+# 再经真实目录构建，复用同一把锁（已释放），成功。
+./bin/tynel build examples/add.ts -o /tmp/…/dist/app
+```
+
+累计验证：
+
+| 入口 | 结果 |
+| --- | --- |
+| `./tools/test` | 20 个包全部通过 |
+| `go test -count=1 ./internal/build` | 36 个顶层测试通过（含新增 2 个） |
+| `./bridge/tsgo/check` | 103 项全过 |
+| `./bridge/go/check` | 16 项全过 |
+| `go vet ./...` | 无输出 |
+| `gofmt` | 无差异 |
+
+本次未覆盖：只在 `darwin/arm64` 上验证；并发拒绝由进程内持锁的确定性测试覆盖，没有用两个真实 CLI 进程做计时竞争；输出文件本身是符号链接（而非目录符号链接）的情形不在本轮范围，锁键按规范目录 + 文件名生成。

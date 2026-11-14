@@ -98,16 +98,27 @@ const doubled: number = scale(answer);
 | 部分 | 内容 |
 | --- | --- |
 | `declarations` | 顶层函数、它们的参数、顶层 const、函数体内的局部 const 与 let |
+| `dependencies` | 每条导入声明产生的模块依赖边，带目标模块、是否只用于类型、位置 |
+| `imports` | 命名导入产生的本地绑定：本地名、目标导出名、目标模块、是否只用于类型 |
 | `references` | 函数体与初始化表达式里的每一次名称出现，带解析到的声明 ID |
 | `calls` | 函数体与初始化表达式里的调用位置、被调用者 ID、实参类型、结果类型 |
 | `expressions` | 数字字面量、布尔字面量、二元运算、调用和标识符，各带类型摘要 |
 | `body` | 函数体或初始化表达式的语法骨架（见下） |
 
+依赖边与绑定分开记：
+
+- 每条 `import` 声明都产生一条 `dependencies`。`import "./register.ts"` 没有本地绑定，但仍产生运行时依赖边，目标模块必须先执行。
+- 命名导入额外产生 `imports`；重命名保留 `local` 与 `imported` 两段身份。
+- `import type`、`import { type X }` 的依赖边标记 `typeOnly: true`，不触发模块执行；`import { type X, y }` 含值绑定，依赖边不是 type-only。
+- 初始化计划只看 `dependencies`，不看 `imports`。这样「有绑定」和「要执行」不再是同一件事。
+
+`dependencies` 的位置覆盖整条导入声明；`imports` 的位置是具体的命名说明符。
+
 几个字段的语义要说清楚：
 
 - **`start` / `length` 是声明或表达式的字节区间**。函数声明覆盖整个 `function … }`；参数覆盖 `a: number`（含类型注解）；引用覆盖标识符本身（`a`，长度 2）。`start` 是第一个有效记号的位置，不含它前面的空白和注释——报错要指向 `if`，不能指到上一行末尾的换行符。
 - **`target` 和 `callee` 为 0 表示没有解析到本文件内的声明**，例如 `console`。它们不是错误。
-- **类型注解里的名字不算引用**。`a: number` 的 `number` 是类型名，不是变量，遍历时不进类型节点。
+- **类型注解里的名字不算引用**。`a: number` 的 `number` 是类型名，不是变量；`const q: Quantity = 1` 的 `Quantity` 同样只是类型空间的名字。提取时整棵类型子树都被跳过，所以 `references` 是纯运行时引用——模块阶段不需要再猜某个引用来自类型空间还是运行值。
 
 ## 语法骨架
 
@@ -163,6 +174,8 @@ const doubled: number = scale(answer);
 | 类型摘要 | 类别必须在枚举内；函数有返回类型、参数与局部值有类型 | `facts.bad-type` |
 | 可变性 | `mutable` 与种类一致：只有 let / module-let / var 为 true | `facts.bad-mutable` |
 | 参数归属 | 每个参数恰好属于一个函数 | `facts.unknown-target` / `facts.shared-parameter` / `facts.orphan-parameter` |
+| 模块依赖 | `module` 非空，位置合法 | `facts.bad-dependency` |
+| 导入绑定 | 本地名、目标导出名、模块非空，位置合法 | `facts.bad-import` |
 | 引用 | `target` 为 0 或指向存在的声明 | `facts.unknown-target` |
 | 调用 | 被调用者是函数；实参个数与形参一致；实参类型与形参一致；结果类型与声明一致 | `facts.call-target` / `facts.arg-count` / `facts.arg-type` / `facts.result-type` |
 

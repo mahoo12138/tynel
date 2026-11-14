@@ -16,6 +16,8 @@ func sampleFacts() *Facts {
 		SchemaVersion: 1,
 		Session:       "s1",
 		File:          "/tmp/add.ts",
+		// 一条没有绑定记录的依赖边，对应 import "./lib.ts" 这种副作用导入。
+		Dependencies: []Dependency{{Module: "/tmp/lib.ts", Start: 0, Length: 18}},
 		Declarations: []Declaration{
 			{ID: 1, Kind: DeclFunction, Name: "add", Start: 0, Length: 40, Result: &number, Parameters: []int{2, 3}},
 			{ID: 2, Kind: DeclParameter, Name: "a", Start: 15, Length: 1, Type: &number},
@@ -64,6 +66,8 @@ func TestValidateRejectsInconsistentFacts(t *testing.T) {
 		{"类型类别带空格", func(f *Facts) { f.Declarations[1].Type.Kind = "number " }, "facts.bad-type"},
 		{"类型类别大小写不符", func(f *Facts) { f.Declarations[1].Type.Kind = "Number" }, "facts.bad-type"},
 		{"位置为负", func(f *Facts) { f.References[0].Start = -1 }, "facts.bad-position"},
+		{"依赖缺模块", func(f *Facts) { f.Dependencies = []Dependency{{Start: 0, Length: 1}} }, "facts.bad-dependency"},
+		{"依赖位置非法", func(f *Facts) { f.Dependencies = []Dependency{{Module: "lib.ts", Start: -1, Length: 1}} }, "facts.bad-dependency"},
 		{"缺会话标识", func(f *Facts) { f.Session = "" }, "facts.no-session"},
 		{"schema 版本不符", func(f *Facts) { f.SchemaVersion = 2 }, "facts.schema"},
 	}

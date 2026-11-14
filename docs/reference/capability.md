@@ -107,11 +107,12 @@ const x = announce(1);     // 拒绝：void 没有值可以绑
 | `cap.unsupported-syntax` | 对象、数组、字符串、`for` / `do`、未初始化的 `let`、`var`、`new`、嵌套函数、匿名或默认导出的函数声明等本阶段不支持的语法 |
 | `cap.unknown-callee` | 调用目标不是本文件声明的函数、不是 `console.log`，也没有对上一条值导入绑定的项目模块导出 |
 | `cap.forbidden-global` | 调用 `eval` |
-| `cap.shadowed-console` | `console` 被本文件的声明遮蔽 |
+| `cap.shadowed-console` | `console` 被本地声明或导入绑定遮蔽，不是内置全局对象 |
 | `cap.bad-console-call` | `console.log` 的参数不是恰好一个 `number` 或 `boolean` |
 | `cap.bad-operator` | 运算符不在算术、一元 `- +`、`!` 与比较之内，包括宽松 `==` / `!=` |
 | `cap.bad-unary` | 一元 `-` / `+` 作用于非数字字面量；变量取负需要额外的取负操作 |
 | `cap.entry-name` | 用户函数占用了固定入口名 `main` |
+| `cap.unsupported-declaration` | 只有声明没有运行时实现：ambient `declare function`、重载签名（无函数体）或 `declare const`（无初始化表达式） |
 | `cap.module-let` | 模块级 `let`；模块体只接受 `const` |
 | `cap.assign-immutable` | 给 `const`、参数或模块常量赋值 |
 | `cap.assign-target` | 赋值目标不是直接名字 |
@@ -136,7 +137,14 @@ const x = announce(1);     // 拒绝：void 没有值可以绑
 const console = { log: (x: number) => x };
 ```
 
-那么 `console.log(42)` 调用的是用户的函数，不是输出。能力检查因此不看名字，而是看 `console` 这个标识符解析到了哪里：解析到本文件里的声明就是遮蔽，按 `cap.shadowed-console` 拒绝。
+那么 `console.log(42)` 调用的是用户的函数，不是输出。能力检查因此不看名字，而是看 `console` 这个标识符的符号身份：
+
+- 解析到本文件里的声明（`Target` 非 0）就是本地遮蔽。
+- 内置 `console` 的名称引用会解析到声明库（`TargetModule` 以 `bundled:` 开头）。命名导入、命名空间导入的 `console` 解析到项目模块，命名空间导入甚至没有目标模块——它们都不是内置对象。
+
+以上任一情况都按 `cap.shadowed-console` 拒绝。仅凭 `Target == 0` 不够：导入绑定的 `console` 也没有本地 `Target`，必须再核对名称引用是否真的落在声明库上。降低阶段用同一判据，不会把导入的 `console` 降成 `print`。
+
+此外，默认导入和命名空间导入本身就不在子集内：事实骨架的 `ImportDeclaration` 带 `importKind`（named / default / namespace / side-effect），能力检查对 default 与 namespace 按 `cap.unsupported-syntax` 拒绝，不让它们绕过绑定检查冒充内置对象。
 
 这条检查与输出是否已实现无关：能力检查的职责是判断「这段程序能不能进后端」。输出本身在 02.06 已经可用，格式见[输出格式](output.md)。
 

@@ -196,8 +196,9 @@ func runPipeline(snapshot *source.Snapshot, deps []*source.Snapshot, want string
 		writeJSON(result)
 		return
 	}
-	if len(facts.Imports) > 0 {
+	if len(facts.Imports) > 0 || len(facts.Dependencies) > 0 {
 		// 跨模块程序由主命令行合并降低；单文件降低在这里看不到目标函数。
+		// 副作用导入没有绑定，但同样说明入口不能单独执行。
 		result.Summary.Verified = true
 		writeJSON(result)
 		return

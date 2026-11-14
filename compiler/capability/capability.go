@@ -9,6 +9,8 @@
 package capability
 
 import (
+	"strings"
+
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
 	"github.com/Mahoo12138/tynel/compiler/frontend"
 	"github.com/Mahoo12138/tynel/compiler/nir"
@@ -104,6 +106,12 @@ func (c *checker) declaration(d *frontend.Declaration) {
 			c.report(d.Start, "cap.entry-name", "用户函数不能占用固定入口名 %q", EntryName)
 			return
 		}
+		if d.Body == nil {
+			// ambient 声明与重载签名只有类型、没有实现。降低阶段需要函数体，
+			// 提前在能力层拒绝，避免合法 TypeScript 写法变成内部故障。
+			c.report(d.Start, "cap.unsupported-declaration", "函数 %q 只有声明没有实现（ambient 或重载签名），本阶段不支持", d.Name)
+			return
+		}
 		c.declaredType(d.Result, d.Start, "函数 %q 的返回类型", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindVoid)
 	case frontend.DeclParameter:
 		// 默认参数与可选参数都需要后端合成缺省值，本阶段还没实现。先在这里
@@ -119,8 +127,13 @@ func (c *checker) declaration(d *frontend.Declaration) {
 		}
 		c.declaredType(d.Type, d.Start, "参数 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean)
 	case frontend.DeclConst:
+		if d.Body == nil {
+			// declare const 只有类型声明，没有初始化表达式；入口降低需要值。
+			c.report(d.Start, "cap.unsupported-declaration", "常量 %q 没有初始化表达式（ambient 声明），本阶段不支持", d.Name)
+			return
+		}
 		c.declaredType(d.Type, d.Start, "常量 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean)
-		if d.Body != nil && d.Body.Type != nil && d.Body.Type.Kind == frontend.KindVoid {
+		if d.Body.Type != nil && d.Body.Type.Kind == frontend.KindVoid {
 			c.report(d.Body.Start, "cap.void-value", "常量 %q 的初始值是 void 调用，没有可用的值", d.Name)
 		}
 	case frontend.DeclLocal, frontend.DeclLet:
@@ -163,7 +176,14 @@ func (c *checker) node(n *frontend.Node) {
 		// 类型声明由 Aliases 单独核对，这里不进入运行值。
 		return
 	case "ImportDeclaration":
-		// 命名导入由模块符号表核对；运行值由合并降低处理。
+		// 命名导入与副作用导入由模块符号表核对；默认导入和命名空间导入不在
+		// 子集内，明确拒绝，而不是让它们绕过绑定检查冒充内置对象。
+		switch n.ImportKind {
+		case "default":
+			c.report(n.Start, "cap.unsupported-syntax", "默认导入不在本阶段子集内；只支持命名导入与副作用导入")
+		case "namespace":
+			c.report(n.Start, "cap.unsupported-syntax", "命名空间导入不在本阶段子集内；只支持命名导入与副作用导入")
+		}
 		return
 	case "Block":
 		c.children(n)
@@ -595,8 +615,8 @@ func (c *checker) consoleCall(n *frontend.Node, callee *frontend.Node, args []fr
 		c.report(n.Start, "cap.unknown-callee", "只支持 console.log，收到的是其他对象的方法")
 		return
 	}
-	if base.Target != 0 {
-		c.report(n.Start, "cap.shadowed-console", "console 被本文件里的声明遮蔽，不能当作内置输出使用")
+	if !c.builtinConsole(base) {
+		c.report(n.Start, "cap.shadowed-console", "console 被本地声明或导入绑定遮蔽，不是内置全局对象")
 		return
 	}
 	if len(args) != 1 {
@@ -612,6 +632,24 @@ func (c *checker) consoleCall(n *frontend.Node, callee *frontend.Node, args []fr
 		return
 	}
 	c.node(&args[0])
+}
+
+// builtinConsole 报告 console 标识符是否解析到内置全局 console。仅凭名字和
+// Target==0 不够：命名导入、命名空间导入的 console 也没有本地 Target。可靠
+// 的判据是符号身份——本地声明会让 Target 非 0；内置 console 的名称引用解析
+// 到声明库（bundled lib），而导入绑定解析到项目模块（命名空间导入甚至没有
+// 目标）。没有名称引用时按内置处理：真实事实总会记录引用，这条只兜底手写
+// 事实，且导入形状已在 ImportDeclaration 处单独把关。
+func (c *checker) builtinConsole(base *frontend.Node) bool {
+	if base.Target != 0 {
+		return false
+	}
+	for _, ref := range c.facts.References {
+		if ref.Start == base.Start && ref.Name == base.Name {
+			return strings.HasPrefix(ref.TargetModule, "bundled:")
+		}
+	}
+	return true
 }
 
 func (c *checker) report(offset int, code, format string, args ...any) {
