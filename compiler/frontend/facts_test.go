@@ -65,6 +65,14 @@ func TestValidateRejectsInconsistentFacts(t *testing.T) {
 		{"可变性与种类不符", func(f *Facts) { f.Declarations[1].Mutable = true }, "facts.bad-mutable"},
 		{"类型类别带空格", func(f *Facts) { f.Declarations[1].Type.Kind = "number " }, "facts.bad-type"},
 		{"类型类别大小写不符", func(f *Facts) { f.Declarations[1].Type.Kind = "Number" }, "facts.bad-type"},
+		{"数组缺少元素类型", func(f *Facts) { f.Declarations[1].Type = &Type{Kind: KindArray} }, "facts.bad-type"},
+		{"元组缺少元素", func(f *Facts) { f.Declarations[1].Type = &Type{Kind: KindTuple} }, "facts.bad-type"},
+		{"联合少于两个成员", func(f *Facts) { f.Declarations[1].Type = &Type{Kind: KindUnion, Members: []Type{{Kind: KindNumber}}} }, "facts.bad-type"},
+		{"函数缺少返回类型", func(f *Facts) { f.Declarations[1].Type = &Type{Kind: KindFunction} }, "facts.bad-type"},
+		{"命名类型缺少名字", func(f *Facts) { f.Declarations[1].Type = &Type{Kind: KindNamed} }, "facts.bad-type"},
+		{"对象属性缺少名字", func(f *Facts) {
+			f.Declarations[1].Type = &Type{Kind: KindObject, Properties: []Property{{Type: Type{Kind: KindNumber}}}}
+		}, "facts.bad-type"},
 		{"位置为负", func(f *Facts) { f.References[0].Start = -1 }, "facts.bad-position"},
 		{"依赖缺模块", func(f *Facts) { f.Dependencies = []Dependency{{Start: 0, Length: 1}} }, "facts.bad-dependency"},
 		{"依赖位置非法", func(f *Facts) { f.Dependencies = []Dependency{{Module: "lib.ts", Start: -1, Length: 1}} }, "facts.bad-dependency"},

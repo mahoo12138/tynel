@@ -45,14 +45,15 @@ pos, err := snapshot.Position(109)   // 2:7
 | --- | --- | --- |
 | `Range{Start, End}` | UTF-8 字节，左闭右开 | 切源码、和前端对齐、比较两次结果是否指向同一段 |
 | `Position{Line, Column}` | 1 起始的行、按字符计数的列 | 给人看，写进诊断 |
+| `Offset(Position)` | 1 起始行列 → UTF-8 字节偏移 | 把 NIR 的 `pos` 或诊断位置映射回快照，反方向核对 |
 
-从行列反推字节是不行的：同样的「第 7 列」在不同行对应的字节偏移不同，而字节才是前端与快照之间唯一可靠的坐标。所以诊断里两个都留着，行列只用于展示。
+`Position` 和 `Offset` 是一对互逆换算，但字节仍是前端与快照之间的主坐标。`Offset` 只接受合法行列：行号从 1 开始，列号从 1 开始且不能越过行尾；越界报 `source.bad-position`。同样的「第 7 列」在不同行对应不同字节，所以不能绕过快照自己乘加。
 
 列按字符（Unicode 码点）计数，不是字节数，也不是 UTF-16 码元数。一个 emoji 占 4 个字节，但只让列前进 1。
 
 ## 换算会拒绝什么
 
-`Position` 只在偏移落在 `[0, Size]` 且位于字符边界上时返回结果。越界、负数、或者切在多字节字符中间，都返回 `source.bad-offset`，类别是内部故障——偏移由前端或编译器自己产生，出错说明我们算错了，不是用户输入的问题，所以不能伪装成源码错误。
+`Position` 只在偏移落在 `[0, Size]` 且位于字符边界上时返回结果。越界、负数、或者切在多字节字符中间，都返回 `source.bad-offset`，类别是内部故障——偏移由前端或编译器自己产生，出错说明我们算错了，不是用户输入的问题，所以不能伪装成源码错误。`Offset` 对不合法的行号、列号返回 `source.bad-position`，原因相同。
 
 同理，`Slice` 不会返回半段字符，`LineText` 不会返回不存在的行。这些检查让上层可以放心地用「拿不到就报错」的写法，而不是在每个调用点自己防一遍。
 
@@ -103,6 +104,7 @@ mapped, err := snapshot.MapDiagnostics([]source.FrontendDiagnostic{{
 | `source.too-large` | 源码错误 | 超过字节预算 |
 | `source.too-many-lines` | 源码错误 | 超过行数预算 |
 | `source.bad-offset` | 内部故障 | 偏移越界或落在多字节字符中间 |
+| `source.bad-position` | 内部故障 | 行列越界，或列号越过行尾 |
 | `source.bad-line` | 内部故障 | 行号不在 `1..LineCount` |
 | `source.bad-severity` | 内部故障 | 前端返回了未知的诊断类别 |
 

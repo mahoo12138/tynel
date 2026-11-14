@@ -285,3 +285,43 @@ func TestReportHasNoBytes(t *testing.T) {
 		t.Fatalf("报告不对：%+v", report)
 	}
 }
+
+// fakeResolver 不读磁盘，只按预先登记的目标回答。它证明 graph.Load 只依赖
+// project.Resolver 接口，而不是具体的 *project.Root。
+type fakeResolver struct {
+	entry   project.File
+	targets map[string]project.File
+}
+
+func (f fakeResolver) ResolveEntry(name string) (project.File, error) {
+	return f.entry, nil
+}
+
+func (f fakeResolver) ResolveImport(from project.File, request string) (project.File, error) {
+	target, ok := f.targets[from.Path+"->"+request]
+	if !ok {
+		return project.File{}, errors.New("fake resolver 没有登记目标")
+	}
+	return target, nil
+}
+
+func TestLoadAcceptsReplaceableResolver(t *testing.T) {
+	main := project.File{Path: "main.ts", Abs: "/virtual/main.ts", SHA256: "aaa"}
+	lib := project.File{Path: "lib.ts", Abs: "/virtual/lib.ts", SHA256: "bbb"}
+	resolver := fakeResolver{
+		entry:   main,
+		targets: map[string]project.File{"main.ts->./lib.ts": lib},
+	}
+	g, err := Load(resolver, main, fakeScanner{
+		"main.ts": {{Specifier: "./lib.ts"}},
+	})
+	if err != nil {
+		t.Fatalf("可替换解析器应能载入依赖：%v", err)
+	}
+	if len(g.Files) != 2 || g.Files[1].Path != "lib.ts" {
+		t.Fatalf("解析结果不对：%+v", g.Files)
+	}
+	if len(g.Edges) != 1 || g.Edges[0].To != "lib.ts" {
+		t.Fatalf("依赖边不对：%+v", g.Edges)
+	}
+}

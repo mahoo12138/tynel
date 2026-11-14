@@ -27,6 +27,20 @@ type Root struct {
 	path string
 }
 
+// Resolver 把入口和导入请求解析成项目文件。
+//
+// 依赖图只依赖这个接口，不依赖具体的 *Root。当前实现只解析项目根内的显式相对
+// .ts 路径；未来的 @tynel/* 标准库解析器、包解析器或测试替身可以实现同一接口，
+// 而不需要改 graph、merge 或命令行。ResolveImport 的 from 必须是同一个解析器
+// 先前返回过的文件。
+type Resolver interface {
+	ResolveEntry(name string) (File, error)
+	ResolveImport(from File, request string) (File, error)
+}
+
+// 编译期确认 Root 实现了 Resolver。
+var _ Resolver = (*Root)(nil)
+
 // File 是解析结果。Path 是项目内相对路径（斜杠分隔），Abs 是规范化绝对路径，
 // SHA256 是解析时读到的内容哈希。Bytes 只在本次解析内有效，调用方不应修改。
 type File struct {

@@ -96,6 +96,12 @@ func (f *Facts) Validate() error {
 		if !alias.Kind.valid() {
 			return diagnostic.New(diagnostic.Internal, "facts.bad-alias-kind", "类型别名 %q 的类别 %q 不认识", alias.Name, alias.Kind)
 		}
+		if alias.Type != nil {
+			nodes := 0
+			if err := validateType(alias.Type, "类型别名 "+alias.Name, 0, &nodes); err != nil {
+				return err
+			}
+		}
 	}
 
 	// 每个参数必须恰好属于一个函数：既不能没有归属，也不能被两个函数共用。
@@ -144,12 +150,13 @@ func (f *Facts) Validate() error {
 		if call.Length <= 0 || call.Start < 0 {
 			return diagnostic.New(diagnostic.Internal, "facts.bad-position", "调用位置 %d+%d 不合法", call.Start, call.Length)
 		}
-		if !call.Result.Kind.valid() {
-			return diagnostic.New(diagnostic.Internal, "facts.bad-type", "调用的返回类型 %q 不认识", call.Result.Kind)
+		nodes := 0
+		if err := validateType(&call.Result, "调用的返回类型", 0, &nodes); err != nil {
+			return err
 		}
-		for _, arg := range call.Arguments {
-			if !arg.Kind.valid() {
-				return diagnostic.New(diagnostic.Internal, "facts.bad-type", "实参类型 %q 不认识", arg.Kind)
+		for i := range call.Arguments {
+			if err := validateType(&call.Arguments[i], "调用实参", 0, &nodes); err != nil {
+				return err
 			}
 		}
 		if call.Callee == 0 {
@@ -178,9 +185,10 @@ func (f *Facts) Validate() error {
 			}
 			got := call.Arguments[i].Kind
 			if got != param.Type.Kind {
-				// 带默认值或 ? 的位置允许显式传 undefined；前端把 undefined
-				// 压成 other，粗粒度摘要不足以在这个位置上判定不一致。
-				if got == KindOther && (param.Optional || param.HasDefault) {
+				// 带默认值或 ? 的位置允许显式传 undefined。适配层把 undefined
+				// 记成独立类别；KindOther 是旧适配层和手写事实的粗粒度写法，
+				// 两者都在可省略位置上放行。
+				if (got == KindUndefined || got == KindOther) && (param.Optional || param.HasDefault) {
 					continue
 				}
 				return diagnostic.New(diagnostic.Internal, "facts.arg-type", "调用 %q 的第 %d 个实参是 %s，形参是 %s", callee.Name, i+1, got, param.Type.Kind)
@@ -219,8 +227,9 @@ func (f *Facts) Validate() error {
 		if expr.Kind == "" || expr.Length <= 0 || expr.Start < 0 {
 			return diagnostic.New(diagnostic.Internal, "facts.bad-position", "表达式位置 %d+%d 或类别 %q 不合法", expr.Start, expr.Length, expr.Kind)
 		}
-		if !expr.Type.Kind.valid() {
-			return diagnostic.New(diagnostic.Internal, "facts.bad-type", "表达式类型 %q 不认识", expr.Type.Kind)
+		nodes := 0
+		if err := validateType(&expr.Type, "表达式 "+expr.Kind, 0, &nodes); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -242,8 +251,11 @@ func (f *Facts) validateNode(n *Node, depth int, nodes *int) error {
 	if n.Start < 0 || n.Length <= 0 {
 		return diagnostic.New(diagnostic.Internal, "facts.bad-position", "%s 的位置 %d+%d 不合法", n.Kind, n.Start, n.Length)
 	}
-	if n.Type != nil && !n.Type.Kind.valid() {
-		return diagnostic.New(diagnostic.Internal, "facts.bad-type", "%s 的类型 %q 不认识", n.Kind, n.Type.Kind)
+	if n.Type != nil {
+		nodes := 0
+		if err := validateType(n.Type, n.Kind, 0, &nodes); err != nil {
+			return err
+		}
 	}
 	if n.Target != 0 {
 		if _, ok := f.Declaration(n.Target); !ok {
@@ -284,8 +296,9 @@ func requireType(what string, want, forbid *Type) error {
 	if want == nil {
 		return diagnostic.New(diagnostic.Internal, "facts.bad-type", "%s 缺少类型摘要", what)
 	}
-	if !want.Kind.valid() {
-		return diagnostic.New(diagnostic.Internal, "facts.bad-type", "%s 的类型 %q 不认识", what, want.Kind)
+	nodes := 0
+	if err := validateType(want, what, 0, &nodes); err != nil {
+		return err
 	}
 	if forbid != nil {
 		return diagnostic.New(diagnostic.Internal, "facts.bad-decl", "%s 不应带多余的类型摘要", what)

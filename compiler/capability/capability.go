@@ -39,7 +39,11 @@ func Check(snapshot *source.Snapshot, facts *frontend.Facts) ([]*diagnostic.Diag
 		case "union":
 			c.report(alias.Start, "cap.bad-type", "类型别名 %q 是联合类型，本阶段不支持", alias.Name)
 		default:
-			c.report(alias.Start, "cap.bad-type", "类型别名 %q 最终是 %s，本阶段只支持 number 与 boolean", alias.Name, alias.Kind)
+			description := string(alias.Kind)
+			if alias.Type != nil {
+				description = alias.Type.String()
+			}
+			c.report(alias.Start, "cap.bad-type", "类型别名 %q 最终是 %s，本阶段只支持 number 与 boolean", alias.Name, description)
 		}
 	}
 	for i := range facts.Declarations {
@@ -164,7 +168,7 @@ func (c *checker) declaredType(t *frontend.Type, offset int, format, name string
 			return
 		}
 	}
-	c.report(offset, "cap.bad-type", format+"是 %s，本阶段不支持", name, t.Kind)
+	c.report(offset, "cap.bad-type", format+"是 %s，本阶段不支持", name, describeType(t))
 }
 
 func (c *checker) node(n *frontend.Node) {
@@ -302,11 +306,11 @@ func (c *checker) node(n *frontend.Node) {
 			return
 		}
 		if thenNode.Type.Kind != elseNode.Type.Kind {
-			c.report(n.Start, "cap.bad-type", "三元式两条分支类型不同：%s 与 %s", thenNode.Type.Kind, elseNode.Type.Kind)
+			c.report(n.Start, "cap.bad-type", "三元式两条分支类型不同：%s 与 %s", describeType(thenNode.Type), describeType(elseNode.Type))
 			return
 		}
 		if thenNode.Type.Kind != frontend.KindNumber && thenNode.Type.Kind != frontend.KindBoolean {
-			c.report(n.Start, "cap.bad-type", "三元式的结果不能是 %s", thenNode.Type.Kind)
+			c.report(n.Start, "cap.bad-type", "三元式的结果不能是 %s", describeType(thenNode.Type))
 			return
 		}
 		for i := range n.Children {
@@ -341,7 +345,7 @@ func (c *checker) node(n *frontend.Node) {
 				return
 			}
 			if left.Type.Kind != frontend.KindNumber && left.Type.Kind != frontend.KindBoolean {
-				c.report(n.Start, "cap.bad-type", "严格相等 %q 只支持 number 或 boolean，实际为 %s", n.Op, left.Type.Kind)
+				c.report(n.Start, "cap.bad-type", "严格相等 %q 只支持 number 或 boolean，实际为 %s", n.Op, describeType(left.Type))
 				return
 			}
 			c.node(left)
@@ -445,14 +449,19 @@ func (c *checker) typedOperand(n *frontend.Node, want frontend.Kind, what string
 		return
 	}
 	if n.Type == nil || n.Type.Kind != want {
-		kind := frontend.KindOther
-		if n.Type != nil {
-			kind = n.Type.Kind
-		}
-		c.report(n.Start, "cap.bad-type", "%s是 %s，需要 %s", what, kind, want)
+		c.report(n.Start, "cap.bad-type", "%s是 %s，需要 %s", what, describeType(n.Type), want)
 		return
 	}
 	c.node(n)
+}
+
+// describeType 把类型摘要转成诊断里的短描述。nil 不实现 String 的判空由这里
+// 兜住，避免格式化和诊断本身因为缺字段而崩溃。
+func describeType(t *frontend.Type) string {
+	if t == nil {
+		return "缺少类型"
+	}
+	return t.String()
 }
 
 func (c *checker) children(n *frontend.Node) {
@@ -487,7 +496,7 @@ func (c *checker) assignment(n *frontend.Node) {
 		return
 	}
 	if rhs.Type == nil || rhs.Type.Kind != decl.Type.Kind {
-		c.report(rhs.Start, "cap.bad-type", "赋值目标 %q 是 %s，右值不是同一类型", target.Name, decl.Type.Kind)
+		c.report(rhs.Start, "cap.bad-type", "赋值目标 %q 是 %s，右值不是同一类型", target.Name, describeType(decl.Type))
 		return
 	}
 	c.valueNode(rhs, "赋值右侧")
@@ -628,7 +637,7 @@ func (c *checker) consoleCall(n *frontend.Node, callee *frontend.Node, args []fr
 		return
 	}
 	if args[0].Type == nil || (args[0].Type.Kind != frontend.KindNumber && args[0].Type.Kind != frontend.KindBoolean) {
-		c.report(args[0].Start, "cap.bad-console-call", "console.log 只接受 number 或 boolean，本阶段不支持其他类型")
+		c.report(args[0].Start, "cap.bad-console-call", "console.log 只接受 number 或 boolean，实际为 %s", describeType(args[0].Type))
 		return
 	}
 	c.node(&args[0])

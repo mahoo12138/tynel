@@ -16,34 +16,6 @@ import (
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
 )
 
-// Kind 是类型摘要的类别。只区分本阶段关心的几种，其余统一为 other。
-type Kind string
-
-const (
-	KindNumber    Kind = "number"
-	KindBoolean   Kind = "boolean"
-	KindString    Kind = "string"
-	KindVoid      Kind = "void"
-	KindAny       Kind = "any"
-	KindOther     Kind = "other"
-	KindUnion     Kind = "union"
-	KindInterface Kind = "interface"
-)
-
-// valid 报告类别是否在允许集合内。校验按枚举比较，不做字符串规整。
-func (k Kind) valid() bool {
-	switch k {
-	case KindNumber, KindBoolean, KindString, KindVoid, KindAny, KindOther, KindUnion, KindInterface:
-		return true
-	}
-	return false
-}
-
-// Type 是类型摘要。
-type Type struct {
-	Kind Kind `json:"kind"`
-}
-
 // DeclKind 是声明的种类。
 type DeclKind string
 
@@ -142,12 +114,14 @@ type Declaration struct {
 }
 
 // Alias 是一个类型别名或接口声明。Kind 是类型空间的归类：number、boolean、
-// interface、union、any 或 other。别名不产生运行时值。
+// interface、union、any 或 other。Type 在适配层能给出结构化描述时附带；
+// 它只是类型空间的数据，不产生运行时值。
 type Alias struct {
 	Name   string `json:"name"`
 	Start  int    `json:"start"`
 	Length int    `json:"length"`
 	Kind   Kind   `json:"kind"`
+	Type   *Type  `json:"type,omitempty"`
 }
 
 // Reference 是一次名称引用。Target 为 0 表示没有解析到本文件内的声明。

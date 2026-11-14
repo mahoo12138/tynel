@@ -127,18 +127,20 @@ func TestValidateRejectsParameterSemanticsOnOtherDeclarations(t *testing.T) {
 }
 
 // TestValidateAllowsUndefinedOnOmittableParameter 确认 f(undefined, 2) 这种
-// 合法写法不会撞上 facts.arg-type。前端把 undefined 压成 other，只有可省略
-// 的位置才允许这种粗粒度摘要。
+// 合法写法不会撞上 facts.arg-type。适配层把 undefined 记为独立类别，旧适配层
+// 和手写事实可能仍用 other；两者都只允许出现在可省略的位置。
 func TestValidateAllowsUndefinedOnOmittableParameter(t *testing.T) {
-	first := param(2, "a")
-	first.HasDefault = true
-	f := arityFacts(2, first, param(3, "b"))
-	f.Calls[0].Arguments[0] = Type{Kind: KindOther}
-	if err := f.Validate(); err != nil {
-		t.Fatalf("可省略位置传 undefined 应通过：%v", err)
+	for _, kind := range []Kind{KindUndefined, KindOther} {
+		first := param(2, "a")
+		first.HasDefault = true
+		f := arityFacts(2, first, param(3, "b"))
+		f.Calls[0].Arguments[0] = Type{Kind: kind}
+		if err := f.Validate(); err != nil {
+			t.Fatalf("%s 在可省略位置应通过：%v", kind, err)
+		}
 	}
-	f.Calls[0].Arguments[0] = Type{Kind: KindOther}
-	f.Declarations[1] = param(2, "a")
+	f := arityFacts(2, param(2, "a"), param(3, "b"))
+	f.Calls[0].Arguments[0] = Type{Kind: KindUndefined}
 	err := f.Validate()
 	var d *diagnostic.Diagnostic
 	if !errors.As(err, &d) || d.Code != "facts.arg-type" {

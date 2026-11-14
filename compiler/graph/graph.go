@@ -69,9 +69,12 @@ type Report struct {
 // Load 从 entry 出发递归载入依赖。遇到缺失目标、越界路径或值依赖环时返回
 // 错误，不返回半个图。类型边同样递归载入，让检查器看到全部声明，但不参与
 // 环检测。
-func Load(root *project.Root, entry project.File, scan Scanner) (*Graph, error) {
-	if root == nil || scan == nil {
-		return nil, diagnostic.New(diagnostic.Internal, "graph.missing-input", "依赖图缺少项目根或扫描器")
+//
+// resolver 只负责把导入请求变成项目文件；本包不假设它一定是 *project.Root。
+// 当前相对路径解析和未来的 @tynel/* 解析器因此可以共用同一套图构建与环检测。
+func Load(resolver project.Resolver, entry project.File, scan Scanner) (*Graph, error) {
+	if resolver == nil || scan == nil {
+		return nil, diagnostic.New(diagnostic.Internal, "graph.missing-input", "依赖图缺少解析器或扫描器")
 	}
 	g := &Graph{Entry: entry}
 	seen := make(map[string]bool)
@@ -89,7 +92,7 @@ func Load(root *project.Root, entry project.File, scan Scanner) (*Graph, error) 
 			return err
 		}
 		for _, imp := range imports {
-			target, err := root.ResolveImport(file, imp.Specifier)
+			target, err := resolver.ResolveImport(file, imp.Specifier)
 			if err != nil {
 				return err
 			}

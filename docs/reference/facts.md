@@ -89,7 +89,7 @@ const doubled: number = scale(answer);
 | `a, b?` | 1 或 2 |
 | `a = 1, b` | 2（后面还有必填参数，第一个位置不能省，要显式传 `undefined`） |
 
-下界取「最后一个必填参数的下标 + 1」。可省略的位置允许显式传 `undefined`：前端把 `undefined` 压成 `other`，粗粒度类型摘要不足以在这个位置上判定不一致。校验也只在实参确实给出的位置上比较类型，不再按形参数量去索引实参列表。
+下界取「最后一个必填参数的下标 + 1」。可省略的位置允许显式传 `undefined`：适配层把它记成 `undefined`，旧适配层和手写事实也可能用 `other`；校验在可省略位置放行这两种摘要。校验也只在实参确实给出的位置上比较类型，不再按形参数量去索引实参列表。
 
 这两个标记**不代表后端支持它们**。当前阶段只实现必填参数，带默认值或 `?` 的参数由能力检查按 `cap.unsupported-parameter` 拒绝，见[原生能力白名单](capability.md)。
 
@@ -148,18 +148,36 @@ const doubled: number = scale(answer);
 
 ## 类型摘要
 
-类型只有类别，没有人类可读的字符串：
+类型摘要先给类别，再按类别附带结构。标量只有 `kind`；对象、数组、元组、函数、联合和命名类型带有递归字段：
 
-| 类别 | 含义 |
-| --- | --- |
-| `number` | 包括字面量类型 `42` |
-| `boolean` | 包括 `true` / `false` |
-| `string` | 包括字符串字面量 |
-| `void` | 无返回值 |
-| `any` | `any` 与 `unknown` |
-| `other` | 其余类型，本阶段不处理 |
+| 字段 | 出现位置 | 含义 |
+| --- | --- | --- |
+| `kind` | 全部 | `number`、`boolean`、`string`、`void`、`any`、`null`、`undefined`、`never`、`bigint`、`symbol`、`object`、`array`、`tuple`、`function`、`named`、`union`、`intersection`、`type-parameter`、`interface` 或 `other` |
+| `name` | `named`、`type-parameter` 和具名 `object` | 用户可见的类型名；上游内部符号名（`\xFE` 前缀）不会写进事实 |
+| `typeArgs` | 泛型引用 | 类型实参 |
+| `members` | `union`、`intersection` | 至少两个成员 |
+| `element` | `array` | 元素类型 |
+| `elements` | `tuple` | 元组元素 |
+| `properties` | `object` | 属性名、可选性和属性类型 |
+| `params` | `function` | 参数名、可选性和参数类型 |
+| `result` | `function` | 返回类型 |
 
-用类别而不是字符串，是因为检查器给出的字符串是给人看的：`const answer = 42` 的类型字符串是 `"42"`，它属于 `number`；`number | undefined` 这种联合类型更没法用字符串判断。类别来自类型标志位，是检查器已经算好的结论。
+例如，`type Point = { x: number; label?: string }` 的对象属性会写成：
+
+```json
+{
+  "kind": "object",
+  "properties": [
+    {"name": "x", "type": {"kind": "number"}},
+    {"name": "label", "optional": true,
+     "type": {"kind": "union", "members": [{"kind": "undefined"}, {"kind": "string"}]}}
+  ]
+}
+```
+
+用结构而不是字符串，是因为检查器给出的字符串是给人看的：`const answer = 42` 的类型字符串是 `"42"`，它属于 `number`；`number | undefined` 这联合类型也没法靠字符串判断。结构来自类型标志位、属性表和签名，是检查器已经算好的结论。
+
+结构化摘要只是描述，不是支持承诺。对象、数组、元组、函数和混合联合目前仍会被能力检查拒绝；事实里出现它们，表示前端已经读懂了类型，不代表后端能生成代码。
 
 ## 校验做什么
 
@@ -171,7 +189,7 @@ const doubled: number = scale(answer);
 | 会话 | `session` 与 `file` 不能为空 | `facts.no-session` / `facts.no-file` |
 | ID | 正数且不重复 | `facts.bad-id` / `facts.duplicate-id` |
 | 种类 | 只能是 function / parameter / const / local / let / module-let / var | `facts.bad-decl-kind` |
-| 类型摘要 | 类别必须在枚举内；函数有返回类型、参数与局部值有类型 | `facts.bad-type` |
+| 类型摘要 | 类别必须在枚举内；`array` 有 `element`、`tuple` 有 `elements`、`union` / `intersection` 至少两个成员、`function` 有 `result`、`named` / `type-parameter` 有 `name`；递归有深度和节点预算 | `facts.bad-type` |
 | 可变性 | `mutable` 与种类一致：只有 let / module-let / var 为 true | `facts.bad-mutable` |
 | 参数归属 | 每个参数恰好属于一个函数 | `facts.unknown-target` / `facts.shared-parameter` / `facts.orphan-parameter` |
 | 模块依赖 | `module` 非空，位置合法 | `facts.bad-dependency` |

@@ -167,6 +167,33 @@ func (s *Snapshot) Position(offset int) (Position, error) {
 	}, nil
 }
 
+// Offset 把行列换算回字节偏移，是 Position 的反方向映射。
+//
+// 行列来自 NIR 的 pos 或诊断，换算时不重新读磁盘，也不依赖当前工作目录。
+// 列按 Unicode 码点计数；允许落在行尾（行尾换行符之前），但不允许越过行尾。
+func (s *Snapshot) Offset(pos Position) (int, error) {
+	if pos.Line < 1 || pos.Line > len(s.lines) {
+		return 0, badPosition(s, pos, "行号范围 1..%d", len(s.lines))
+	}
+	if pos.Column < 1 {
+		return 0, badPosition(s, pos, "列号从 1 开始")
+	}
+	start := s.lines[pos.Line-1]
+	end := len(s.data)
+	if pos.Line < len(s.lines) {
+		end = s.lines[pos.Line] - 1 // 去掉行尾 '\n'
+	}
+	offset := start
+	for column := 1; column < pos.Column; column++ {
+		if offset >= end {
+			return 0, badPosition(s, pos, "第 %d 行只有 %d 列", pos.Line, column)
+		}
+		_, size := utf8.DecodeRune(s.data[offset:end])
+		offset += size
+	}
+	return offset, nil
+}
+
 // Range 校验并返回一段字节区间。
 func (s *Snapshot) Range(start, end int) (Range, error) {
 	if start < 0 || end < start || end > len(s.data) {
@@ -206,5 +233,10 @@ func (s *Snapshot) LineText(line int) (string, error) {
 
 func badOffset(s *Snapshot, offset int, format string, args ...any) error {
 	d := diagnostic.New(diagnostic.Internal, "source.bad-offset", "源文件 %s 的偏移 %d 不可用", s.path, offset)
+	return d.WithDetail(fmt.Sprintf(format, args...))
+}
+
+func badPosition(s *Snapshot, pos Position, format string, args ...any) error {
+	d := diagnostic.New(diagnostic.Internal, "source.bad-position", "源文件 %s 的位置 %d:%d 不可用", s.path, pos.Line, pos.Column)
 	return d.WithDetail(fmt.Sprintf(format, args...))
 }

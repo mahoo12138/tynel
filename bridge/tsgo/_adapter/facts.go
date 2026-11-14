@@ -19,10 +19,33 @@ import (
 	"github.com/microsoft/typescript-go/internal/scanner"
 )
 
-// factType 是类型摘要。只记类别，不记人类可读的类型字符串：调用方需要判断
-// 「是不是 number」，而不是把 "number | undefined" 拿去解析。
+// factType 是类型摘要。只记结构和类别，不记人类可读的类型字符串：调用方需要
+// 判断「是不是 number」，或者读取对象属性、数组元素和函数签名，而不是把
+// "number | undefined" 拿去解析。
 type factType struct {
-	Kind string `json:"kind"`
+	Kind       string         `json:"kind"`
+	Name       string         `json:"name,omitempty"`
+	TypeArgs   []factType     `json:"typeArgs,omitempty"`
+	Members    []factType     `json:"members,omitempty"`
+	Element    *factType      `json:"element,omitempty"`
+	Elements   []factType     `json:"elements,omitempty"`
+	Properties []factProperty `json:"properties,omitempty"`
+	Params     []factField    `json:"params,omitempty"`
+	Result     *factType      `json:"result,omitempty"`
+}
+
+// factProperty 是对象类型的一个属性。
+type factProperty struct {
+	Name     string   `json:"name"`
+	Optional bool     `json:"optional,omitempty"`
+	Type     factType `json:"type"`
+}
+
+// factField 是函数类型的一个参数。
+type factField struct {
+	Name     string   `json:"name,omitempty"`
+	Optional bool     `json:"optional,omitempty"`
+	Type     factType `json:"type"`
 }
 
 type factDependency struct {
@@ -106,10 +129,11 @@ type factCall struct {
 }
 
 type factAlias struct {
-	Name   string `json:"name"`
-	Start  int    `json:"start"`
-	Length int    `json:"length"`
-	Kind   string `json:"kind"`
+	Name   string    `json:"name"`
+	Start  int       `json:"start"`
+	Length int       `json:"length"`
+	Kind   string    `json:"kind"`
+	Type   *factType `json:"type,omitempty"`
 }
 
 type factExpression struct {
@@ -360,6 +384,8 @@ func (b *factBuilder) declareImport(node *ast.Node) {
 }
 
 // declareAlias 记录类型别名或接口。别名只活在类型空间，不分配运行时值。
+// Type 附带结构化摘要：对象属性、数组元素、联合成员和函数签名都能被后续阶段
+// 读取，而不是统一压成 other。
 func (b *factBuilder) declareAlias(node *ast.Node) {
 	alias := factAlias{
 		Name:   node.Name().Text(),
@@ -368,6 +394,10 @@ func (b *factBuilder) declareAlias(node *ast.Node) {
 	}
 	if ast.IsInterfaceDeclaration(node) {
 		alias.Kind = "interface"
+		if sym := b.checker.GetSymbolAtLocation(node.Name()); sym != nil {
+			typ := b.typeOf(b.checker.GetDeclaredTypeOfSymbol(sym))
+			alias.Type = &typ
+		}
 	} else {
 		typeNode := node.AsTypeAliasDeclaration().Type
 		switch {
@@ -378,7 +408,13 @@ func (b *factBuilder) declareAlias(node *ast.Node) {
 		case typeNode.Kind == ast.KindAnyKeyword:
 			alias.Kind = "any"
 		default:
-			alias.Kind = string(b.typeOf(b.checker.GetTypeAtLocation(typeNode)).Kind)
+			typ := b.typeOf(b.checker.GetTypeAtLocation(typeNode))
+			alias.Kind = typ.Kind
+			alias.Type = &typ
+		}
+		if typeNode != nil && alias.Type == nil {
+			typ := b.typeOf(b.checker.GetTypeAtLocation(typeNode))
+			alias.Type = &typ
 		}
 	}
 	b.payload.Aliases = append(b.payload.Aliases, alias)
@@ -650,17 +686,48 @@ func (b *factBuilder) expression(node *ast.Node, kind string) {
 	})
 }
 
-// typeOf 把上游类型压成类别。用标志位而不是类型字符串：字面量类型 42 的
-// 字符串是 "42"，但它属于 number，标志位能直接回答这个问题。
+// typeOf 把上游类型压成结构化摘要。用标志位判断标量，用属性和签名展开对象、
+// 数组、元组与函数；遇到递归类型或超出预算时退回名字或 other，避免事实无限
+// 增长。上游 *checker.Type 只在本次调用内使用，不会进入返回的 JSON。
 func (b *factBuilder) typeOf(t *checker.Type) factType {
+	tb := &factTypeBuilder{
+		checker: b.checker,
+		seen:    make(map[*checker.Type]bool),
+	}
+	return tb.build(t, 0)
+}
+
+type factTypeBuilder struct {
+	checker *checker.Checker
+	seen    map[*checker.Type]bool
+	nodes   int
+}
+
+const (
+	maxFactTypeDepth      = 8
+	maxFactTypeNodes      = 96
+	maxFactTypeProperties = 32
+)
+
+func (b *factTypeBuilder) build(t *checker.Type, depth int) factType {
 	if t == nil {
 		return factType{Kind: "other"}
 	}
+	if depth > maxFactTypeDepth || b.nodes >= maxFactTypeNodes {
+		return b.fallback(t)
+	}
+	if b.seen[t] {
+		return b.fallback(t)
+	}
+	b.seen[t] = true
+	defer delete(b.seen, t)
+	b.nodes++
+
 	flags := t.Flags()
 	if flags&checker.TypeFlagsUnion != 0 {
-		// 条件表达式常见 10 | 20 这种字面量联合。所有成员同属 number 或
-		// boolean 时，结果类别就是该标量；混合联合仍然是 other。
 		members := t.AsUnionOrIntersectionType().Types()
+		// 条件表达式常见 10 | 20 这种字面量联合。所有成员同属 number 或
+		// boolean 时，结果类别就是该标量；混合联合保留成员列表。
 		allNumber, allBool := len(members) > 0, len(members) > 0
 		for _, member := range members {
 			mf := member.Flags()
@@ -677,8 +744,24 @@ func (b *factBuilder) typeOf(t *checker.Type) factType {
 		if allBool {
 			return factType{Kind: "boolean"}
 		}
-		return factType{Kind: "other"}
+		out := factType{Kind: "union"}
+		for _, member := range members {
+			out.Members = append(out.Members, b.build(member, depth+1))
+		}
+		return out
 	}
+	if flags&checker.TypeFlagsIntersection != 0 {
+		members := t.AsUnionOrIntersectionType().Types()
+		if len(members) < 2 {
+			return b.fallback(t)
+		}
+		out := factType{Kind: "intersection"}
+		for _, member := range members {
+			out.Members = append(out.Members, b.build(member, depth+1))
+		}
+		return out
+	}
+
 	switch {
 	case flags&checker.TypeFlagsNumberLike != 0:
 		return factType{Kind: "number"}
@@ -690,9 +773,114 @@ func (b *factBuilder) typeOf(t *checker.Type) factType {
 		return factType{Kind: "void"}
 	case flags&checker.TypeFlagsAnyOrUnknown != 0:
 		return factType{Kind: "any"}
-	default:
-		return factType{Kind: "other"}
+	case flags&checker.TypeFlagsNull != 0:
+		return factType{Kind: "null"}
+	case flags&checker.TypeFlagsUndefined != 0:
+		return factType{Kind: "undefined"}
+	case flags&checker.TypeFlagsNever != 0:
+		return factType{Kind: "never"}
+	case flags&checker.TypeFlagsBigIntLike != 0:
+		return factType{Kind: "bigint"}
+	case flags&checker.TypeFlagsESSymbolLike != 0:
+		return factType{Kind: "symbol"}
+	case flags&checker.TypeFlagsTypeParameter != 0:
+		if name := b.symbolName(t); name != "" {
+			return factType{Kind: "type-parameter", Name: name}
+		}
+		return b.fallback(t)
+	case flags&checker.TypeFlagsObject != 0:
+		return b.object(t, depth+1)
 	}
+	return b.fallback(t)
+}
+
+// object 展开数组、元组、函数和普通对象。顺序有意义：元组和数组也是对象，
+// 必须在普通属性展开之前识别；带调用签名的对象优先当作函数。
+func (b *factTypeBuilder) object(t *checker.Type, depth int) factType {
+	if checker.IsTupleType(t) {
+		elements := b.checker.GetTypeArguments(t)
+		if len(elements) == 0 {
+			return b.fallback(t)
+		}
+		out := factType{Kind: "tuple"}
+		for _, element := range elements {
+			out.Elements = append(out.Elements, b.build(element, depth+1))
+		}
+		return out
+	}
+	if b.checker.IsArrayType(t) {
+		args := b.checker.GetTypeArguments(t)
+		if len(args) == 0 {
+			return b.fallback(t)
+		}
+		element := b.build(args[0], depth+1)
+		return factType{Kind: "array", Element: &element}
+	}
+	if signatures := b.checker.GetSignaturesOfType(t, checker.SignatureKindCall); len(signatures) > 0 {
+		out := factType{Kind: "function"}
+		out.Params, out.Result = b.signature(signatures[0], depth+1)
+		return out
+	}
+
+	out := factType{Kind: "object"}
+	if name := b.symbolName(t); name != "" {
+		out.Name = name
+		if t.ObjectFlags()&checker.ObjectFlagsReference != 0 {
+			for _, arg := range b.checker.GetTypeArguments(t) {
+				out.TypeArgs = append(out.TypeArgs, b.build(arg, depth+1))
+			}
+		}
+	}
+	for _, prop := range b.checker.GetPropertiesOfType(t) {
+		if len(out.Properties) >= maxFactTypeProperties {
+			break
+		}
+		out.Properties = append(out.Properties, factProperty{
+			Name:     prop.Name,
+			Optional: prop.Flags&ast.SymbolFlagsOptional != 0,
+			Type:     b.build(b.checker.GetTypeOfSymbol(prop), depth+1),
+		})
+	}
+	return out
+}
+
+func (b *factTypeBuilder) signature(sig *checker.Signature, depth int) ([]factField, *factType) {
+	var params []factField
+	for _, param := range sig.Parameters() {
+		params = append(params, factField{
+			Name:     param.Name,
+			Optional: param.Flags&ast.SymbolFlagsOptional != 0,
+			Type:     b.build(b.checker.GetTypeOfSymbol(param), depth+1),
+		})
+	}
+	result := b.build(b.checker.GetReturnTypeOfSignature(sig), depth+1)
+	return params, &result
+}
+
+// fallback 在预算耗尽或遇到递归类型时保留一个名字，避免把有意义的类型名
+// 也压成 other。匿名类型没有名字，只能返回 other。
+func (b *factTypeBuilder) fallback(t *checker.Type) factType {
+	if name := b.symbolName(t); name != "" {
+		return factType{Kind: "named", Name: name}
+	}
+	return factType{Kind: "other"}
+}
+
+// symbolName 只返回用户可见的类型名。上游用 \xFE 前缀标记 call、type 这类
+// 内部符号名，它不是合法 UTF-8，写进 JSON 会变成替换字符；这类匿名类型应该
+// 由对象属性或结构本身描述，而不是伪造一个名字。
+func (b *factTypeBuilder) symbolName(t *checker.Type) string {
+	if t == nil {
+		return ""
+	}
+	sym := t.Symbol()
+	if sym == nil || sym.Name == "" {
+		return ""
+	}
+	if strings.HasPrefix(sym.Name, ast.InternalSymbolNamePrefix) {
+		return ""
+	}
+	return sym.Name
 }
 
 // bodyNode 把一个语句或表达式转成语法骨架。

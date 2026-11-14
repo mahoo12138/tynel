@@ -362,3 +362,68 @@ display();
 		t.Fatalf("import type 绑定应被记录为 type-only：%+v", facts.Imports)
 	}
 }
+
+// TestFactsDescribeStructuredTypes 确认适配层不再把对象、数组、元组、函数和
+// 联合类型统一压成 other。它只检查类型摘要的形状，不要求后端支持这些写法。
+func TestFactsDescribeStructuredTypes(t *testing.T) {
+	facts := loadFacts(t, fixturePath(t, "structured-types.ts"))
+	alias := func(name string) frontend.Alias {
+		t.Helper()
+		for _, item := range facts.Aliases {
+			if item.Name == name {
+				return item
+			}
+		}
+		t.Fatalf("缺少类型别名 %q", name)
+		return frontend.Alias{}
+	}
+
+	point := alias("Point")
+	if point.Type == nil || point.Type.Kind != frontend.KindObject {
+		t.Fatalf("Point 应是对象类型，实际 %+v", point.Type)
+	}
+	properties := map[string]frontend.Property{}
+	for _, prop := range point.Type.Properties {
+		properties[prop.Name] = prop
+	}
+	for _, name := range []string{"x", "y", "label"} {
+		if _, ok := properties[name]; !ok {
+			t.Fatalf("Point 缺少属性 %q：%+v", name, point.Type.Properties)
+		}
+	}
+	if properties["x"].Type.Kind != frontend.KindNumber {
+		t.Errorf("Point.x 应是 number，实际 %+v", properties["x"].Type)
+	}
+	if !properties["label"].Optional {
+		t.Errorf("Point.label 应标记为可选：%+v", properties["label"])
+	}
+
+	names := alias("Names")
+	if names.Type == nil || names.Type.Kind != frontend.KindArray || names.Type.Element == nil {
+		t.Fatalf("Names 应是元素类型已知的数组，实际 %+v", names.Type)
+	}
+	if names.Type.Element.Kind != frontend.KindString {
+		t.Errorf("Names 的元素应是 string，实际 %+v", names.Type.Element)
+	}
+
+	pair := alias("Pair")
+	if pair.Type == nil || pair.Type.Kind != frontend.KindTuple || len(pair.Type.Elements) != 2 {
+		t.Fatalf("Pair 应是二元组，实际 %+v", pair.Type)
+	}
+	if pair.Type.Elements[1].Kind != frontend.KindBoolean {
+		t.Errorf("Pair 的第二个元素应是 boolean，实际 %+v", pair.Type.Elements[1])
+	}
+
+	handler := alias("Handler")
+	if handler.Type == nil || handler.Type.Kind != frontend.KindFunction {
+		t.Fatalf("Handler 应是函数类型，实际 %+v", handler.Type)
+	}
+	if len(handler.Type.Params) != 2 || handler.Type.Result == nil || handler.Type.Result.Kind != frontend.KindBoolean {
+		t.Errorf("Handler 的签名不完整：%+v", handler.Type)
+	}
+
+	mixed := alias("Mixed")
+	if mixed.Type == nil || mixed.Type.Kind != frontend.KindUnion || len(mixed.Type.Members) != 2 {
+		t.Fatalf("Mixed 应是二元联合，实际 %+v", mixed.Type)
+	}
+}

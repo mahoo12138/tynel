@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
 )
@@ -228,6 +229,68 @@ func TestSliceRejectsPartialRune(t *testing.T) {
 	}
 	if text != "名" {
 		t.Fatalf("切片结果应为 名，实际 %q", text)
+	}
+}
+
+func TestOffsetIsInverseOfPosition(t *testing.T) {
+	text := "// 中文注释\nconst answer: number = 1;\nconst emoji = \"😀\";\n"
+	s := fixture(t, text)
+	for offset := 0; offset <= len(text); {
+		pos, err := s.Position(offset)
+		if err != nil {
+			t.Fatalf("偏移 %d 的行列换算失败：%v", offset, err)
+		}
+		back, err := s.Offset(pos)
+		if err != nil {
+			t.Fatalf("位置 %v 的偏移换算失败：%v", pos, err)
+		}
+		if back != offset {
+			t.Fatalf("偏移 %d 换算成 %v 后又回到 %d", offset, pos, back)
+		}
+		if offset == len(text) {
+			break
+		}
+		_, size := utf8.DecodeRuneInString(text[offset:])
+		offset += size
+	}
+}
+
+func TestOffsetAllowsLineEnd(t *testing.T) {
+	s := fixture(t, "abc\ndef\n")
+	offset, err := s.Offset(Position{Line: 1, Column: 4})
+	if err != nil {
+		t.Fatalf("行尾位置应可用：%v", err)
+	}
+	if offset != 3 {
+		t.Fatalf("第一行行尾的字节偏移应为 3，实际 %d", offset)
+	}
+	pos, err := s.Position(offset)
+	if err != nil {
+		t.Fatalf("行尾偏移应可换算：%v", err)
+	}
+	if pos != (Position{Line: 1, Column: 4}) {
+		t.Fatalf("行尾应回到 1:4，实际 %d:%d", pos.Line, pos.Column)
+	}
+}
+
+func TestOffsetRejectsInvalidPosition(t *testing.T) {
+	s := fixture(t, "first\nsecond\n")
+	cases := []struct {
+		pos Position
+		why string
+	}{
+		{Position{Line: 0, Column: 1}, "行号为 0"},
+		{Position{Line: -1, Column: 1}, "行号为负"},
+		{Position{Line: 4, Column: 1}, "行号越界"},
+		{Position{Line: 1, Column: 0}, "列号为 0"},
+		{Position{Line: 1, Column: 100}, "列号越过行尾"},
+		{Position{Line: 2, Column: 100}, "第二行列号越过行尾"},
+	}
+	for _, c := range cases {
+		_, err := s.Offset(c.pos)
+		if !isCode(err, "source.bad-position") {
+			t.Errorf("%s 应报 source.bad-position，实际 %v", c.why, err)
+		}
 	}
 }
 
