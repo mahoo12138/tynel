@@ -39,6 +39,8 @@
 
 一个能力可以同时「当前 `rejected`」和「长期 `planned`」。`planned` 和 `deferred` 行如果当前不在子集内，编译器仍会拒绝；这两个状态描述长期方向，不表示今天可以编译。`rejected` 行表示当前有明确拒绝路径，长期方向可能是 `planned`、`deferred` 或 `not-targeted`。本表不使用「部分支持」；必须说明卡在哪一层、哪些写法不支持。
 
+Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semantics/objects-arrays.md)、[联合与空值 RFC](semantics/unions-null.md)、[函数 RFC](semantics/functions.md)、[泛型 RFC](semantics/generics.md)以及 [NIR schema 3 类型表设计](../design/nir-schema-3-types.md)已经确认，处于待实现状态。它们不改变本表当前的 `rejected` 状态；只有实现并通过运行时验收后，状态才会变化。
+
 ## 2. 基线
 
 | 项目 | 当前值 |
