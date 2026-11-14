@@ -87,3 +87,5 @@ MVP 的交付物是编译器本身：通过 `tynel build input.ts -o out/program
 06.07 已完成：最终源码通过 517 项 Go 测试、96 项前端检查、13 项后端检查、49/49 个 Node 差分、9 项 CLI 故障与边界检查和 15 秒 NIR 模糊测试。验收中修正了 `-x` 与用户函数 `main` 被误报为内部故障的问题，现在分别按 `cap.bad-unary` 和 `cap.entry-name` 退出 3。能力追踪见[06.07 验收记录](docs/validation/06-07-mvp.md)。
 
 06.08 已完成：MVP 交付实验从当前源码打包 15,674 个文件的 `darwin/arm64` 编译器目录，搬到含空格和中文的路径后复核清单；包内编译器成功构建独立的四文件项目，只复制 exe 到空目录并清空环境后仍输出 `90,10,100`。类型错误构建退出 1 且保留旧产物，修正后重建得到 `42`。第六篇见[把编译器交给下一位使用者](docs/notes/06-compiler-mvp.md)，最终验收见[06.08 验收记录](docs/validation/06-compiler-mvp.md)。节点 06 建立完成标签 `mvp/06-compiler-mvp`。
+
+S2.0 / S2.1 已实现：NIR schema 3 用模块级类型表描述对象、数组、元组、联合和函数类型，参数、结果、`select` 与调试局部变量改为类型 ID；v1/v2 文件在解码时显式迁移。字符串最小闭环使用 UTF-16 code unit 语义，支持字面量、无插值模板、`+` 拼接、`===` / `!==`、`length` 和 `console.log`；`"😀".length` 是 2，`"a" + 1` 按能力限制拒绝。原生夹具输出 `hello, 世界 / 2 / true / true / 空行`，源码用例与 Node 22 逐字节一致。规则见[NIR 格式](docs/reference/nir.md)、[字符串 RFC](docs/language/semantics/strings.md)和[bridge 说明](docs/reference/bridge.md)，验收见[S2.0 / S2.1 验收记录](docs/validation/s2-01-nir-schema-3-string.md)。

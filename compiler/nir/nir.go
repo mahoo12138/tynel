@@ -15,6 +15,7 @@
 package nir
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
@@ -22,24 +23,35 @@ import (
 )
 
 // SchemaVersion 是当前文件格式版本。格式不兼容时递增，旧文件必须被拒绝，
-// 不能靠缺省值兼容。版本 2 增加可选的 debug 段；执行语义与版本 1 相同。
-const SchemaVersion = 2
+// 不能靠缺省值兼容。版本 2 增加可选的 debug 段；版本 3 把类型字段从类型名
+// 改成模块级类型表里的整数 ID。
+const SchemaVersion = 3
 
-// 结果类型与参数类型。首版支持 number、bool 和 void。
+// 内置类型 ID。它们由格式保留，不需要在 types 表里重复声明，也不能被覆盖。
+// 复合类型从 FirstComposite 开始由模块的 types 表定义。
 const (
-	TypeNumber = "number"
-	TypeBool   = "bool"
-	TypeVoid   = "void"
+	TypeNumber    = 1
+	TypeBool      = 2
+	TypeVoid      = 3
+	TypeString    = 4
+	TypeNull      = 5
+	TypeUndefined = 6
+	TypeNever     = 7
+
+	FirstComposite = 8
 )
 
 // 表达式操作。
 const (
 	OpNumber  = "number"
 	OpBool    = "bool"
+	OpString  = "string"
 	OpParam   = "param"
 	OpLocal   = "local"
 	OpCall    = "call"
 	OpBinary  = "binary"
+	OpConcat  = "concat"
+	OpStrlen  = "strlen"
 	OpCompare = "compare"
 	OpNot     = "not"
 )
@@ -83,6 +95,7 @@ var EqualityOperators = []string{"===", "!=="}
 // Module 是一个可编译单元。
 type Module struct {
 	SchemaVersion int        `json:"schemaVersion"`
+	Types         []TypeDef  `json:"types"`
 	Entry         string     `json:"entry"`
 	Functions     []Function `json:"functions"`
 	Debug         *DebugInfo `json:"debug,omitempty"`
@@ -92,19 +105,20 @@ type Module struct {
 	OriginalSchemaVersion int `json:"-"`
 }
 
-// Function 是具名函数。首版只有顶层函数，没有闭包和方法。
+// Function 是具名函数。Result 是类型 ID；内置类型直接用 1..7，复合类型引用
+// Module.Types 里的定义。
 type Function struct {
 	Name   string  `json:"name"`
 	Params []Param `json:"params"`
-	Result string  `json:"result"`
+	Result int     `json:"result"`
 	Body   []Stmt  `json:"body"`
 	Pos    *Pos    `json:"pos,omitempty"`
 }
 
-// Param 是函数参数。首版支持 number 与 bool。
+// Param 是函数参数。Type 是类型 ID，且不能是 void。
 type Param struct {
 	Name string `json:"name"`
-	Type string `json:"type"`
+	Type int    `json:"type"`
 	Pos  *Pos   `json:"pos,omitempty"`
 }
 
@@ -131,7 +145,7 @@ type Stmt struct {
 	Right     []Stmt `json:"right,omitempty"`     // 仅 short 使用
 	ThenValue *Expr  `json:"thenValue,omitempty"` // 仅 select 使用
 	ElseValue *Expr  `json:"elseValue,omitempty"` // 仅 select 使用
-	Type      string `json:"type,omitempty"`      // 仅 select 使用，number 或 bool
+	Type      int    `json:"type,omitempty"`      // 仅 select 使用：结果类型 ID
 	Mutable   bool   `json:"mutable,omitempty"`   // 仅 let 使用：是否为可变的 let
 	CondPre   []Stmt `json:"condPre,omitempty"`   // 仅 while 使用：每轮条件准备
 	Body      []Stmt `json:"body,omitempty"`      // 仅 while 使用：循环体
@@ -142,20 +156,22 @@ type Stmt struct {
 
 // Expr 是一个表达式节点。字段按 Op 取用，其余字段必须为空。
 //
-// Value 是 bool 字面量的值，用指针是为了把 false 与「字段缺失」分开：false
-// 是合法值，缺失是格式错误。Operand 是 not 的操作数。
+// Value 是 bool 或 string 字面量的原始 JSON。bool 用 true/false 保存，这样
+// false 与「字段缺失」是两种不同的输入；string 用 JSON 字符串保存，空字符串
+// 同样是一个存在的值。用 RawMessage 而不是某个具体类型的指针，是因为同一个
+// 字段名要承载两种 JSON 类型，而它们的合法性由 op 决定。
 type Expr struct {
-	Op       string `json:"op"`
-	Bits     string `json:"bits,omitempty"`
-	Value    *bool  `json:"value,omitempty"`
-	Name     string `json:"name,omitempty"`
-	Function string `json:"function,omitempty"`
-	Args     []Expr `json:"args,omitempty"`
-	Operator string `json:"operator,omitempty"`
-	Left     *Expr  `json:"left,omitempty"`
-	Right    *Expr  `json:"right,omitempty"`
-	Operand  *Expr  `json:"operand,omitempty"`
-	Pos      *Pos   `json:"pos,omitempty"`
+	Op       string          `json:"op"`
+	Bits     string          `json:"bits,omitempty"`
+	Value    json.RawMessage `json:"value,omitempty"`
+	Name     string          `json:"name,omitempty"`
+	Function string          `json:"function,omitempty"`
+	Args     []Expr          `json:"args,omitempty"`
+	Operator string          `json:"operator,omitempty"`
+	Left     *Expr           `json:"left,omitempty"`
+	Right    *Expr           `json:"right,omitempty"`
+	Operand  *Expr           `json:"operand,omitempty"`
+	Pos      *Pos            `json:"pos,omitempty"`
 }
 
 // BitsOf 返回 f 的 binary64 位模式，格式与文件中的 bits 字段一致。
@@ -177,9 +193,40 @@ func Number(f float64) Expr {
 	return Expr{Op: OpNumber, Bits: BitsOf(f)}
 }
 
-// Bool 构造一个 bool 字面量节点。false 也带一个非空指针，不会被当成缺字段。
+// Bool 构造一个 bool 字面量节点。false 也写出 value 字段，不会被当成缺字段。
 func Bool(v bool) Expr {
-	return Expr{Op: OpBool, Value: &v}
+	if v {
+		return Expr{Op: OpBool, Value: json.RawMessage("true")}
+	}
+	return Expr{Op: OpBool, Value: json.RawMessage("false")}
+}
+
+// String 构造一个 string 字面量节点。空字符串会写成 ""，字段仍然存在。
+func String(v string) Expr {
+	data, _ := json.Marshal(v)
+	return Expr{Op: OpString, Value: data}
+}
+
+// BoolValue 取出 bool 字面量的值。ok=false 表示字段缺失或不是 JSON 布尔。
+func (e *Expr) BoolValue() (value, ok bool) {
+	if e == nil || len(e.Value) == 0 {
+		return false, false
+	}
+	if err := json.Unmarshal(e.Value, &value); err != nil {
+		return false, false
+	}
+	return value, true
+}
+
+// StringValue 取出 string 字面量的值。ok=false 表示字段缺失或不是 JSON 字符串。
+func (e *Expr) StringValue() (value string, ok bool) {
+	if e == nil || len(e.Value) == 0 {
+		return "", false
+	}
+	if err := json.Unmarshal(e.Value, &value); err != nil {
+		return "", false
+	}
+	return value, true
 }
 
 // parseBits 要求 16 位十六进制，允许 0x 前缀，不区分大小写。

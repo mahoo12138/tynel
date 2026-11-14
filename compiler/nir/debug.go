@@ -44,7 +44,7 @@ type DebugLocal struct {
 	Name       string `json:"name"`
 	SourceName string `json:"sourceName,omitempty"`
 	Kind       string `json:"kind"`
-	Type       string `json:"type"`
+	Type       int    `json:"type"`
 	Scope      int    `json:"scope"`
 	Pos        *Pos   `json:"pos,omitempty"`
 	Mutable    bool   `json:"mutable,omitempty"`
@@ -85,14 +85,14 @@ func (c *checker) debug(info *DebugInfo) error {
 			return badf("nir.debug-shape", "函数 %q 的调试信息重复", fn.Function)
 		}
 		seenFunction[fn.Function] = true
-		if err := debugFunction(fn); err != nil {
+		if err := debugFunction(fn, c.types); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func debugFunction(fn *DebugFunction) error {
+func debugFunction(fn *DebugFunction, types map[int]*TypeDef) error {
 	if len(fn.Scopes) == 0 {
 		return badf("nir.debug-shape", "函数 %q 的调试信息没有作用域", fn.Function)
 	}
@@ -157,8 +157,8 @@ func debugFunction(fn *DebugFunction) error {
 		if !validLocalKind(local.Kind) {
 			return badf("nir.debug-local", "函数 %q 的局部变量 %q 种类 %q 不认识", fn.Function, local.Name, local.Kind)
 		}
-		if local.Type != TypeNumber && local.Type != TypeBool {
-			return badf("nir.debug-local", "函数 %q 的局部变量 %q 类型 %q 只接受 number 或 bool", fn.Function, local.Name, local.Type)
+		if !validTypeRef(types, local.Type, false) {
+			return badf("nir.debug-local", "函数 %q 的局部变量 %q 引用的类型 id %d 不可用", fn.Function, local.Name, local.Type)
 		}
 		if local.Kind == DebugLocalTemporary && local.SourceName != "" {
 			return badf("nir.debug-local", "函数 %q 的临时值 %q 不应带 sourceName", fn.Function, local.Name)

@@ -46,7 +46,7 @@ func Lower(snapshot *source.Snapshot, facts *frontend.Facts) (*nir.Module, error
 		debug:    &nir.DebugInfo{},
 	}
 	l.reserveNames(facts)
-	module := &nir.Module{SchemaVersion: nir.SchemaVersion, Entry: EntryName}
+	module := &nir.Module{SchemaVersion: nir.SchemaVersion, Types: []nir.TypeDef{}, Entry: EntryName}
 
 	for i := range facts.Declarations {
 		decl := &facts.Declarations[i]
@@ -108,7 +108,7 @@ func LowerMerged(facts *frontend.Facts, snapshots map[string]*source.Snapshot, b
 	if len(snapshots) > 0 {
 		l.snapshot = snapshots[order[0]]
 	}
-	module := &nir.Module{SchemaVersion: nir.SchemaVersion, Entry: EntryName}
+	module := &nir.Module{SchemaVersion: nir.SchemaVersion, Types: []nir.TypeDef{}, Entry: EntryName}
 
 	for i := range facts.Declarations {
 		decl := &facts.Declarations[i]
@@ -180,7 +180,7 @@ type lowerer struct {
 	currentModule string
 	inInit        bool
 	names         map[int]string  // 函数声明 ID → NIR 函数名
-	result        string          // 当前正在降低的函数的返回类型
+	result        int             // 当前正在降低的函数的返回类型 ID
 	temp          int             // 短路结果与实参物化的临时名序号
 	reserved      map[string]bool // 用户声明占用的名字，临时名必须绕开
 	loops         []int           // 当前函数内由内到外的循环 id
@@ -309,7 +309,7 @@ func (l *lowerer) debugPath(parent *scope, kind string) string {
 	return fmt.Sprintf("%s/%s#%d", parent.path, kind, ordinal+1)
 }
 
-func (l *lowerer) addDebugLocal(sc *scope, name, sourceName, kind, typ string, pos *nir.Pos, mutable bool) {
+func (l *lowerer) addDebugLocal(sc *scope, name, sourceName, kind string, typ int, pos *nir.Pos, mutable bool) {
 	if l.debugFn == nil || sc == nil {
 		return
 	}
@@ -326,16 +326,16 @@ func (l *lowerer) addDebugLocal(sc *scope, name, sourceName, kind, typ string, p
 
 // emitLet 同时生成 NIR let 和调试局部值。所有 let 都应经过这里，避免执行
 // 语句和调试信息两条路径各自维护。
-func (l *lowerer) emitLet(sc *scope, name string, value *nir.Expr, pos *nir.Pos, sourceName, kind, typ string, mutable bool) nir.Stmt {
+func (l *lowerer) emitLet(sc *scope, name string, value *nir.Expr, pos *nir.Pos, sourceName, kind string, typ int, mutable bool) nir.Stmt {
 	l.addDebugLocal(sc, name, sourceName, kind, typ, pos, mutable)
 	return nir.Stmt{Op: nir.OpLet, Name: name, Value: value, Mutable: mutable, Pos: pos}
 }
 
-func (l *lowerer) emitTemp(sc *scope, name string, value *nir.Expr, pos *nir.Pos, typ string) nir.Stmt {
+func (l *lowerer) emitTemp(sc *scope, name string, value *nir.Expr, pos *nir.Pos, typ int) nir.Stmt {
 	return l.emitLet(sc, name, value, pos, "", nir.DebugLocalTemporary, typ, false)
 }
 
-func (l *lowerer) addTempBinding(sc *scope, name, typ string, pos *nir.Pos) {
+func (l *lowerer) addTempBinding(sc *scope, name string, typ int, pos *nir.Pos) {
 	l.addDebugLocal(sc, name, "", nir.DebugLocalTemporary, typ, pos, false)
 }
 
@@ -348,8 +348,8 @@ func (l *lowerer) function(decl *frontend.Declaration) (*nir.Function, error) {
 	if decl.Result == nil {
 		return nil, l.fail(decl.Start, "lower.bad-type", "函数 %q 缺少返回类型摘要", decl.Name)
 	}
-	if decl.Result.Kind != frontend.KindNumber && decl.Result.Kind != frontend.KindBoolean && decl.Result.Kind != frontend.KindVoid {
-		return nil, l.fail(decl.Start, "lower.bad-type", "函数 %q 的返回类型是 %s，本阶段只支持 number、boolean 与 void", decl.Name, decl.Result.Kind)
+	if !isValueKind(decl.Result.Kind) && decl.Result.Kind != frontend.KindVoid {
+		return nil, l.fail(decl.Start, "lower.bad-type", "函数 %q 的返回类型是 %s，本阶段只支持 number、boolean、string 与 void", decl.Name, decl.Result.Kind)
 	}
 	fn := &nir.Function{
 		Name:   decl.Name,
@@ -364,8 +364,8 @@ func (l *lowerer) function(decl *frontend.Declaration) (*nir.Function, error) {
 		if !ok || param.Kind != frontend.DeclParameter {
 			return nil, l.fail(decl.Start, "lower.unknown-param", "函数 %q 的参数 ID %d 不存在", decl.Name, id)
 		}
-		if param.Type == nil || (param.Type.Kind != frontend.KindNumber && param.Type.Kind != frontend.KindBoolean) {
-			return nil, l.fail(param.Start, "lower.bad-type", "参数 %q 不是 number 或 boolean，本阶段不支持", param.Name)
+		if param.Type == nil || !isValueKind(param.Type.Kind) {
+			return nil, l.fail(param.Start, "lower.bad-type", "参数 %q 不是 number、boolean 或 string，本阶段不支持", param.Name)
 		}
 		fn.Params = append(fn.Params, nir.Param{Name: param.Name, Type: nirType(param.Type.Kind), Pos: l.pos(param.Start)})
 		sc.params[id] = param.Name
@@ -375,7 +375,7 @@ func (l *lowerer) function(decl *frontend.Declaration) (*nir.Function, error) {
 		return nil, l.fail(decl.Start, "lower.missing-body", "函数 %q 没有函数体", decl.Name)
 	}
 	l.result = fn.Result
-	defer func() { l.result = "" }()
+	defer func() { l.result = 0 }()
 	body, err := l.block(decl.Body, sc, fn.Result)
 	if err != nil {
 		return nil, err
@@ -446,8 +446,8 @@ func (l *lowerer) initBody(body *frontend.Node, module string, sc *scope, prefix
 			if decl.Type == nil {
 				return nil, l.fail(stmt.Start, "lower.bad-type", "常量 %q 缺少类型摘要", decl.Name)
 			}
-			if decl.Type.Kind != frontend.KindNumber && decl.Type.Kind != frontend.KindBoolean {
-				return nil, l.fail(stmt.Start, "lower.bad-type", "常量 %q 是 %s，本阶段只支持 number 与 boolean", decl.Name, decl.Type.Kind)
+			if !isValueKind(decl.Type.Kind) {
+				return nil, l.fail(stmt.Start, "lower.bad-type", "常量 %q 是 %s，本阶段只支持 number、boolean 与 string", decl.Name, decl.Type.Kind)
 			}
 			if err := l.typedOperand(decl.Body, decl.Type.Kind, "常量 "+decl.Name+" "); err != nil {
 				return nil, err
@@ -473,7 +473,7 @@ func (l *lowerer) initBody(body *frontend.Node, module string, sc *scope, prefix
 	return out, nil
 }
 
-func (l *lowerer) block(block *frontend.Node, sc *scope, result string) ([]nir.Stmt, error) {
+func (l *lowerer) block(block *frontend.Node, sc *scope, result int) ([]nir.Stmt, error) {
 	body, err := l.blockStmts(block, sc)
 	if err != nil {
 		return nil, err
@@ -488,7 +488,7 @@ func (l *lowerer) block(block *frontend.Node, sc *scope, result string) ([]nir.S
 	}
 	if !nir.BlockReturns(body) {
 		pos := nir.FirstMissingReturn(body)
-		return nil, l.failNir(pos, block.Start, "lower.missing-return", "返回 %s 的函数有路径没有 return", result)
+		return nil, l.failNir(pos, block.Start, "lower.missing-return", "返回 %s 的函数有路径没有 return", nirTypeLabel(result))
 	}
 	return body, nil
 }
@@ -515,7 +515,7 @@ func (l *lowerer) statement(stmt *frontend.Node, sc *scope) ([]nir.Stmt, error) 
 	case "ReturnStatement":
 		if len(stmt.Children) == 0 {
 			if l.result != nir.TypeVoid {
-				return nil, l.fail(stmt.Start, "lower.missing-value", "返回 %s 的函数里 return 必须带值", l.result)
+				return nil, l.fail(stmt.Start, "lower.missing-value", "返回 %s 的函数里 return 必须带值", nirTypeLabel(l.result))
 			}
 			return []nir.Stmt{{Op: nir.OpReturn, Pos: l.pos(stmt.Start)}}, nil
 		}
@@ -546,8 +546,8 @@ func (l *lowerer) statement(stmt *frontend.Node, sc *scope) ([]nir.Stmt, error) 
 			return nil, err
 		}
 		if ok {
-			if arg.Type == nil || (arg.Type.Kind != frontend.KindNumber && arg.Type.Kind != frontend.KindBoolean) {
-				return nil, l.fail(arg.Start, "lower.bad-type", "console.log 的参数不是 number 或 boolean")
+			if arg.Type == nil || !isValueKind(arg.Type.Kind) {
+				return nil, l.fail(arg.Start, "lower.bad-type", "console.log 的参数不是 number、boolean 或 string")
 			}
 			value, pre, err := l.expr(arg, sc, 1)
 			if err != nil {
@@ -684,8 +684,8 @@ func (l *lowerer) assignment(n *frontend.Node, sc *scope) ([]nir.Stmt, error) {
 	if decl.Kind != frontend.DeclLet {
 		return nil, l.fail(target.Start, "lower.assign-immutable", "赋值目标 %q 不是可变的 let", target.Name)
 	}
-	if decl.Type == nil || (decl.Type.Kind != frontend.KindNumber && decl.Type.Kind != frontend.KindBoolean) {
-		return nil, l.fail(decl.Start, "lower.bad-type", "赋值目标 %q 的类型不是 number 或 boolean", decl.Name)
+	if decl.Type == nil || !isValueKind(decl.Type.Kind) {
+		return nil, l.fail(decl.Start, "lower.bad-type", "赋值目标 %q 的类型不是 number、boolean 或 string", decl.Name)
 	}
 	name, ok := sc.lookup(decl.ID)
 	if !ok {
@@ -723,8 +723,8 @@ func (l *lowerer) localDeclaration(stmt *frontend.Node, sc *scope) ([]nir.Stmt, 
 	if !ok || (decl.Kind != frontend.DeclLocal && decl.Kind != frontend.DeclLet) {
 		return nil, l.fail(declNode.Start, "lower.bad-declaration", "局部变量的声明身份 %d 不对", declNode.Decl)
 	}
-	if decl.Type == nil || (decl.Type.Kind != frontend.KindNumber && decl.Type.Kind != frontend.KindBoolean) {
-		return nil, l.fail(decl.Start, "lower.bad-type", "局部值 %q 不是 number 或 boolean", decl.Name)
+	if decl.Type == nil || !isValueKind(decl.Type.Kind) {
+		return nil, l.fail(decl.Start, "lower.bad-type", "局部值 %q 不是 number、boolean 或 string", decl.Name)
 	}
 	if len(declNode.Children) != 1 {
 		return nil, l.fail(declNode.Start, "lower.missing-value", "局部值 %q 缺少初始值", decl.Name)
@@ -801,9 +801,17 @@ func (l *lowerer) expr(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir
 			return nil, nil, l.fail(n.Start, "lower.bad-literal", "数字字面量缺少位模式")
 		}
 		return &nir.Expr{Op: nir.OpNumber, Bits: n.Bits, Pos: l.pos(n.Start)}, nil, nil
+	case "StringLiteral", "NoSubstitutionTemplateLiteral":
+		if n.Type == nil || n.Type.Kind != frontend.KindString {
+			return nil, nil, l.fail(n.Start, "lower.bad-type", "字符串字面量缺少 string 类型摘要")
+		}
+		literal := nir.String(n.Name)
+		literal.Pos = l.pos(n.Start)
+		return &literal, nil, nil
 	case "TrueKeyword", "FalseKeyword":
-		v := n.Kind == "TrueKeyword"
-		return &nir.Expr{Op: nir.OpBool, Value: &v, Pos: l.pos(n.Start)}, nil, nil
+		literal := nir.Bool(n.Kind == "TrueKeyword")
+		literal.Pos = l.pos(n.Start)
+		return &literal, nil, nil
 	case "BinaryExpression":
 		if n.Op == "=" {
 			return nil, nil, l.fail(n.Start, "lower.assignment-value", "赋值只能作为独立语句，不能出现在表达式里")
@@ -819,6 +827,18 @@ func (l *lowerer) expr(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir
 		}
 		if len(n.Children) != 2 {
 			return nil, nil, l.fail(n.Start, "lower.bad-arity", "二元运算有 %d 个操作数", len(n.Children))
+		}
+		if n.Op == "+" && (isStringKind(&n.Children[0]) || isStringKind(&n.Children[1])) {
+			// string + string 是拼接；混合类型属于能力限制，能力检查会先拒绝，
+			// 这里再兜一层，避免生成既不像算术也不像拼接的节点。
+			if !isStringKind(&n.Children[0]) || !isStringKind(&n.Children[1]) {
+				return nil, nil, l.fail(n.Start, "lower.bad-type", "字符串拼接要求两侧都是 string")
+			}
+			left, right, pre, err := l.pairOperands(&n.Children[0], &n.Children[1], sc, depth)
+			if err != nil {
+				return nil, nil, err
+			}
+			return &nir.Expr{Op: nir.OpConcat, Left: left, Right: right, Pos: l.pos(n.Start)}, pre, nil
 		}
 		for i := range n.Children {
 			if err := l.typedOperand(&n.Children[i], frontend.KindNumber, "运算符 "+n.Op+" 的操作数"); err != nil {
@@ -836,6 +856,8 @@ func (l *lowerer) expr(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir
 		return l.conditional(n, sc, depth)
 	case "CallExpression":
 		return l.call(n, sc, depth)
+	case "PropertyAccessExpression":
+		return l.stringLength(n, sc, depth)
 	default:
 		return nil, nil, l.fail(n.Start, "lower.unsupported-expr", "表达式 %s 不在本阶段子集内", n.Kind)
 	}
@@ -875,6 +897,32 @@ func (l *lowerer) identifier(n *frontend.Node, sc *scope, depth int) (*nir.Expr,
 	}
 }
 
+// stringLength 降低 `s.length`。它只接受 string 上的 length 属性；结果按
+// UTF-16 code unit 计数，类型是 number。
+func (l *lowerer) stringLength(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir.Stmt, error) {
+	if n.Name != "length" || len(n.Children) != 1 {
+		return nil, nil, l.fail(n.Start, "lower.unsupported-expr", "只支持 string 上的 length 属性")
+	}
+	base := &n.Children[0]
+	if !isStringKind(base) {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "length 的属性基不是 string")
+	}
+	if n.Type == nil || n.Type.Kind != frontend.KindNumber {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "length 的结果不是 number")
+	}
+	value, pre, err := l.expr(base, sc, depth+1)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &nir.Expr{Op: nir.OpStrlen, Operand: value, Pos: l.pos(n.Start)}, pre, nil
+}
+
+// isStringKind 报告一个表达式节点的类型摘要是不是 string。缺摘要时不按
+// string 处理，让 typedOperand 给出明确的坏类型诊断。
+func isStringKind(n *frontend.Node) bool {
+	return n != nil && n.Type != nil && n.Type.Kind == frontend.KindString
+}
+
 // compare 降低有序比较与严格相等。有序比较只接受 number；严格相等要求两侧
 // 是同一个标量类型。操作数顺序原样保留，求值顺序由后端负责。
 func (l *lowerer) compare(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir.Stmt, error) {
@@ -896,8 +944,8 @@ func (l *lowerer) compare(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []
 		if leftNode.Type.Kind != rightNode.Type.Kind {
 			return nil, nil, l.fail(n.Start, "lower.bad-type", "严格相等需要两侧同类型，实际为 %s 与 %s", leftNode.Type.Kind, rightNode.Type.Kind)
 		}
-		if leftNode.Type.Kind != frontend.KindNumber && leftNode.Type.Kind != frontend.KindBoolean {
-			return nil, nil, l.fail(n.Start, "lower.bad-type", "严格相等只支持 number 或 boolean，实际为 %s", leftNode.Type.Kind)
+		if !isValueKind(leftNode.Type.Kind) {
+			return nil, nil, l.fail(n.Start, "lower.bad-type", "严格相等只支持 number、boolean 或 string，实际为 %s", leftNode.Type.Kind)
 		}
 	}
 	left, right, pre, err := l.pairOperands(leftNode, rightNode, sc, depth)
@@ -1101,7 +1149,7 @@ func (l *lowerer) conditional(n *frontend.Node, sc *scope, depth int) (*nir.Expr
 	if thenNode.Type.Kind != elseNode.Type.Kind {
 		return nil, nil, l.fail(n.Start, "lower.bad-type", "三元式两条分支类型不同：%s 与 %s", thenNode.Type.Kind, elseNode.Type.Kind)
 	}
-	if thenNode.Type.Kind != frontend.KindNumber && thenNode.Type.Kind != frontend.KindBoolean {
+	if !isValueKind(thenNode.Type.Kind) {
 		return nil, nil, l.fail(n.Start, "lower.bad-type", "三元式的结果不能是 %s", thenNode.Type.Kind)
 	}
 	cond, condPre, err := l.expr(condNode, sc, depth+1)
@@ -1119,10 +1167,7 @@ func (l *lowerer) conditional(n *frontend.Node, sc *scope, depth int) (*nir.Expr
 		return nil, nil, err
 	}
 	name := l.tempName()
-	resultType := nir.TypeNumber
-	if thenNode.Type.Kind == frontend.KindBoolean {
-		resultType = nir.TypeBool
-	}
+	resultType := nirType(thenNode.Type.Kind)
 	l.addTempBinding(sc, name, resultType, l.pos(n.Start))
 	pre := append(condPre, nir.Stmt{
 		Op:        nir.OpSelect,
@@ -1185,20 +1230,22 @@ func (l *lowerer) failNir(pos *nir.Pos, offset int, code, format string, args ..
 	return l.fail(offset, code, format, args...)
 }
 
-func nirType(k frontend.Kind) string {
+func nirType(k frontend.Kind) int {
 	switch k {
 	case frontend.KindVoid:
 		return nir.TypeVoid
 	case frontend.KindBoolean:
 		return nir.TypeBool
+	case frontend.KindString:
+		return nir.TypeString
 	}
 	return nir.TypeNumber
 }
 
-// nodeNirType 返回表达式节点在 NIR 里的类型。调用方已经用 typedOperand 核对过
-// 类型，这里只是把类别翻译成 NIR 字符串；缺类型时退回 number，避免调试段
+// nodeNirType 返回表达式节点在 NIR 里的类型 ID。调用方已经用 typedOperand
+// 核对过类型，这里只是把类别翻译成 ID；缺类型时退回 number，避免调试段
 // 因为一条不完整事实而崩溃。
-func nodeNirType(n *frontend.Node) string {
+func nodeNirType(n *frontend.Node) int {
 	if n != nil && n.Type != nil {
 		return nirType(n.Type.Kind)
 	}
@@ -1206,11 +1253,32 @@ func nodeNirType(n *frontend.Node) string {
 }
 
 // kindOf 把 NIR 类型换回事实里的类型类别，用于核对返回值。
-func kindOf(t string) frontend.Kind {
-	if t == nir.TypeBool {
+func kindOf(t int) frontend.Kind {
+	switch t {
+	case nir.TypeBool:
 		return frontend.KindBoolean
+	case nir.TypeString:
+		return frontend.KindString
 	}
 	return frontend.KindNumber
+}
+
+// nirTypeLabel 把类型 ID 变成诊断里的短名字。降低阶段只会遇到内置类型。
+func nirTypeLabel(t int) string {
+	if name := nir.BuiltinTypeName(t); name != "" {
+		return name
+	}
+	return "type"
+}
+
+// isValueKind 报告一个事实类型能否作为当前阶段的标量值：number、boolean
+// 或 string。void 只用于函数结果。
+func isValueKind(k frontend.Kind) bool {
+	switch k {
+	case frontend.KindNumber, frontend.KindBoolean, frontend.KindString:
+		return true
+	}
+	return false
 }
 
 func isArithmetic(op string) bool {

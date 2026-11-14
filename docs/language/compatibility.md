@@ -39,7 +39,7 @@
 
 一个能力可以同时「当前 `rejected`」和「长期 `planned`」。`planned` 和 `deferred` 行如果当前不在子集内，编译器仍会拒绝；这两个状态描述长期方向，不表示今天可以编译。`rejected` 行表示当前有明确拒绝路径，长期方向可能是 `planned`、`deferred` 或 `not-targeted`。本表不使用「部分支持」；必须说明卡在哪一层、哪些写法不支持。
 
-Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semantics/objects-arrays.md)、[联合与空值 RFC](semantics/unions-null.md)、[函数 RFC](semantics/functions.md)、[泛型 RFC](semantics/generics.md)以及 [NIR schema 3 类型表设计](../design/nir-schema-3-types.md)已经确认，处于待实现状态。它们不改变本表当前的 `rejected` 状态；只有实现并通过运行时验收后，状态才会变化。
+Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semantics/objects-arrays.md)、[联合与空值 RFC](semantics/unions-null.md)、[函数 RFC](semantics/functions.md)、[泛型 RFC](semantics/generics.md)以及 [NIR schema 3 类型表设计](../design/nir-schema-3-types.md)已经确认。字符串最小闭环（字面量、拼接、`length`、严格相等和输出）已实现并有原生回归；索引、`slice`、模板插值和字符串方法仍未实现。其他 RFC 不改变本表当前的 `rejected` 状态；只有实现并通过运行时验收后，状态才会变化。
 
 ## 2. 基线
 
@@ -61,7 +61,8 @@ Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semanti
 | `boolean` | `tsgo` | `Tynel` | `已验证` | `supported` | `true` / `false`，不做数字真假转换。见[03.01 验收](../validation/03-01-boolean.md) |
 | `void` | `tsgo` | `Tynel` | `已验证` | `supported` | 只用于函数返回类型和调用语句。见[输出格式](../reference/output.md) |
 | `type X = number` / `boolean` | `tsgo` | `Tynel` | `已验证` | `supported` | 非递归别名，只活在类型空间。见[类型别名](../reference/type-aliases.md) |
-| `string` | `tsgo` | `tsgo` | `拒绝` | `rejected` | `cap.bad-type` 或 `cap.unsupported-syntax`；长期方向见阶段 2 |
+| `string`：字面量、`+` 拼接、`length`、`===` / `!==`、输出 | `tsgo` | `Tynel` | `已验证` | `supported` | UTF-16 code unit 语义；ASCII、中文、emoji 与空字符串有原生输出。见[字符串 RFC](semantics/strings.md) |
+| `string`：索引、`slice`、模板插值、方法 | `tsgo` | `Tynel` | `拒绝` | `rejected` | 索引等待 `undefined` 表示（S2.4）；模板插值与字符串方法尚未实现 |
 | 对象字面量与结构类型 | `tsgo` | `tsgo` | `拒绝` | `rejected` | 对象字面量报 `cap.unsupported-syntax`，对象类型别名报 `cap.bad-type`；对象模型待 RFC，阶段 2 |
 | `interface` | `tsgo` | `拒绝` | `拒绝` | `rejected` | `cap.interface`；阶段 2 起重新设计 |
 | 数组与元组 | `tsgo` | `tsgo` | `拒绝` | `rejected` | 数组字面量报 `cap.unsupported-syntax`，数组类型别名报 `cap.bad-type`；数组语义待 RFC，阶段 2 |

@@ -30,7 +30,7 @@ func Check(snapshot *source.Snapshot, facts *frontend.Facts) ([]*diagnostic.Diag
 	c := &checker{snapshot: snapshot, facts: facts, imports: valueImports(facts)}
 	for _, alias := range facts.Aliases {
 		switch alias.Kind {
-		case frontend.KindNumber, frontend.KindBoolean:
+		case frontend.KindNumber, frontend.KindBoolean, frontend.KindString:
 			// 基础别名只活在类型空间，不产生运行时值。
 		case frontend.KindAny:
 			c.report(alias.Start, "cap.any", "类型别名 %q 是 any 或 unknown", alias.Name)
@@ -43,7 +43,7 @@ func Check(snapshot *source.Snapshot, facts *frontend.Facts) ([]*diagnostic.Diag
 			if alias.Type != nil {
 				description = alias.Type.String()
 			}
-			c.report(alias.Start, "cap.bad-type", "类型别名 %q 最终是 %s，本阶段只支持 number 与 boolean", alias.Name, description)
+			c.report(alias.Start, "cap.bad-type", "类型别名 %q 最终是 %s，本阶段只支持 number、boolean 与 string", alias.Name, description)
 		}
 	}
 	for i := range facts.Declarations {
@@ -116,7 +116,7 @@ func (c *checker) declaration(d *frontend.Declaration) {
 			c.report(d.Start, "cap.unsupported-declaration", "函数 %q 只有声明没有实现（ambient 或重载签名），本阶段不支持", d.Name)
 			return
 		}
-		c.declaredType(d.Result, d.Start, "函数 %q 的返回类型", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindVoid)
+		c.declaredType(d.Result, d.Start, "函数 %q 的返回类型", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindVoid)
 	case frontend.DeclParameter:
 		// 默认参数与可选参数都需要后端合成缺省值，本阶段还没实现。先在这里
 		// 明确拒绝，别让合法的 add(5) 一路走到降低阶段才报内部故障；事实层
@@ -129,19 +129,19 @@ func (c *checker) declaration(d *frontend.Declaration) {
 			c.report(d.Start, "cap.unsupported-parameter", "参数 %q 是可选参数，本阶段只支持必填参数", d.Name)
 			return
 		}
-		c.declaredType(d.Type, d.Start, "参数 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean)
+		c.declaredType(d.Type, d.Start, "参数 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString)
 	case frontend.DeclConst:
 		if d.Body == nil {
 			// declare const 只有类型声明，没有初始化表达式；入口降低需要值。
 			c.report(d.Start, "cap.unsupported-declaration", "常量 %q 没有初始化表达式（ambient 声明），本阶段不支持", d.Name)
 			return
 		}
-		c.declaredType(d.Type, d.Start, "常量 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean)
+		c.declaredType(d.Type, d.Start, "常量 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString)
 		if d.Body.Type != nil && d.Body.Type.Kind == frontend.KindVoid {
 			c.report(d.Body.Start, "cap.void-value", "常量 %q 的初始值是 void 调用，没有可用的值", d.Name)
 		}
 	case frontend.DeclLocal, frontend.DeclLet:
-		c.declaredType(d.Type, d.Start, "局部值 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean)
+		c.declaredType(d.Type, d.Start, "局部值 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString)
 	case frontend.DeclModuleLet:
 		c.report(d.Start, "cap.module-let", "模块级 let %q 不在本阶段子集内；模块体只接受 const", d.Name)
 	case frontend.DeclVar:
@@ -160,7 +160,7 @@ func (c *checker) declaredType(t *frontend.Type, offset int, format, name string
 		return
 	}
 	if t.Kind == frontend.KindAny {
-		c.report(offset, "cap.any", format+"是 any 或 unknown；本阶段只支持 number、boolean 和 void", name)
+		c.report(offset, "cap.any", format+"是 any 或 unknown；本阶段只支持 number、boolean、string 和 void", name)
 		return
 	}
 	for _, k := range allowed {
@@ -309,7 +309,7 @@ func (c *checker) node(n *frontend.Node) {
 			c.report(n.Start, "cap.bad-type", "三元式两条分支类型不同：%s 与 %s", describeType(thenNode.Type), describeType(elseNode.Type))
 			return
 		}
-		if thenNode.Type.Kind != frontend.KindNumber && thenNode.Type.Kind != frontend.KindBoolean {
+		if !isValueKind(thenNode.Type.Kind) {
 			c.report(n.Start, "cap.bad-type", "三元式的结果不能是 %s", describeType(thenNode.Type))
 			return
 		}
@@ -330,6 +330,15 @@ func (c *checker) node(n *frontend.Node) {
 			return
 		}
 		switch {
+		case n.Op == "+" && (isStringOperand(&n.Children[0]) || isStringOperand(&n.Children[1])):
+			// string + string 是拼接；其余组合（"a" + 1）在 TypeScript 里合法
+			// 但会触发隐式转换，本阶段明确拒绝，不生成 toString 调用。
+			if !isStringOperand(&n.Children[0]) || !isStringOperand(&n.Children[1]) {
+				c.report(n.Start, "cap.bad-type", "运算符 \"+\" 只支持两个 number 或两个 string，实际为 %s 与 %s", describeType(n.Children[0].Type), describeType(n.Children[1].Type))
+				return
+			}
+			c.node(&n.Children[0])
+			c.node(&n.Children[1])
 		case isArithmetic(n.Op):
 			for i := range n.Children {
 				c.numberOperand(&n.Children[i], "运算符 "+n.Op+" 的操作数")
@@ -344,8 +353,8 @@ func (c *checker) node(n *frontend.Node) {
 				c.report(n.Start, "cap.bad-type", "严格相等 %q 需要两侧同类型", n.Op)
 				return
 			}
-			if left.Type.Kind != frontend.KindNumber && left.Type.Kind != frontend.KindBoolean {
-				c.report(n.Start, "cap.bad-type", "严格相等 %q 只支持 number 或 boolean，实际为 %s", n.Op, describeType(left.Type))
+			if !isValueKind(left.Type.Kind) {
+				c.report(n.Start, "cap.bad-type", "严格相等 %q 只支持 number、boolean 或 string，实际为 %s", n.Op, describeType(left.Type))
 				return
 			}
 			c.node(left)
@@ -392,15 +401,17 @@ func (c *checker) node(n *frontend.Node) {
 	case "CallExpression":
 		c.call(n)
 	case "PropertyAccessExpression":
-		c.report(n.Start, "cap.unsupported-syntax", "属性访问 %q 不在本阶段子集内", n.Name)
+		c.stringLength(n)
 	case "AsExpression", "TypeAssertionExpression", "NonNullExpression", "SatisfiesExpression":
 		c.report(n.Start, "cap.type-escape", "类型断言 %s 绕过了类型检查，本阶段不支持", n.Kind)
 	case "ObjectLiteralExpression":
 		c.report(n.Start, "cap.unsupported-syntax", "对象字面量不在本阶段子集内")
 	case "ArrayLiteralExpression":
 		c.report(n.Start, "cap.unsupported-syntax", "数组字面量不在本阶段子集内")
-	case "StringLiteral", "NoSubstitutionTemplateLiteral", "TemplateExpression":
-		c.report(n.Start, "cap.unsupported-syntax", "字符串不在本阶段子集内")
+	case "StringLiteral", "NoSubstitutionTemplateLiteral":
+		return
+	case "TemplateExpression":
+		c.report(n.Start, "cap.unsupported-syntax", "模板字符串插值不在本阶段子集内")
 	case "DoStatement", "ForStatement", "ForInStatement", "ForOfStatement", "SwitchStatement", "TryStatement", "ThrowStatement":
 		c.report(n.Start, "cap.unsupported-syntax", "控制流 %s 不在本阶段子集内", n.Kind)
 	case "NewExpression":
@@ -636,8 +647,8 @@ func (c *checker) consoleCall(n *frontend.Node, callee *frontend.Node, args []fr
 		c.report(args[0].Start, "cap.void-value", "console.log 需要一个值，但这里是 void 调用")
 		return
 	}
-	if args[0].Type == nil || (args[0].Type.Kind != frontend.KindNumber && args[0].Type.Kind != frontend.KindBoolean) {
-		c.report(args[0].Start, "cap.bad-console-call", "console.log 只接受 number 或 boolean，实际为 %s", describeType(args[0].Type))
+	if args[0].Type == nil || !isValueKind(args[0].Type.Kind) {
+		c.report(args[0].Start, "cap.bad-console-call", "console.log 只接受 number、boolean 或 string，实际为 %s", describeType(args[0].Type))
 		return
 	}
 	c.node(&args[0])
@@ -659,6 +670,41 @@ func (c *checker) builtinConsole(base *frontend.Node) bool {
 		}
 	}
 	return true
+}
+
+// stringLength 只接受 string 上的 length 属性。其他属性访问、其他基类型
+// 仍然按未实现语法拒绝。结果类型必须能交给 number 运算，否则说明事实摘要
+// 与类型检查对不上。
+func (c *checker) stringLength(n *frontend.Node) {
+	if n.Name != "length" || len(n.Children) != 1 {
+		c.report(n.Start, "cap.unsupported-syntax", "属性访问 %q 不在本阶段子集内；只支持 string 的 length", n.Name)
+		return
+	}
+	base := &n.Children[0]
+	if base.Type == nil || base.Type.Kind != frontend.KindString {
+		c.report(n.Start, "cap.bad-type", "length 只支持 string，实际为 %s", describeType(base.Type))
+		return
+	}
+	if n.Type == nil || n.Type.Kind != frontend.KindNumber {
+		c.report(n.Start, "cap.bad-type", "string.length 的结果应为 number")
+		return
+	}
+	c.node(base)
+}
+
+// isStringOperand 报告一个表达式的类型摘要是不是 string。缺摘要时不按
+// string 处理，让后续的类型诊断给出原因。
+func isStringOperand(n *frontend.Node) bool {
+	return n != nil && n.Type != nil && n.Type.Kind == frontend.KindString
+}
+
+// isValueKind 报告一个事实类型是否属于当前阶段可执行的标量值。
+func isValueKind(k frontend.Kind) bool {
+	switch k {
+	case frontend.KindNumber, frontend.KindBoolean, frontend.KindString:
+		return true
+	}
+	return false
 }
 
 func (c *checker) report(offset int, code, format string, args ...any) {

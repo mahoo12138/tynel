@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 2,
+  "entry": "main",
+  "functions": [
+    {
+      "name": "main",
+      "params": [],
+      "result": "void",
+      "body": [
+        {"op": "print", "value": {"op": "number", "bits": "0x4045000000000000"}},
+        {"op": "return"}
+      ]
+    }
+  ]
+}

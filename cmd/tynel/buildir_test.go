@@ -23,7 +23,7 @@ func TestBuildIRRejectsBadNIR(t *testing.T) {
 	}{
 		{
 			name: "未知协议",
-			body: `{"schemaVersion":3,"entry":"main","functions":[]}`,
+			body: `{"schemaVersion":4,"entry":"main","functions":[]}`,
 			code: "nir.version",
 		},
 		{
@@ -75,16 +75,16 @@ func TestBuildIRRejectsBadNIR(t *testing.T) {
 // 读取阶段就停住，不会把嵌套留给后端。
 func TestBuildIRRejectsDeepNesting(t *testing.T) {
 	root, _ := newFakeProject(t)
-	trueValue := true
 	body := []nir.Stmt{{Op: nir.OpReturn}}
 	for i := 0; i <= nir.DefaultLimits().MaxDepth; i++ {
-		cond := nir.Expr{Op: nir.OpBool, Value: &trueValue}
+		cond := nir.Bool(true)
 		body = []nir.Stmt{{Op: nir.OpIf, Cond: &cond, Then: body}}
 	}
 	module := nir.Module{
 		SchemaVersion: nir.SchemaVersion,
+		Types:         []nir.TypeDef{},
 		Entry:         "main",
-		Functions:     []nir.Function{{Name: "main", Result: "void", Body: body}},
+		Functions:     []nir.Function{{Name: "main", Result: nir.TypeVoid, Body: body}},
 	}
 	data, err := json.Marshal(module)
 	if err != nil {

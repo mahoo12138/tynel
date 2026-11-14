@@ -12,7 +12,75 @@ import (
 	"math"
 	"os"
 	"strconv"
+	"unicode/utf16"
+	"unsafe"
 )
+
+// tynelString 是 Tynel 字符串的 Runtime 表示：UTF-16 code unit 序列。
+//
+// data 指向一个由 GC 管理的 uint16 数组，length 是 code unit 数。空字符串的
+// data 为 nil、length 为 0。打印和 I/O 边界再转换成 UTF-8；用户代码不能直接
+// 观察这层存储。
+type tynelString struct {
+	data   *uint16
+	length int32
+}
+
+// units 返回字符串的只读视图。调用方不得修改返回的切片。
+func (s tynelString) units() []uint16 {
+	if s.length == 0 || s.data == nil {
+		return nil
+	}
+	return unsafe.Slice(s.data, int(s.length))
+}
+
+// tynelStringFromUnits 接管一份新分配的 code unit 数组。调用后调用方不能再
+// 修改它。
+func tynelStringFromUnits(units []uint16) tynelString {
+	if len(units) == 0 {
+		return tynelString{}
+	}
+	return tynelString{data: unsafe.SliceData(units), length: int32(len(units))}
+}
+
+// tynelStringFromUTF8 把源码或 I/O 边界的 UTF-8 文本转成 UTF-16 存储。
+// 非法 UTF-8 和孤立代理项不是合法源码字面量，转换时由 Go 的 rune 处理。
+func tynelStringFromUTF8(v string) tynelString {
+	return tynelStringFromUnits(utf16.Encode([]rune(v)))
+}
+
+// tynelStringConcat 按 code unit 拼接两个字符串，结果拥有独立存储。
+func tynelStringConcat(a, b tynelString) tynelString {
+	units := make([]uint16, int(a.length)+int(b.length))
+	copy(units, a.units())
+	copy(units[int(a.length):], b.units())
+	return tynelStringFromUnits(units)
+}
+
+// tynelStringLen 返回 UTF-16 code unit 数。JavaScript 的 string.length 与它
+// 一致，而不是 UTF-8 字节数或 Unicode 码点数。
+func tynelStringLen(s tynelString) float64 {
+	return float64(s.length)
+}
+
+// tynelStringEqual 按 code unit 序列比较内容。
+func tynelStringEqual(a, b tynelString) bool {
+	if a.length != b.length {
+		return false
+	}
+	x, y := a.units(), b.units()
+	for i := range x {
+		if x[i] != y[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// tynelPrintString 在打印边界把 UTF-16 转回 UTF-8，每次写一行。
+func tynelPrintString(s tynelString) {
+	fmt.Fprintln(os.Stdout, string(utf16.Decode(s.units())))
+}
 
 // tynelNumberFromBits 按位构造一个 number。go/constant 表示不了 NaN、
 // 无穷和负零，bridge 对这三类值改用它，避免位模式在编译期被改写。

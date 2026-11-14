@@ -23,6 +23,7 @@ func equalModules(a, b *Module) bool {
 func minimalModule() *Module {
 	return &Module{
 		SchemaVersion: SchemaVersion,
+		Types:         []TypeDef{},
 		Entry:         "main",
 		Functions: []Function{{
 			Name:   "main",
@@ -98,7 +99,8 @@ func TestExampleShape(t *testing.T) {
 func TestBoolSurvivesEncoding(t *testing.T) {
 	for _, want := range []bool{true, false} {
 		m := minimalModule()
-		m.Functions[0].Body = []Stmt{{Op: OpPrint, Value: &Expr{Op: OpBool, Value: &want}}}
+		literal := Bool(want)
+		m.Functions[0].Body = []Stmt{{Op: OpPrint, Value: &literal}}
 		data, err := EncodeBytes(m)
 		if err != nil {
 			t.Fatalf("编码 bool %v 失败：%v", want, err)
@@ -112,7 +114,8 @@ func TestBoolSurvivesEncoding(t *testing.T) {
 			t.Fatalf("回读 bool %v 失败：%v", want, err)
 		}
 		got := back.Functions[0].Body[0].Value
-		if got.Op != OpBool || got.Value == nil || *got.Value != want {
+		value, ok := got.BoolValue()
+		if got.Op != OpBool || !ok || value != want {
 			t.Fatalf("bool %v 保存后读回为 %+v", want, got)
 		}
 	}
@@ -225,8 +228,8 @@ func TestDecodeRejectsInvalidStructure(t *testing.T) {
 		{"坏版本", func(m *Module) { m.SchemaVersion = SchemaVersion + 1 }, "nir.version"},
 		{"缺 entry", func(m *Module) { m.Entry = "" }, "nir.missing"},
 		{"没有函数", func(m *Module) { m.Functions = nil }, "nir.missing"},
-		{"非法结果类型", func(m *Module) { m.Functions[0].Result = "string" }, "nir.bad-value"},
-		{"参数类型不是 number", func(m *Module) { m.Functions[0].Params = []Param{{Name: "a", Type: "string"}} }, "nir.bad-value"},
+		{"结果类型引用不存在", func(m *Module) { m.Functions[0].Result = 99 }, "nir.type-ref"},
+		{"参数类型缺失", func(m *Module) { m.Functions[0].Params = []Param{{Name: "a", Type: 0}} }, "nir.type-ref"},
 		{"print 缺 value", func(m *Module) { m.Functions[0].Body[0].Value = nil }, "nir.missing"},
 		{"discard 缺 value", func(m *Module) {
 			m.Functions[0].Body[0].Op = OpDiscard

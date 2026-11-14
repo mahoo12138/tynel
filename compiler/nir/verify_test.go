@@ -48,11 +48,11 @@ func ifStmt(cond Expr, then, els []Stmt) Stmt {
 func shortStmt(name, op string, left Expr, right []Stmt, value Expr) Stmt {
 	return Stmt{Op: OpShort, Name: name, Operator: op, Left: &left, Right: right, Value: &value}
 }
-func selectStmt(name string, cond Expr, then []Stmt, thenValue Expr, els []Stmt, elseValue Expr, typ string) Stmt {
+func selectStmt(name string, cond Expr, then []Stmt, thenValue Expr, els []Stmt, elseValue Expr, typ int) Stmt {
 	return Stmt{Op: OpSelect, Name: name, Cond: &cond, Then: then, ThenValue: &thenValue, Else: els, ElseValue: &elseValue, Type: typ}
 }
 
-func fn(name, result string, params []string, body ...Stmt) Function {
+func fn(name string, result int, params []string, body ...Stmt) Function {
 	f := Function{Name: name, Result: result, Body: body}
 	for _, p := range params {
 		f.Params = append(f.Params, Param{Name: p, Type: TypeNumber})
@@ -63,7 +63,7 @@ func fn(name, result string, params []string, body ...Stmt) Function {
 func mainWith(body ...Stmt) Function { return fn("main", TypeVoid, nil, body...) }
 
 func module(entry string, functions ...Function) *Module {
-	return &Module{SchemaVersion: SchemaVersion, Entry: entry, Functions: functions}
+	return &Module{SchemaVersion: SchemaVersion, Types: []TypeDef{}, Entry: entry, Functions: functions}
 }
 
 func TestVerifyExampleModule(t *testing.T) {
@@ -120,7 +120,7 @@ func TestVerifyBooleanModule(t *testing.T) {
 	m := module("main",
 		invert,
 		mainWith(
-			Stmt{Op: OpLet, Name: "flag", Value: &Expr{Op: OpBool, Value: boolPtr(false)}},
+			letStmt("flag", Bool(false)),
 			printStmt(call("invert", flag)),
 			discard(flag),
 		),
@@ -129,8 +129,6 @@ func TestVerifyBooleanModule(t *testing.T) {
 		t.Fatalf("boolean 模块应通过验证：%v", err)
 	}
 }
-
-func boolPtr(v bool) *bool { return &v }
 
 // TestVerifyComparisonModule 覆盖有序比较与严格相等：number 比较、boolean
 // 相等、比较结果作为 print 与 let 的值。

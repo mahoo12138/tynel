@@ -383,7 +383,11 @@ func TestLowersBooleanProgram(t *testing.T) {
 		t.Fatalf("main 应有 3 条语句，实际 %d：%+v", len(main.Body), main.Body)
 	}
 	let := main.Body[0]
-	if let.Op != nir.OpLet || let.Value == nil || let.Value.Op != nir.OpBool || let.Value.Value == nil || *let.Value.Value {
+	if let.Op != nir.OpLet || let.Value == nil || let.Value.Op != nir.OpBool {
+		t.Fatalf("第一条应是 let flag = false：%+v", let)
+	}
+	value, ok := let.Value.BoolValue()
+	if !ok || value {
 		t.Fatalf("第一条应是 let flag = false：%+v", let)
 	}
 	print := main.Body[1]
@@ -860,14 +864,6 @@ func TestRejectsComparisonMismatches(t *testing.T) {
 			mutate: func(f *frontend.Facts) {
 				cmp := f.Module.Children[1].Children[0].Children[1]
 				cmp.Children[0] = boolLiteral(true)
-			},
-		},
-		{
-			name: "严格相等不支持 string",
-			mutate: func(f *frontend.Facts) {
-				cmp := f.Module.Children[1].Children[0].Children[1]
-				cmp.Children[0].Type = &frontend.Type{Kind: frontend.KindString}
-				cmp.Children[1].Type = &frontend.Type{Kind: frontend.KindString}
 			},
 		},
 	}

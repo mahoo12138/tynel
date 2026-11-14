@@ -1,6 +1,6 @@
 # 输出格式
 
-`print` 语句在运行时调用固定支持文件里的打印函数：`number` 走 `tynelPrintFloat64`，`boolean` 走 `tynelPrintBool`。它们是受限输出：一次调用写一个值，占一行。它们不是 Node 的 `console`——没有格式化占位符，不接受多个参数，也不写标准错误。
+`print` 语句在运行时调用固定支持文件里的打印函数：`number` 走 `tynelPrintFloat64`，`boolean` 走 `tynelPrintBool`，`string` 走 `tynelPrintString`。它们是受限输出：一次调用写一个值，占一行。它们不是 Node 的 `console`——没有格式化占位符，不接受多个参数，也不写标准错误。
 
 本页定义这套格式，以及为什么现在这么定。
 
@@ -18,7 +18,19 @@ console.log(1 / 0);
 +Inf
 ```
 
-每次 `console.log(<number>)` 对应标准输出的一行，行尾一个换行符。没有前缀、没有缩进、没有时间戳：输出是给程序读的，不是给人看的日志。
+每次 `console.log(<value>)` 对应标准输出的一行，行尾一个换行符。没有前缀、没有缩进、没有时间戳：输出是给程序读的，不是给人看的日志。
+
+`string` 在打印边界从 UTF-16 转成 UTF-8，内容原样写出一行；空字符串输出一个空行，emoji 与中文按源码中的字符输出。字符串的 `length` 不受打印影响，仍按 UTF-16 code unit 计数：
+
+```ts
+console.log("hello, 世界");
+console.log("😀".length);
+```
+
+```text
+hello, 世界
+2
+```
 
 `boolean` 只有两个值，拼写固定：
 
@@ -78,16 +90,16 @@ false
 | 负零 | `-0` | `-0` |
 | 大数 | `1e+21` | `1e+21` |
 
-差异只出现在无穷的写法上。之所以现在不改，是因为数值语义本身还没对齐（`number` 目前就是 binary64，没有 `bigint`、没有字符串拼接、没有 `toString` 的舍入规则），单独把无穷改成 `Infinity` 只是把一个不一致换成另一个。接上完整的数值语义时（03.x）会连同输出一起定稿，到那时这份表格会被替换，而不是被悄悄修改。
+差异只出现在无穷的写法上。之所以现在不改，是因为数值语义本身还没对齐（`number` 目前就是 binary64，没有 `bigint`，也没有 `toString` 的舍入规则），单独把无穷改成 `Infinity` 只是把一个不一致换成另一个。接上完整的数值语义时会连同输出一起定稿，到那时这份表格会被替换，而不是被悄悄修改。字符串拼接已经支持，但只接受两个 `string`，不做 `"a" + 1` 的隐式转换。
 
 ## 不做什么
 
 - 不接受多个参数：`console.log(a, b)` 报 `cap.bad-console-call`。
-- 不接受字符串：字符串不在本阶段子集内。
-- 不做格式化：没有 `%d`、`%s`，也没有模板字符串。
+- 只接受 `number`、`boolean` 或 `string`；对象、数组和函数值没有输出路径。
+- 不做格式化：没有 `%d`、`%s`，也没有模板字符串插值。
 - 不缓冲：每次调用立即写一行，程序崩溃前已经输出的内容不会丢。
 - 不写标准错误：诊断走编译器的标准错误，程序输出只走标准输出，两者不混。
 
 ## 打印器不是 console
 
-把这套东西叫「console」容易误会。它没有 `console.error`、`console.warn`、`console.table`，也没有对象检查器；它只把一个 `number` 或 `boolean` 写成一行文本。文档里提到它时写「受限输出」或「打印器」，不写「Node console 的一个实现」。
+把这套东西叫「console」容易误会。它没有 `console.error`、`console.warn`、`console.table`，也没有对象检查器；它只把一个 `number`、`boolean` 或 `string` 写成一行文本。文档里提到它时写「受限输出」或「打印器」，不写「Node console 的一个实现」。

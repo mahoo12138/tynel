@@ -117,7 +117,7 @@ if msg=$(TYNEL_NIR="$ROOT/examples/ir/add.nir.json" TYNEL_COMPILE="$COMPILE" "$S
   -toolexec="$ROOT/bridge/go/toolexec" -tags "tynel_missing_$$" -o "$OUT/missing" \
   "$ROOT/bridge/go/testdata/support-missing" 2>&1); then
   fail "缺少支持函数竟然构建成功"
-elif [[ "$msg" == *"缺少固定支持函数"* ]]; then
+elif [[ "$msg" == *"缺少固定支持声明"* ]]; then
   pass "缺少支持函数被拒绝"
 else
   fail "缺支持函数的错误信息不符：$msg"

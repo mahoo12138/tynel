@@ -941,6 +941,10 @@ func (b *factBuilder) bodyNode(node *ast.Node) *factNode {
 			return out
 		}
 		out.Bits = fmt.Sprintf("0x%016x", bits)
+	case ast.IsStringLiteralLike(node):
+		// 字符串字面量和无插值模板都只保留文本内容；引号与反引号属于语法，
+		// 不进入 NIR。
+		out.Name = node.Text()
 	case ast.IsVariableDeclaration(node):
 		if name := node.Name(); name != nil {
 			b.declNameNodes[name] = true

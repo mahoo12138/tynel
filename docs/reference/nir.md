@@ -14,7 +14,8 @@ JSON 没有联合类型，所有字段只能平铺在同一层。因此文件里
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
+  "types": [ ],
   "entry": "main",
   "functions": [ ],
   "debug": { "functions": [ ] }
@@ -23,41 +24,94 @@ JSON 没有联合类型，所有字段只能平铺在同一层。因此文件里
 
 | 字段 | 含义 | 约束 |
 | --- | --- | --- |
-| `schemaVersion` | 文件格式版本 | 当前为 2；解码先迁移，未知版本按 `nir.version` 拒绝 |
+| `schemaVersion` | 文件格式版本 | 当前为 3；解码先迁移，未知版本按 `nir.version` 拒绝 |
+| `types` | 复合类型表 | 可以为空；内置类型不需要登记；编码按 ID 升序 |
 | `entry` | 入口函数名 | 非空；是否真的存在由验证器检查 |
 | `functions` | 函数列表 | 非空，数量受预算限制 |
 | `debug` | 可选调试段 | 缺失表示没有调试信息；存在时按下面的调试段规则校验 |
 
 ## 版本与迁移
 
-`schemaVersion` 是 NIR 文件格式的协议版本，和语言版本、编译器版本、工具链版本分开记录。编码器总是写当前版本；解码器先按 JSON 外壳读出模块，再调用 `nir.Migrate` 把受支持的旧版本升级到当前版本，最后才做格式检查和语义验证。
+`schemaVersion` 是 NIR 文件格式的协议版本，和语言版本、编译器版本、工具链版本分开记录。编码器总是写当前版本；解码器先读版本字段，再选择当前结构或旧结构解码，最后才做格式检查和语义验证。
 
-当前版本 2 支持读取版本 1 和 2。版本 1 没有调试段，迁移时把 `debug` 置空；版本 2 的调试段只描述源码结构，不参与执行。新增、删除或改变字段含义、操作形状和预算时递增版本，并为旧版本写显式迁移；没有迁移规则的版本直接按 `nir.version` 拒绝。不能用缺省值猜测旧字段，也不能让旧文件悄悄按新语义执行。
+当前版本 3 支持读取版本 1、2 和 3：
 
-构建器解码后会检查迁移前的原始版本：只有发生迁移时才把结果重新编码成当前版本再落盘，当前版本则保持原始字节，避免手写 NIR 的格式被重排。后端桥接包接受版本 1 和 2，只读执行核心，忽略 `debug`。
+| 输入 | 动作 | 输出 |
+| --- | --- | --- |
+| 1 | 清空调试段，升级到 2，再按 2→3 | 3 |
+| 2 | 把 `number` / `bool` / `void` 映射为类型 ID `1` / `2` / `3`，调试局部类型同样改写，补空 `types` 表 | 3 |
+| 3 | 原样校验；缺失 `types` 视为空表 | 3 |
 
-回放夹具 `compiler/nir/testdata/replay-v1.json` 固定了一份版本 1 的模块。下面这条命令验证版本迁移、v1 回放、调试段校验和编解码往返：
+旧格式没有复合类型，所以 2→3 不生成 `types` 条目。新增、删除或改变字段含义、操作形状和预算时递增版本，并为旧版本写显式迁移；没有迁移规则的版本直接按 `nir.version` 拒绝。不能用缺省值猜测旧字段，也不能让旧文件悄悄按新语义执行。
+
+构建器解码后会检查迁移前的原始版本：只有发生迁移时才把结果重新编码成当前版本再落盘，当前版本则保持原始字节，避免手写 NIR 的格式被重排。后端桥接包接受版本 1、2 和 3，只读执行核心，忽略 `debug`。
+
+回放夹具 `compiler/nir/testdata/replay-v1.json` 和 `replay-v2-debug.json` 分别固定了版本 1 与版本 2 的模块。下面这条命令验证版本迁移、回放、类型表和调试段：
 
 ```zsh
-# 版本迁移、v1 回放、调试段校验和编解码往返。
-go test ./compiler/nir -run 'Version|Replay|Debug'
+# 版本迁移、v1/v2 回放、类型表、字符串操作与调试段。
+go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 ```
 
 `tynel build-ir` 读取 NIR 时走同一条解码路径，因此登记在支持列表里的旧版本会先迁移，未知版本在进入后端前就被拒绝。作用域 ID 与调试段的完整设计见[设计记录](../design/nir-schema-2-debug.md)。
+
+## 类型表
+
+类型字段在 schema 3 里是整数 ID，不再重复写类型名。内置类型使用保留 ID，不需要在 `types` 表里声明，也不能被覆盖：
+
+| ID | 类型 |
+| --- | --- |
+| 1 | `number` |
+| 2 | `bool` |
+| 3 | `void` |
+| 4 | `string` |
+| 5 | `null` |
+| 6 | `undefined` |
+| 7 | `never` |
+
+复合类型从 8 开始，由 `types` 表定义。ID 必须唯一；编码器按 ID 升序输出。当前降低器只使用内置类型 ID，将来降低复合类型时按首次使用顺序分配。手写 NIR 可以使用任意合法 ID，但引用必须自洽。
+
+```json
+{
+  "types": [
+    {"id": 8, "kind": "object", "name": "Point",
+     "properties": [{"name": "x", "type": 1},
+                    {"name": "label", "type": 9, "optional": true}]},
+    {"id": 9, "kind": "union", "members": [4, 6]},
+    {"id": 10, "kind": "array", "element": 1},
+    {"id": 11, "kind": "tuple", "elements": [1, 2]},
+    {"id": 12, "kind": "function", "params": [1, 4], "result": 2}
+  ]
+}
+```
+
+| 字段 | 适用 kind | 含义 |
+| --- | --- | --- |
+| `id` | 全部 | 复合类型 ID，必须 >= 8 |
+| `kind` | 全部 | `object`、`array`、`tuple`、`union`、`intersection`、`function` |
+| `name` | `object` | 可选类型名，只用于诊断和调试 |
+| `properties` | `object` | 属性名、类型 ID、可选性；属性名非空且不重复 |
+| `element` | `array` | 元素类型 ID |
+| `elements` | `tuple` | 元素类型 ID 列表，非空 |
+| `members` | `union` / `intersection` | 成员类型 ID，至少两个 |
+| `params` | `function` | 参数类型 ID 列表，可以为空 |
+| `result` | `function` | 返回类型 ID，`void` 合法 |
+
+类型图允许通过 ID 表达递归对象，验证器只核对直接引用是否存在，不要求无环。`void` 只能作为函数结果，不能作为参数、属性、数组/元组元素、联合成员或局部变量。`intersection` 目前只保留名称，没有对应的执行操作。
 
 ## 函数、参数与位置
 
 ```json
 {
   "name": "add",
-  "params": [{"name": "a", "type": "number"}],
-  "result": "number",
+  "params": [{"name": "a", "type": 1}],
+  "result": 1,
   "body": [ ],
   "pos": {"file": "examples/add.ts", "line": 1, "column": 1}
 }
 ```
 
-`result` 接受 `number`、`bool` 或 `void`；`params[].type` 接受 `number` 或 `bool`。`pos` 可以省略，手写 NIR 时通常不写；前端产出时填写，用于把后端的错误指回源码。参数表为空时，Go 的编码会写成 `null`；读入时 `null` 与 `[]` 等价，都表示没有参数。
+`result` 是类型 ID，可以是内置类型或 `types` 表里的复合类型；`params[].type` 是类型 ID，但不能是 `void`。当前后端能执行 `number`、`bool`、`string` 和 `void` 结果。`pos` 可以省略，手写 NIR 时通常不写；前端产出时填写，用于把后端的错误指回源码。参数表为空时，Go 的编码会写成 `null`；读入时 `null` 与 `[]` 等价，都表示没有参数。
 
 ## 语句
 
@@ -73,7 +127,7 @@ go test ./compiler/nir -run 'Version|Replay|Debug'
 | `discard` | `value` 必填 | 求值一个表达式并丢弃结果 |
 | `if` | `cond` 必填，`then` / `else` 可选 | 条件为 `bool`；两个分支各自是一个语句块 |
 | `short` | `name`、`operator`、`left`、`value` 必填，`right` 可选 | `&&` / `\|\|` 的短路求值，结果绑定到 `name`；`right` 是只在需要时执行的准备块 |
-| `select` | `name`、`cond`、`thenValue`、`elseValue`、`type` 必填，`then` / `else` 可选 | 条件表达式的结果绑定；`type` 是 `number` 或 `bool`，两条分支必须与它一致 |
+| `select` | `name`、`cond`、`thenValue`、`elseValue`、`type` 必填，`then` / `else` 可选 | 条件表达式的结果绑定；`type` 是结果类型 ID，两条分支必须与它一致 |
 
 `let` 不是语言层面的变量，它解决的是求值次数：前端把模块级 `const`、分支里的 `const` 和需要复用的中间结果落成局部值，避免在表达式里重复求值——`const x = f(); g(x, x)` 只应该调用一次 `f`。
 
@@ -119,7 +173,7 @@ go test ./compiler/nir -run 'Version|Replay|Debug'
 
 `if` 的 `then` 与 `else` 各自开一个子作用域，两条分支里同名的 `let` 互不影响。`cond` 只求值一次，结果必须是 `bool`；`else` 里再放一条 `if` 就是 `else if`。`if` 本身不产生值，不能出现在表达式位置。
 
-`discard` 对应源码里的表达式语句：`f();` 与 `answer;` 都是这个形状。它丢弃的是结果，不是求值——调用照常执行，副作用保留，值不打印。被丢弃的表达式可以是 `number`、`bool`，也可以是 `void` 调用；后者在 bridge 里直接作为语句，前两者需要一个承接结果的位置（见 [bridge 说明](bridge.md)）。循环的语句形式随后续节点加入。
+`discard` 对应源码里的表达式语句：`f();` 与 `answer;` 都是这个形状。它丢弃的是结果，不是求值——调用照常执行，副作用保留，值不打印。被丢弃的表达式可以是 `number`、`bool`、`string`，也可以是 `void` 调用；后者在 bridge 里直接作为语句，前三者需要一个承接结果的位置（见 [bridge 说明](bridge.md)）。循环的语句形式随后续节点加入。
 
 分支写成嵌套的语句块：
 
@@ -146,7 +200,7 @@ go test ./compiler/nir -run 'Version|Replay|Debug'
 `select` 是条件表达式的结果绑定：
 
 ```json
-{ "op": "select", "name": "_tmp_1", "type": "number",
+{ "op": "select", "name": "_tmp_1", "type": 1,
   "cond": {"op": "param", "name": "flag"},
   "then": [],
   "thenValue": {"op": "number", "bits": "0x3ff0000000000000"},
@@ -154,7 +208,7 @@ go test ./compiler/nir -run 'Version|Replay|Debug'
   "elseValue": {"op": "number", "bits": "0x4000000000000000"} }
 ```
 
-条件为真时执行 `then` 列表，在同一个子作用域里求值 `thenValue`；为假时走 `else`。`then` / `else` 只接受 `let`、`short` 与 `select`。`name` 在语句之后可见，类型由 `type` 声明，两条分支的类型必须与它一致。完整语义见[三元式](ternary.md)。
+条件为真时执行 `then` 列表，在同一个子作用域里求值 `thenValue`；为假时走 `else`。`then` / `else` 只接受 `let`、`short` 与 `select`。`name` 在语句之后可见，类型由 `type` 声明，两条分支的类型必须与它一致。当前可执行结果是 `number`、`bool` 或 `string`。完整语义见[三元式](ternary.md)。
 
 ## 表达式
 
@@ -162,10 +216,13 @@ go test ./compiler/nir -run 'Version|Replay|Debug'
 | --- | --- | --- |
 | `number` | `bits` | binary64 字面量，用位模式表示 |
 | `bool` | `value` | `true` 或 `false`；`false` 也必须有这个字段 |
+| `string` | `value` | JSON 字符串，按 UTF-8 保存；空字符串也必须有这个字段 |
 | `param` | `name` | 引用当前函数的参数 |
 | `local` | `name` | 引用前面 `let` 定义的局部值 |
 | `call` | `function`，`args` 可选 | 直接调用具名函数 |
 | `binary` | `operator`、`left`、`right` | 算术运算，运算符限 `+`、`-`、`*`、`/`，结果是 `number` |
+| `concat` | `left`、`right` | 两个 `string` 按 UTF-16 code unit 拼接，结果是 `string` |
+| `strlen` | `operand` | `string` 的 UTF-16 code unit 数，结果是 `number` |
 | `compare` | `operator`、`left`、`right` | 比较运算，运算符限 `<`、`<=`、`>`、`>=`、`===`、`!==`，结果是 `bool` |
 | `not` | `operand` | 布尔取反，操作数必须是 `bool` |
 
@@ -173,7 +230,9 @@ go test ./compiler/nir -run 'Version|Replay|Debug'
 
 `bool` 的 `value` 用指针保存，所以 `false` 与「字段缺失」是两种不同的输入：前者是合法值，后者按 `nir.missing` 拒绝。JSON 里写成 `{"op":"bool","value":false}`。
 
-`compare` 的输入类型按运算符分两组：`<`、`<=`、`>`、`>=` 要求两个 `number`；`===`、`!==` 要求两侧同为 `number` 或同为 `bool`。宽松相等 `==`、`!=` 不是 NIR 运算符，混入文件按 `nir.bad-op` 拒绝。浮点比较的具体结果见[比较语义](comparison.md)。
+`compare` 的输入类型按运算符分两组：`<`、`<=`、`>`、`>=` 要求两个 `number`；`===`、`!==` 要求两侧同为 `number`、`bool` 或 `string`。字符串相等按 UTF-16 code unit 序列比较，不受存储地址影响。宽松相等 `==`、`!=` 不是 NIR 运算符，混入文件按 `nir.bad-op` 拒绝。浮点比较的具体结果见[比较语义](comparison.md)。
+
+`string` 的 `value` 用 JSON 字符串保存，空字符串是合法值而不是缺字段。`strlen` 和 `concat` 的操作数必须是 `string`；字符串的 `length` 在降低时变成 `strlen`，`+` 在两个操作数都是字符串时变成 `concat`。索引、切片、模板插值和字符串方法还没有对应的 NIR 操作。
 
 ## 调试段
 
@@ -195,9 +254,9 @@ go test ./compiler/nir -run 'Version|Replay|Debug'
         ],
         "locals": [
           {"name": "n", "sourceName": "n", "kind": "parameter",
-           "type": "number", "scope": 1},
+           "type": 1, "scope": 1},
           {"name": "total", "sourceName": "total", "kind": "local",
-           "type": "number", "scope": 1, "mutable": true}
+           "type": 1, "scope": 1, "mutable": true}
         ]
       }
     ]
@@ -209,7 +268,7 @@ go test ./compiler/nir -run 'Version|Replay|Debug'
 | --- | --- | --- |
 | `functions` | 每个函数的调试信息 | `function` 必须是已存在的核心函数名，不能重复 |
 | `scopes` | 函数的作用域树 | 恰好一个根作用域，`id` 为 1、`parent` 为 0、`path` 为 `function` |
-| `locals` | 参数、局部值、模块常量和临时值 | `scope` 必须存在，`type` 只接受 `number` / `bool` |
+| `locals` | 参数、局部值、模块常量和临时值 | `scope` 必须存在，`type` 必须指向可用的非 `void` 类型 ID |
 
 作用域字段：
 
@@ -228,7 +287,7 @@ go test ./compiler/nir -run 'Version|Replay|Debug'
 | `name` | NIR 名 | 同一作用域内唯一；不同作用域可以同名表示遮蔽 |
 | `sourceName` | 源码名 | 非临时值必填；`temporary` 必须为空 |
 | `kind` | 变量种类 | `parameter`、`local`、`module-const`、`temporary` |
-| `type` | NIR 类型 | 当前只接受 `number` / `bool` |
+| `type` | NIR 类型 ID | 内置或 `types` 表里的非 `void` 类型 |
 | `scope` | 所属作用域 | 必须存在；参数和模块常量必须在根作用域 |
 | `pos` | 声明位置 | 可选；出现时必须合法 |
 | `mutable` | 是否可赋值 | 只有可变 `let` 为 true |
@@ -252,7 +311,7 @@ go test ./compiler/nir -run 'Version|Replay|Debug'
 | --- | --- | --- |
 | `MaxBytes` | 1 MiB | 读取阶段就停止，不进入解析 |
 | `MaxDepth` | 64 层 | 表达式嵌套或语句块嵌套到第 65 层时拒绝 |
-| `MaxNodes` | 10000 个 | 统计函数、参数、语句和表达式总数 |
+| `MaxNodes` | 10000 个 | 统计类型条目及其属性/成员、函数、参数、语句和表达式总数 |
 | `MaxFunctions` | 256 个 | 函数数量超限时拒绝 |
 
 预算是格式的一部分：没有它，一份深层嵌套的输入可以让解码器在报错前先耗尽栈或内存。数值改动要同步本表。
@@ -268,15 +327,16 @@ go test ./compiler/nir -run 'Version|Replay|Debug'
 | 参数引用 | `param` 的名字必须是当前函数的参数 |
 | 局部值 | `local` 必须在当前块或祖先块里由前面的 `let` 定义 |
 | 调用 | 目标函数必须存在；实参个数等于形参个数；每个实参类型等于对应形参类型 |
-| 类型 | 字面量是 `number` 或 `bool`；参数取它声明的类型；四则运算的结果是 `number`；`compare` 的结果是 `bool`，输入按运算符分组；`not` 的操作数与结果都是 `bool`；调用表达式的类型是被调函数的返回类型 |
+| 类型 | 字面量是 `number`、`bool` 或 `string`；参数取它声明的类型；四则运算的结果是 `number`；`concat` 的结果是 `string`，`strlen` 的结果是 `number`；`compare` 的结果是 `bool`，输入按运算符分组；`not` 的操作数与结果都是 `bool`；调用表达式的类型是被调函数的返回类型 |
+| 类型表 | 内置 ID 1–7 不能被覆盖；复合 ID >= 8 且唯一；引用必须存在；`void` 只能作为函数结果 |
 | 分支 | `if` 的 `cond` 必须是 `bool`；`then` 与 `else` 各自在子作用域里检查 |
 | 短路 | `short` 的 `left` 与 `value` 必须是 `bool`；`name` 在当前块里唯一，类型为 `bool`；`right` 只在需要时执行 |
 | 三元式 | `select` 的 `cond` 必须是 `bool`；两条分支必须同类型，且与 `type` 一致；`name` 在当前块里唯一 |
 | 赋值 | `set` 的目标必须由前面的 `mutable` `let` 定义；右值与目标同类型 |
 | 循环 | `while` 的 `cond` 必须是 `bool`；`condPre` 只含表达式准备；`body` 在独立子作用域里检查；`id` 在函数内唯一 |
 | 跳转 | `break` / `continue` 的 `target` 必须等于当前最内层循环的 `id` |
-| 返回值 | 返回 `number` 或 `bool` 的函数必须在每条路径上以带值的 `return` 结束，值类型与声明一致；`void` 函数的 `return` 不带值。`if` 只有两臂都存在且都结束时才算覆盖路径 |
-| 输出 | `print` 只接受 `number` 或 `bool`，`void` 调用不能作为值使用 |
+| 返回值 | 返回 `number`、`bool` 或 `string` 的函数必须在每条路径上以带值的 `return` 结束，值类型与声明一致；`void` 函数的 `return` 不带值。`if` 只有两臂都存在且都结束时才算覆盖路径 |
+| 输出 | `print` 只接受 `number`、`bool` 或 `string`，`void` 调用不能作为值使用 |
 | 丢弃 | `discard` 的表达式必须成立，结果类型不限 |
 
 验证器不导入 tsgo 或 Go 内部对象，也不假设模块来自 JSON：内存里直接构造的结构同样要过这一关。表达式和语句块都必须是树，共享节点和循环节点都被拒绝——循环结构会让任何遍历不终止，共享节点在写回文件时会被复制成两份。
@@ -295,7 +355,7 @@ go test ./compiler/nir -run 'Version|Replay|Debug'
 | --- | --- | --- |
 | `nir.version` | 格式 | `schemaVersion` 不在支持列表内，或没有迁移规则 |
 | `nir.missing` | 格式 | 缺少必填字段 |
-| `nir.bad-value` | 格式 | 字段值不在允许集合内，例如 `result` 为 `string` |
+| `nir.bad-value` | 格式 | 旧格式的类型名不在 `number` / `bool` / `void` 之内 |
 | `nir.bad-op` | 格式 | 未知的 `op` 或运算符 |
 | `nir.unexpected-field` | 格式 | 当前 `op` 不接受该字段 |
 | `nir.bad-bits` | 格式 | 位串不是 16 位十六进制 |
@@ -311,19 +371,24 @@ go test ./compiler/nir -run 'Version|Replay|Debug'
 | `nir.arg-count` | 语义 | 实参个数与形参不符 |
 | `nir.arg-type` | 语义 | 实参类型与形参不符 |
 | `nir.result-type` | 语义 | 返回值与函数声明不符，`void` 函数带返回值，或 `select` 的两条分支类型不同、与 `type` 不一致 |
-| `nir.print-type` | 语义 | `print` 的参数不是 `number` 或 `bool` |
-| `nir.local-type` | 语义 | `let` 的值不是 `number` 或 `bool` |
+| `nir.print-type` | 语义 | `print` 的参数不是 `number`、`bool` 或 `string` |
+| `nir.local-type` | 语义 | `let` 的值不是 `number`、`bool` 或 `string` |
 | `nir.condition-type` | 语义 | `if` 或 `while` 的条件不是 `bool` |
 | `nir.debug-shape` | 语义 | 调试段的函数、作用域 ID、父链、path 或种类不自洽 |
 | `nir.debug-span` | 语义 | 调试段的作用域范围或局部变量位置不合法 |
-| `nir.debug-local` | 语义 | 调试段的局部变量缺少名字、作用域不存在、种类或类型不认识 |
+| `nir.debug-local` | 语义 | 调试段的局部变量缺少名字、作用域不存在、种类或类型 ID 不可用 |
+| `nir.type-id` | 格式 | 复合类型 ID 小于 8、覆盖内置 ID 或重复 |
+| `nir.type-kind` | 格式 | 类型种类不认识，或字段不属于该种类 |
+| `nir.type-shape` | 格式 | 属性缺名、数组缺 `element`、元组为空、联合成员不足、函数缺 `result` |
+| `nir.type-ref` | 格式 | 类型字段引用了不存在的类型 ID |
+| `nir.type-void` | 格式 | `void` 出现在参数、属性、元素、成员、局部变量或 `select` 结果位置 |
 | `nir.unknown-local` | 语义 | 引用了尚未定义的局部值，或局部值不在当前块及祖先块里；也包括 `set` 的目标 |
 | `nir.immutable-local` | 语义 | `set` 的目标不是可变的 `let` |
 | `nir.assign-type` | 语义 | `set` 的右值与目标类型不同 |
 | `nir.loop-target` | 语义 | `break` / `continue` 不在循环里，或目标不是当前最内层循环 |
 | `nir.duplicate-loop` | 语义 | 同一函数里的循环 `id` 重复 |
 | `nir.operand-type` | 语义 | 运算符的操作数类型不符，例如 `not` 收到 `number`、有序比较收到 `bool`、`short` 的操作数不是 `bool` |
-| `nir.missing-return` | 语义 | 返回 `number` 或 `bool` 的函数有路径没有 `return`；循环体里的 `return` 不算覆盖所有路径 |
+| `nir.missing-return` | 语义 | 返回值类型的函数有路径没有 `return`；循环体里的 `return` 不算覆盖所有路径 |
 | `nir.io` | 环境 | 打开、写入或改名失败 |
 
 带源码位置的节点出错时，诊断会附上 `文件:行:列`。
@@ -358,6 +423,17 @@ boolean 的形状同样直接：
 ```
 
 这段输出 `true`。`false` 写在 `value` 里，不是省略字段；`not` 只接受 `bool`，不会把数字的 0 当成 false。
+
+字符串的形状：
+
+```json
+{ "op": "print",
+  "value": { "op": "concat",
+             "left": {"op": "string", "value": "hello, "},
+             "right": {"op": "string", "value": "世界"} } }
+```
+
+这段输出 `hello, 世界`。`strlen` 对同一个结果返回 UTF-16 code unit 数，而不是 UTF-8 字节数或 Unicode 码点数；emoji 占两个 code unit。
 
 校验示例、格式规则与语义规则：
 

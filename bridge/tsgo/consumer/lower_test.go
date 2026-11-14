@@ -315,7 +315,7 @@ func TestLowerEmitsDebugScopes(t *testing.T) {
 			t.Errorf("局部变量 %q = %+v，期望 scope=%d kind=%s mutable=%t", want.name, local, want.scope, want.kind, want.mutable)
 		}
 		if local.Type != nir.TypeNumber {
-			t.Errorf("局部变量 %q 类型应为 number，实际 %s", want.name, local.Type)
+			t.Errorf("局部变量 %q 类型应为 number，实际 id %d", want.name, local.Type)
 		}
 	}
 }

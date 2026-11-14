@@ -8,7 +8,7 @@ package nir
 // 版本，要么有明确的迁移规则。
 func CanRead(version int) bool {
 	switch version {
-	case 1, SchemaVersion:
+	case 1, 2, SchemaVersion:
 		return true
 	}
 	return false
@@ -16,8 +16,9 @@ func CanRead(version int) bool {
 
 // Migrate 把已解码的模块迁移到当前 SchemaVersion。
 //
-// 它必须在格式检查和语义验证之前调用。版本 1 没有 debug 段，迁移只更新版本
-// 号；未来的版本在这里写显式转换，而不是在 check 里加缺省值。
+// 它必须在格式检查和语义验证之前调用。版本 1 没有调试段，迁移时清空调试段；
+// 版本 2 的字符串类型字段由 legacy.go 在解码时换成类型 ID，这里只补齐空类型
+// 表并升级版本号。
 func Migrate(module *Module) error {
 	if module == nil {
 		return badf("nir.missing", "模块为空")
@@ -30,10 +31,19 @@ func Migrate(module *Module) error {
 	}
 	switch module.SchemaVersion {
 	case 1:
-		module.SchemaVersion = SchemaVersion
+		module.SchemaVersion = 2
 		module.Debug = nil
+		fallthrough
+	case 2:
+		module.SchemaVersion = SchemaVersion
+		if module.Types == nil {
+			module.Types = []TypeDef{}
+		}
 		return nil
 	case SchemaVersion:
+		if module.Types == nil {
+			module.Types = []TypeDef{}
+		}
 		return nil
 	default:
 		return badf("nir.version", "schemaVersion %d 还没有迁移到 %d 的规则", module.SchemaVersion, SchemaVersion)

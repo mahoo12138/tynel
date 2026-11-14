@@ -1,6 +1,6 @@
 # 操作支持表
 
-这张表描述 `mvp/06-compiler-mvp`（Tynel Language Preview 0）的最终支持范围。长期方向与三层兼容状态见[语言宪章](../../LANGUAGE.md)和 [TypeScript 兼容性矩阵](../language/compatibility.md)。`支持` 表示有源码夹具和验证记录；`拒绝` 表示能力检查或 TypeScript 会明确报错；`计划` 表示尚未实现，不能靠推测当成可用。完整能力矩阵见[06.07 验收记录](../validation/06-07-mvp.md)，命令入口见[命令行参考](cli.md)。
+这张表描述当前已实现的支持范围，起点是 `mvp/06-compiler-mvp`（Tynel Language Preview 0），并包含 Stage 2 已经落地的字符串最小闭环。长期方向与三层兼容状态见[语言宪章](../../LANGUAGE.md)和 [TypeScript 兼容性矩阵](../language/compatibility.md)。`支持` 表示有源码夹具和验证记录；`拒绝` 表示能力检查或 TypeScript 会明确报错；`计划` 表示尚未实现，不能靠推测当成可用。完整能力矩阵见[06.07 验收记录](../validation/06-07-mvp.md)，命令入口见[命令行参考](cli.md)。
 
 ## 值
 
@@ -9,7 +9,7 @@
 | `number` | 支持 | 双精度浮点，字面量在 NIR 里是 64 位位模式 |
 | `boolean` | 支持 | `true` / `false`，输出拼写与 TypeScript 一致 |
 | `void` | 支持 | 只用于函数结果和 `return` |
-| `string` | 拒绝 | `cap.bad-type` 或 `cap.unsupported-syntax` |
+| `string` | 部分支持 | 字面量、无插值模板、`+` 拼接、`===` / `!==`、`length` 和 `console.log` 可用；索引、`slice`、模板插值和字符串方法仍拒绝。语义见[字符串 RFC](../language/semantics/strings.md) |
 | 对象、数组、元组 | 拒绝 | `cap.unsupported-syntax` |
 | `any`、`unknown` | 拒绝 | `cap.any` |
 | 联合类型 | 拒绝 | 三元式两臂不同、声明为联合都会报 `cap.bad-type` |
@@ -19,7 +19,7 @@
 | 操作 | 状态 | 说明 |
 | --- | --- | --- |
 | 顶层函数声明 | 支持 | 直接调用，按函数名绑定；不能占用固定入口名 `main` |
-| 参数 | 支持 | `number` 或 `boolean` |
+| 参数 | 支持 | `number`、`boolean` 或 `string` |
 | 顶层 `const` | 支持 | 初始化表达式按源码顺序求值 |
 | 块内 `const` | 支持 | 只在当前块可见，同名遮蔽外层 |
 | 块内 `let` | 支持 | 必须带初始值；可读、可遮蔽，可变 `let` 可赋值 |
@@ -42,15 +42,17 @@
 | --- | --- | --- |
 | 数字、布尔字面量 | 支持 | 数字不做十进制重解析 |
 | 标识符 | 支持 | 必须指向本文件里的声明 |
-| `+` `-` `*` `/` | 支持 | 两个 `number` |
+| `+` `-` `*` `/` | 支持 | `+` 接受两个 `number` 或两个 `string`；其余只接受两个 `number` |
 | 一元 `-` `+` | 支持 | 只接受数字字面量并折成位模式；变量取负报 `cap.bad-unary` |
 | `!` | 支持 | 操作数必须是 `boolean` |
 | `<` `<=` `>` `>=` | 支持 | 两个 `number` |
-| `===` `!==` | 支持 | 两侧同为 `number` 或同为 `boolean` |
+| `===` `!==` | 支持 | 两侧同为 `number`、同为 `boolean` 或同为 `string` |
 | `==` `!=` | 拒绝 | `cap.bad-operator`，不做隐式转换 |
 | `&&` `\|\|` | 支持 | 两侧 `boolean`，短路求值，结果绑定到临时值 |
-| `? :` | 支持 | 条件 `boolean`，两臂同为 `number` 或同为 `boolean` |
-| 字符串拼接、模板字符串 | 拒绝 | 字符串不在子集内 |
+| `? :` | 支持 | 条件 `boolean`，两臂同为 `number`、`boolean` 或 `string` |
+| 字符串拼接 | 支持 | 两个 `string` 的 `+`；`"a" + 1` 按 `cap.bad-type` 拒绝 |
+| `s.length` | 支持 | 结果按 UTF-16 code unit 计数 |
+| 模板字符串插值、字符串方法 | 拒绝 | `cap.unsupported-syntax` / `cap.unknown-callee` |
 | 赋值表达式 | 拒绝 | `cap.assignment-value`，赋值只能作为独立语句 |
 
 ## 语句
@@ -65,7 +67,7 @@
 | 简单赋值 `x = value;` | 支持 | 目标必须是可变的 `let`，右值先求值再写入 |
 | 复合赋值、自增自减 | 拒绝 | `cap.compound-assignment` / `cap.inc-dec` |
 | 表达式语句 | 支持 | 调用保留副作用；裸值求值后丢弃 |
-| `console.log(x)` | 支持 | 一个参数，`number` 或 `boolean` |
+| `console.log(x)` | 支持 | 一个参数，`number`、`boolean` 或 `string` |
 | `while` | 支持 | 条件每轮重新检查，循环可能零次执行 |
 | `break`、`continue` | 支持 | 无标签，只作用于最近循环；带标签写法拒绝 |
 | `for` | 计划 | 未排入当前 6 个节点 |

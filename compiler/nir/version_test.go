@@ -15,10 +15,10 @@ func TestCanReadSupportedVersions(t *testing.T) {
 	if !CanRead(SchemaVersion) {
 		t.Fatalf("当前版本 %d 应可读", SchemaVersion)
 	}
-	if !CanRead(1) {
-		t.Fatal("版本 1 应可迁移")
+	if !CanRead(1) || !CanRead(2) {
+		t.Fatal("版本 1 与 2 应可迁移")
 	}
-	for _, version := range []int{-1, 0, 3, 99} {
+	for _, version := range []int{-1, 0, 4, 99} {
 		if CanRead(version) {
 			t.Errorf("版本 %d 不应被接受", version)
 		}
@@ -74,6 +74,21 @@ func TestMigrateRecordsOriginalVersion(t *testing.T) {
 	if old.Debug != nil {
 		t.Fatal("v1 迁移不应保留调试段")
 	}
+	if old.Types == nil || len(old.Types) != 0 {
+		t.Fatalf("v1 迁移应得到空类型表，实际 %#v", old.Types)
+	}
+
+	v2 := module("main", mainWith())
+	v2.SchemaVersion = 2
+	if err := Migrate(v2); err != nil {
+		t.Fatal(err)
+	}
+	if v2.SchemaVersion != SchemaVersion || v2.OriginalSchemaVersion != 2 {
+		t.Fatalf("v2 应升级到 %d 并记录原始版本 2，实际 %d / %d", SchemaVersion, v2.SchemaVersion, v2.OriginalSchemaVersion)
+	}
+	if v2.Types == nil || len(v2.Types) != 0 {
+		t.Fatalf("v2 迁移应得到空类型表，实际 %#v", v2.Types)
+	}
 }
 
 func TestReplayV1Fixture(t *testing.T) {
@@ -122,8 +137,14 @@ func TestReplayV2DebugFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("调试回放文件应能解码：%v", err)
 	}
-	if decoded.SchemaVersion != SchemaVersion || decoded.OriginalSchemaVersion != SchemaVersion {
-		t.Fatalf("调试回放文件应保持当前版本 %d，实际 %d / %d", SchemaVersion, decoded.SchemaVersion, decoded.OriginalSchemaVersion)
+	if decoded.SchemaVersion != SchemaVersion || decoded.OriginalSchemaVersion != 2 {
+		t.Fatalf("调试回放文件应迁移到 %d 并记录原始版本 2，实际 %d / %d", SchemaVersion, decoded.SchemaVersion, decoded.OriginalSchemaVersion)
+	}
+	if decoded.Functions[0].Result != TypeNumber || decoded.Functions[0].Params[0].Type != TypeNumber {
+		t.Fatalf("v2 的字符串类型应映射为 ID：%+v", decoded.Functions[0])
+	}
+	if got := decoded.Debug.Functions[0].Locals[0].Type; got != TypeNumber {
+		t.Fatalf("v2 调试局部类型应映射为 ID %d，实际 %d", TypeNumber, got)
 	}
 	if decoded.Debug == nil || len(decoded.Debug.Functions) != 1 {
 		t.Fatalf("调试回放文件应包含一个函数的调试信息：%+v", decoded.Debug)

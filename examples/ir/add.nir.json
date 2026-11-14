@@ -1,5 +1,6 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
+  "types": [],
   "entry": "main",
   "functions": [
     {
@@ -7,14 +8,14 @@
       "params": [
         {
           "name": "a",
-          "type": "number"
+          "type": 1
         },
         {
           "name": "b",
-          "type": "number"
+          "type": 1
         }
       ],
-      "result": "number",
+      "result": 1,
       "body": [
         {
           "op": "return",
@@ -36,7 +37,7 @@
     {
       "name": "main",
       "params": [],
-      "result": "void",
+      "result": 3,
       "body": [
         {
           "op": "print",

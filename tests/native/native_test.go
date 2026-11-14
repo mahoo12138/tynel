@@ -74,6 +74,8 @@ func TestFixtureOutputs(t *testing.T) {
 		{"加法 40+2", filepath.Join("examples", "ir", "add.nir.json"), "42\n"},
 		{"加法 41+2", filepath.Join("tests", "native", "fixtures", "add-41.nir.json"), "43\n"},
 		{"特殊值与小数", filepath.Join("tests", "native", "fixtures", "specials.nir.json"), "-0\nNaN\n+Inf\n-Inf\n0.30000000000000004\n"},
+		{"字符串最小闭环", filepath.Join("tests", "native", "fixtures", "string.nir.json"), "hello, 世界\n2\ntrue\ntrue\n\n"},
+		{"v2 迁移后构建", filepath.Join("tests", "native", "fixtures", "v2-migrate.nir.json"), "42\n"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

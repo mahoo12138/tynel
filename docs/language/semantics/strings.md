@@ -1,6 +1,6 @@
 # RFC：字符串语义与表示
 
-> 状态：S2.0 已确认，待实现  
+> 状态：S2.0 已确认；最小闭环（字面量、拼接、长度、严格相等、输出）已实现
 > 关联：[Stage 2 计划](../../plans/stage-2.md)、[NIR schema 3](../../design/nir-schema-3-types.md)、[语义索引](README.md)
 
 ## 1. 目标

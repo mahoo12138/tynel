@@ -45,12 +45,12 @@ NIR（`consumer -nir`，省略了位置）：
 
 ```json
 { "name": "add",
-  "params": [{"name":"a","type":"number"}, {"name":"b","type":"number"}],
-  "result": "number",
+  "params": [{"name":"a","type":1}, {"name":"b","type":1}],
+  "result": 1,
   "body": [{"op":"return","value":{"op":"binary","operator":"+",
             "left":{"op":"param","name":"a"},"right":{"op":"param","name":"b"}}}] }
 
-{ "name": "main", "params": [], "result": "void",
+{ "name": "main", "params": [], "result": 3,
   "body": [
     {"op":"let","name":"answer","value":{"op":"call","function":"add","args":[
       {"op":"number","bits":"0x4044000000000000"},
@@ -64,6 +64,9 @@ NIR（`consumer -nir`，省略了位置）：
 - **事实保留名字与绑定**：`a` 是 ID 2 还是 3、`add` 指向哪个声明，都在事实里。NIR 只留函数名和参数名——同一份 NIR 里，`add` 的参数 `a` 与外层没有关系。
 - **NIR 保留求值次数**：模块级 `const answer` 变成 `let`，`console.log` 变成 `print`。事实里的 `Const` 节点只是一个占位，真正的初始值挂在声明上。
 - **两者都保留位模式**：`40` 在事实里就是 `0x4044000000000000`，不是十进制字符串。降低不再解析数字，只搬运位模式。
+- **类型只出现在类型表里**：参数、结果、`select` 和调试局部变量都写类型 ID；当前子集只用到内置 ID 1–4，复合类型留给后续工作包。
+
+字符串节点由降低器直接生成：字面量变成 `string`，两个 `string` 的 `+` 变成 `concat`，`s.length` 变成 `strlen`。字符串与数字混用的 `+`、模板插值和字符串方法在能力检查阶段就被拒绝，不会走到降低。
 
 ## 模块体变成入口函数
 

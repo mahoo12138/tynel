@@ -142,7 +142,7 @@ func TestTypeAssertionIsRejected(t *testing.T) {
 	wantCode(t, check(t, facts), "cap.type-escape")
 }
 
-func TestObjectAndStringAreRejected(t *testing.T) {
+func TestObjectIsRejectedButStringIsAccepted(t *testing.T) {
 	facts := base()
 	body := node("Block", node("ExpressionStatement", node("ObjectLiteralExpression")))
 	facts.Declarations[0].Body = &body
@@ -151,7 +151,9 @@ func TestObjectAndStringAreRejected(t *testing.T) {
 	facts = base()
 	body = node("Block", node("ExpressionStatement", typed("StringLiteral", frontend.KindString)))
 	facts.Declarations[0].Body = &body
-	wantCode(t, check(t, facts), "cap.unsupported-syntax")
+	if findings := check(t, facts); len(findings) != 0 {
+		t.Fatalf("字符串字面量应通过能力检查，实际 %v", codes(findings))
+	}
 }
 
 func TestUnknownCalleeAndEval(t *testing.T) {
@@ -224,19 +226,19 @@ func TestVoidValueIsRejected(t *testing.T) {
 }
 
 func TestDeclaredTypesAreChecked(t *testing.T) {
-	stringType := frontend.Type{Kind: frontend.KindString}
+	objectType := frontend.Type{Kind: frontend.KindObject}
 	facts := base()
-	facts.Declarations[1].Type = &stringType
+	facts.Declarations[1].Type = &objectType
 	wantCode(t, check(t, facts), "cap.bad-type")
 
 	facts = base()
-	facts.Declarations[0].Result = &stringType
+	facts.Declarations[0].Result = &objectType
 	wantCode(t, check(t, facts), "cap.bad-type")
 
 	facts = base()
 	labelInit := typed("NumericLiteral", frontend.KindNumber)
 	facts.Declarations = append(facts.Declarations,
-		frontend.Declaration{ID: 4, Kind: frontend.DeclConst, Name: "label", Start: 30, Length: 5, Type: &stringType, Body: &labelInit},
+		frontend.Declaration{ID: 4, Kind: frontend.DeclConst, Name: "label", Start: 30, Length: 5, Type: &objectType, Body: &labelInit},
 	)
 	wantCode(t, check(t, facts), "cap.bad-type")
 }
@@ -397,11 +399,11 @@ func TestConsoleCall(t *testing.T) {
 	facts.Declarations[0].Body = &body
 	wantCode(t, check(t, facts), "cap.shadowed-console")
 
-	// 参数不是 number。
+	// 参数不是可打印的标量。
 	facts = base()
 	body = node("Block", node("ExpressionStatement", typed("CallExpression", frontend.KindVoid,
 		propertyAccess("log", ident("console", 0)),
-		typed("StringLiteral", frontend.KindString),
+		typed("ObjectLiteralExpression", frontend.KindObject),
 	)))
 	facts.Declarations[0].Body = &body
 	wantCode(t, check(t, facts), "cap.bad-console-call")

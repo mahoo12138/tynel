@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 3,
+  "types": [],
+  "entry": "main",
+  "functions": [
+    {
+      "name": "greet",
+      "params": [
+        {"name": "name", "type": 4}
+      ],
+      "result": 4,
+      "body": [
+        {
+          "op": "return",
+          "value": {
+            "op": "concat",
+            "left": {"op": "string", "value": "hello, "},
+            "right": {"op": "param", "name": "name"}
+          }
+        }
+      ]
+    },
+    {
+      "name": "main",
+      "params": [],
+      "result": 3,
+      "body": [
+        {"op": "discard", "value": {"op": "string", "value": "ignored"}},
+        {
+          "op": "print",
+          "value": {
+            "op": "call",
+            "function": "greet",
+            "args": [{"op": "string", "value": "世界"}]
+          }
+        },
+        {
+          "op": "print",
+          "value": {"op": "strlen", "operand": {"op": "string", "value": "😀"}}
+        },
+        {
+          "op": "print",
+          "value": {
+            "op": "compare",
+            "operator": "===",
+            "left": {"op": "string", "value": "abc"},
+            "right": {"op": "string", "value": "abc"}
+          }
+        },
+        {
+          "op": "print",
+          "value": {
+            "op": "compare",
+            "operator": "!==",
+            "left": {"op": "string", "value": "abc"},
+            "right": {"op": "string", "value": "abd"}
+          }
+        },
+        {
+          "op": "print",
+          "value": {"op": "string", "value": ""}
+        },
+        {"op": "return"}
+      ]
+    }
+  ]
+}

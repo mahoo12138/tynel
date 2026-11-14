@@ -7,6 +7,7 @@
 | `<` `<=` `>` `>=` | `number` | `number` | `boolean` |
 | `===` `!==` | `number` | `number` | `boolean` |
 | `===` `!==` | `boolean` | `boolean` | `boolean` |
+| `===` `!==` | `string` | `string` | `boolean` |
 
 `==` 与 `!=` 不在子集内，能力检查按 `cap.bad-operator` 拒绝。混合类型比较由 TypeScript 先拒绝（TS2367）；能力检查与降低仍会核对两侧类型，防止伪造的事实绕过前端。
 
@@ -54,11 +55,12 @@ NaN < 1   → false
 | `===` | `OEQ` |
 | `!==` | `ONE` |
 
-Go 的浮点比较本身就是 IEEE 754，NaN、负零和无穷的行为与 JavaScript 一致，不需要额外的运行时函数。`boolean` 的 `===` / `!==` 走同样的 `OEQ` / `ONE`，Go 的 `bool` 相等语义就是两个值相同。
+Go 的浮点比较本身就是 IEEE 754，NaN、负零和无穷的行为与 JavaScript 一致，不需要额外的运行时函数。`boolean` 的 `===` / `!==` 走同样的 `OEQ` / `ONE`，Go 的 `bool` 相等语义就是两个值相同。字符串的严格相等不走 Go 的结构体比较，而是调用支持函数逐 UTF-16 code unit 比较内容；`!==` 在结果上取反。
 
 ## 不做什么
 
-- 不做隐式类型转换。`1 === true` 不会变成 `1 === 1`，TypeScript 直接拒绝。
+- 不做隐式类型转换。`1 === true` 不会变成 `1 === 1`，TypeScript 直接拒绝；`"1" === 1` 同样由 TypeScript 拒绝。
+- 字符串没有有序比较。`"a" < "b"` 是合法 TypeScript，但本阶段按 `cap.bad-type` 拒绝。
 - 不做宽松相等。`1 == "1"` 之类的写法不在子集内。
 - 不比较字符串、对象和数组。它们还没有原生表示。
 - 不把比较结果当数字用。`true + 1` 在 TypeScript 里就是错误，NIR 也不会把 `bool` 送进算术。

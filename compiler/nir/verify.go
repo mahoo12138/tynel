@@ -28,7 +28,10 @@ func VerifyWithLimits(module *Module, limits Limits) error {
 		return err
 	}
 
-	c := &checker{funcs: make(map[string]*Function, len(module.Functions))}
+	c := &checker{
+		funcs: make(map[string]*Function, len(module.Functions)),
+		types: typeIndex(module.Types),
+	}
 	for i := range module.Functions {
 		f := &module.Functions[i]
 		if prev, exists := c.funcs[f.Name]; exists {
@@ -45,7 +48,7 @@ func VerifyWithLimits(module *Module, limits Limits) error {
 	if len(entry.Params) != 0 || entry.Result != TypeVoid {
 		return failAt("nir.entry-signature", entry.Pos,
 			"入口函数 %q 必须没有参数且返回 void，实际有 %d 个参数、返回 %s",
-			entry.Name, len(entry.Params), entry.Result)
+			entry.Name, len(entry.Params), typeName(entry.Result))
 	}
 
 	for i := range module.Functions {
@@ -62,6 +65,7 @@ func VerifyWithLimits(module *Module, limits Limits) error {
 // checker 保存一次验证的函数表，供调用解析使用。
 type checker struct {
 	funcs map[string]*Function
+	types map[int]*TypeDef
 	loops []int
 }
 
@@ -69,7 +73,7 @@ type checker struct {
 // 推导，不生成任何东西。
 func (c *checker) function(f *Function) error {
 	c.loops = c.loops[:0]
-	root := &scope{params: make(map[string]string, len(f.Params)), names: make(map[string]string), mutable: make(map[string]bool)}
+	root := &scope{params: make(map[string]int, len(f.Params)), names: make(map[string]int), mutable: make(map[string]bool)}
 	for i := range f.Params {
 		p := &f.Params[i]
 		if _, exists := root.params[p.Name]; exists {
@@ -91,7 +95,7 @@ func (c *checker) function(f *Function) error {
 		if pos == nil {
 			pos = f.Pos
 		}
-		return failAt("nir.missing-return", pos, "函数 %q 返回 %s，但有路径没有 return", f.Name, f.Result)
+		return failAt("nir.missing-return", pos, "函数 %q 返回 %s，但有路径没有 return", f.Name, typeName(f.Result))
 	}
 	return nil
 }
@@ -109,22 +113,22 @@ func (c *checker) stmts(stmts []Stmt, sc *scope, f *Function) error {
 				continue
 			}
 			if s.Value == nil {
-				return failAt("nir.result-type", s.Pos, "函数 %q 返回 %s，return 必须带值", f.Name, f.Result)
+				return failAt("nir.result-type", s.Pos, "函数 %q 返回 %s，return 必须带值", f.Name, typeName(f.Result))
 			}
 			got, err := c.exprType(s.Value, sc)
 			if err != nil {
 				return err
 			}
 			if got != f.Result {
-				return failAt("nir.result-type", s.Pos, "函数 %q 声明返回 %s，实际返回 %s", f.Name, f.Result, got)
+				return failAt("nir.result-type", s.Pos, "函数 %q 声明返回 %s，实际返回 %s", f.Name, typeName(f.Result), typeName(got))
 			}
 		case OpPrint:
 			got, err := c.exprType(s.Value, sc)
 			if err != nil {
 				return err
 			}
-			if got != TypeNumber && got != TypeBool {
-				return failAt("nir.print-type", s.Pos, "print 只接受 number 或 bool，实际为 %s", got)
+			if got != TypeNumber && got != TypeBool && got != TypeString {
+				return failAt("nir.print-type", s.Pos, "print 只接受 number、bool 或 string，实际为 %s", typeName(got))
 			}
 		case OpDiscard:
 			// 结果被丢弃，类型只用来确认表达式本身成立：number、bool 与 void 都行。
@@ -136,8 +140,8 @@ func (c *checker) stmts(stmts []Stmt, sc *scope, f *Function) error {
 			if err != nil {
 				return err
 			}
-			if got != TypeNumber && got != TypeBool {
-				return failAt("nir.local-type", s.Pos, "let %q 的值必须是 number 或 bool，实际为 %s", s.Name, got)
+			if got != TypeNumber && got != TypeBool && got != TypeString {
+				return failAt("nir.local-type", s.Pos, "let %q 的值必须是 number、bool 或 string，实际为 %s", s.Name, typeName(got))
 			}
 			if _, exists := sc.names[s.Name]; exists {
 				return failAt("nir.duplicate-name", s.Pos, "函数 %q 里 %q 重复定义", f.Name, s.Name)
@@ -160,7 +164,7 @@ func (c *checker) stmts(stmts []Stmt, sc *scope, f *Function) error {
 				return failAt("nir.immutable-local", s.Pos, "set 的目标 %q 不是可变的 let", s.Name)
 			}
 			if got != want {
-				return failAt("nir.assign-type", s.Pos, "set 的目标 %q 是 %s，右值是 %s", s.Name, want, got)
+				return failAt("nir.assign-type", s.Pos, "set 的目标 %q 是 %s，右值是 %s", s.Name, typeName(want), typeName(got))
 			}
 		case OpWhile:
 			for _, id := range c.loops {
@@ -177,7 +181,7 @@ func (c *checker) stmts(stmts []Stmt, sc *scope, f *Function) error {
 				return err
 			}
 			if cond != TypeBool {
-				return failAt("nir.condition-type", s.Pos, "while 的条件必须是 bool，实际为 %s", cond)
+				return failAt("nir.condition-type", s.Pos, "while 的条件必须是 bool，实际为 %s", typeName(cond))
 			}
 			c.loops = append(c.loops, s.ID)
 			err = c.stmts(s.Body, sc.child(), f)
@@ -195,7 +199,7 @@ func (c *checker) stmts(stmts []Stmt, sc *scope, f *Function) error {
 				return err
 			}
 			if got != TypeBool {
-				return failAt("nir.condition-type", s.Pos, "if 的条件必须是 bool，实际为 %s", got)
+				return failAt("nir.condition-type", s.Pos, "if 的条件必须是 bool，实际为 %s", typeName(got))
 			}
 			if err := c.stmts(s.Then, sc.child(), f); err != nil {
 				return err
@@ -211,7 +215,7 @@ func (c *checker) stmts(stmts []Stmt, sc *scope, f *Function) error {
 				return err
 			}
 			if left != TypeBool {
-				return failAt("nir.operand-type", s.Pos, "short %q 的左侧必须是 bool，实际为 %s", s.Operator, left)
+				return failAt("nir.operand-type", s.Pos, "short %q 的左侧必须是 bool，实际为 %s", s.Operator, typeName(left))
 			}
 			// 右侧的准备工作只在这里执行，局部值也只在这里可见；value 在同一
 			// 个子作用域里求值，随后赋给外层的 name。
@@ -224,7 +228,7 @@ func (c *checker) stmts(stmts []Stmt, sc *scope, f *Function) error {
 				return err
 			}
 			if value != TypeBool {
-				return failAt("nir.operand-type", s.Pos, "short %q 的右侧必须是 bool，实际为 %s", s.Operator, value)
+				return failAt("nir.operand-type", s.Pos, "short %q 的右侧必须是 bool，实际为 %s", s.Operator, typeName(value))
 			}
 			if _, exists := sc.names[s.Name]; exists {
 				return failAt("nir.duplicate-name", s.Pos, "函数 %q 里 %q 重复定义", f.Name, s.Name)
@@ -239,7 +243,7 @@ func (c *checker) stmts(stmts []Stmt, sc *scope, f *Function) error {
 				return err
 			}
 			if cond != TypeBool {
-				return failAt("nir.condition-type", s.Pos, "select 的条件必须是 bool，实际为 %s", cond)
+				return failAt("nir.condition-type", s.Pos, "select 的条件必须是 bool，实际为 %s", typeName(cond))
 			}
 			thenScope := sc.child()
 			if err := c.stmts(s.Then, thenScope, f); err != nil {
@@ -258,13 +262,13 @@ func (c *checker) stmts(stmts []Stmt, sc *scope, f *Function) error {
 				return err
 			}
 			if thenType != elseType {
-				return failAt("nir.result-type", s.Pos, "select 的两条分支类型不同：%s 与 %s", thenType, elseType)
+				return failAt("nir.result-type", s.Pos, "select 的两条分支类型不同：%s 与 %s", typeName(thenType), typeName(elseType))
 			}
 			if thenType != s.Type {
-				return failAt("nir.result-type", s.Pos, "select 声明结果 %s，两条分支是 %s", s.Type, thenType)
+				return failAt("nir.result-type", s.Pos, "select 声明结果 %s，两条分支是 %s", typeName(s.Type), typeName(thenType))
 			}
-			if thenType != TypeNumber && thenType != TypeBool {
-				return failAt("nir.result-type", s.Pos, "select 的结果不能是 %s", thenType)
+			if thenType != TypeNumber && thenType != TypeBool && thenType != TypeString {
+				return failAt("nir.result-type", s.Pos, "select 的结果不能是 %s", typeName(thenType))
 			}
 			if _, exists := sc.names[s.Name]; exists {
 				return failAt("nir.duplicate-name", s.Pos, "函数 %q 里 %q 重复定义", f.Name, s.Name)
@@ -282,25 +286,25 @@ func (c *checker) stmts(stmts []Stmt, sc *scope, f *Function) error {
 // 的局部值。子块可以遮蔽父块，但同名声明不能出现在同一个块里。
 type scope struct {
 	parent  *scope
-	params  map[string]string
-	names   map[string]string
+	params  map[string]int
+	names   map[string]int
 	mutable map[string]bool
 }
 
 func (s *scope) child() *scope {
-	return &scope{parent: s, names: make(map[string]string), mutable: make(map[string]bool)}
+	return &scope{parent: s, names: make(map[string]int), mutable: make(map[string]bool)}
 }
 
-func (s *scope) lookupLocal(name string) (string, bool) {
+func (s *scope) lookupLocal(name string) (int, bool) {
 	for cur := s; cur != nil; cur = cur.parent {
 		if t, ok := cur.names[name]; ok {
 			return t, true
 		}
 	}
-	return "", false
+	return 0, false
 }
 
-func (s *scope) lookupParam(name string) (string, bool) {
+func (s *scope) lookupParam(name string) (int, bool) {
 	for cur := s; cur != nil; cur = cur.parent {
 		if cur.params == nil {
 			continue
@@ -309,7 +313,7 @@ func (s *scope) lookupParam(name string) (string, bool) {
 			return t, true
 		}
 	}
-	return "", false
+	return 0, false
 }
 
 func (s *scope) lookupMutable(name string) bool {
@@ -322,110 +326,141 @@ func (s *scope) lookupMutable(name string) bool {
 }
 
 // exprType 推导表达式类型。返回 TypeNumber、TypeBool 或 TypeVoid（void 调用）。
-func (c *checker) exprType(e *Expr, sc *scope) (string, error) {
+func (c *checker) exprType(e *Expr, sc *scope) (int, error) {
 	if e == nil {
-		return "", badf("nir.missing", "表达式为空")
+		return 0, badf("nir.missing", "表达式为空")
 	}
 	switch e.Op {
 	case OpNumber:
 		return TypeNumber, nil
 	case OpBool:
-		if e.Value == nil {
-			return "", badf("nir.missing", "bool 缺少 value")
+		if _, ok := e.BoolValue(); !ok {
+			return 0, badf("nir.missing", "bool 缺少布尔 value")
 		}
 		return TypeBool, nil
+	case OpString:
+		if _, ok := e.StringValue(); !ok {
+			return 0, badf("nir.missing", "string 缺少字符串 value")
+		}
+		return TypeString, nil
 	case OpParam:
 		t, ok := sc.lookupParam(e.Name)
 		if !ok {
-			return "", failAt("nir.unknown-param", e.Pos, "引用了不存在的参数 %q", e.Name)
+			return 0, failAt("nir.unknown-param", e.Pos, "引用了不存在的参数 %q", e.Name)
 		}
 		return t, nil
 	case OpLocal:
 		t, ok := sc.lookupLocal(e.Name)
 		if !ok {
-			return "", failAt("nir.unknown-local", e.Pos, "引用了尚未定义的局部值 %q", e.Name)
+			return 0, failAt("nir.unknown-local", e.Pos, "引用了尚未定义的局部值 %q", e.Name)
 		}
 		return t, nil
 	case OpNot:
 		if e.Operand == nil {
-			return "", failAt("nir.missing", e.Pos, "not 缺少操作数")
+			return 0, failAt("nir.missing", e.Pos, "not 缺少操作数")
 		}
 		got, err := c.exprType(e.Operand, sc)
 		if err != nil {
-			return "", err
+			return 0, err
 		}
 		if got != TypeBool {
-			return "", failAt("nir.operand-type", e.Operand.Pos, "not 的操作数必须是 bool，实际为 %s", got)
+			return 0, failAt("nir.operand-type", e.Operand.Pos, "not 的操作数必须是 bool，实际为 %s", typeName(got))
 		}
 		return TypeBool, nil
 	case OpCall:
 		target, ok := c.funcs[e.Function]
 		if !ok {
-			return "", failAt("nir.unknown-function", e.Pos, "调用了不存在的函数 %q", e.Function)
+			return 0, failAt("nir.unknown-function", e.Pos, "调用了不存在的函数 %q", e.Function)
 		}
 		if len(e.Args) != len(target.Params) {
-			return "", failAt("nir.arg-count", e.Pos,
+			return 0, failAt("nir.arg-count", e.Pos,
 				"调用 %q 需要 %d 个实参，实际 %d 个", e.Function, len(target.Params), len(e.Args))
 		}
 		for i := range e.Args {
 			got, err := c.exprType(&e.Args[i], sc)
 			if err != nil {
-				return "", err
+				return 0, err
 			}
 			if want := target.Params[i].Type; got != want {
-				return "", failAt("nir.arg-type", argPos(&e.Args[i], e.Pos),
-					"调用 %q 的第 %d 个实参需要 %s，实际为 %s", e.Function, i+1, want, got)
+				return 0, failAt("nir.arg-type", argPos(&e.Args[i], e.Pos),
+					"调用 %q 的第 %d 个实参需要 %s，实际为 %s", e.Function, i+1, typeName(want), typeName(got))
 			}
 		}
 		return target.Result, nil
+	case OpConcat:
+		if e.Left == nil || e.Right == nil {
+			return 0, failAt("nir.missing", e.Pos, "concat 缺少左或右操作数")
+		}
+		for _, side := range []*Expr{e.Left, e.Right} {
+			got, err := c.exprType(side, sc)
+			if err != nil {
+				return 0, err
+			}
+			if got != TypeString {
+				return 0, failAt("nir.operand-type", side.Pos, "concat 的操作数必须是 string，实际为 %s", typeName(got))
+			}
+		}
+		return TypeString, nil
+	case OpStrlen:
+		if e.Operand == nil {
+			return 0, failAt("nir.missing", e.Pos, "strlen 缺少操作数")
+		}
+		got, err := c.exprType(e.Operand, sc)
+		if err != nil {
+			return 0, err
+		}
+		if got != TypeString {
+			return 0, failAt("nir.operand-type", e.Operand.Pos, "strlen 的操作数必须是 string，实际为 %s", typeName(got))
+		}
+		return TypeNumber, nil
 	case OpBinary:
 		for _, side := range []struct {
 			name string
 			expr *Expr
 		}{{"左", e.Left}, {"右", e.Right}} {
 			if side.expr == nil {
-				return "", failAt("nir.missing", e.Pos, "binary 缺少%s操作数", side.name)
+				return 0, failAt("nir.missing", e.Pos, "binary 缺少%s操作数", side.name)
 			}
 			got, err := c.exprType(side.expr, sc)
 			if err != nil {
-				return "", err
+				return 0, err
 			}
 			if got != TypeNumber {
-				return "", failAt("nir.operand-type", side.expr.Pos,
-					"运算符 %q 的%s操作数必须是 number，实际为 %s", e.Operator, side.name, got)
+				return 0, failAt("nir.operand-type", side.expr.Pos,
+					"运算符 %q 的%s操作数必须是 number，实际为 %s", e.Operator, side.name, typeName(got))
 			}
 		}
 		return TypeNumber, nil
 	case OpCompare:
 		if e.Left == nil || e.Right == nil {
-			return "", failAt("nir.missing", e.Pos, "compare 缺少左或右操作数")
+			return 0, failAt("nir.missing", e.Pos, "compare 缺少左或右操作数")
 		}
 		left, err := c.exprType(e.Left, sc)
 		if err != nil {
-			return "", err
+			return 0, err
 		}
 		right, err := c.exprType(e.Right, sc)
 		if err != nil {
-			return "", err
+			return 0, err
 		}
 		if IsOrderingOperator(e.Operator) {
 			if left != TypeNumber || right != TypeNumber {
-				return "", failAt("nir.operand-type", e.Pos,
-					"有序比较 %q 需要两个 number，实际为 %s 与 %s", e.Operator, left, right)
+				return 0, failAt("nir.operand-type", e.Pos,
+					"有序比较 %q 需要两个 number，实际为 %s 与 %s", e.Operator, typeName(left), typeName(right))
 			}
 			return TypeBool, nil
 		}
 		if left != right {
-			return "", failAt("nir.operand-type", e.Pos,
-				"严格相等 %q 需要两侧同类型，实际为 %s 与 %s", e.Operator, left, right)
+			return 0, failAt("nir.operand-type", e.Pos,
+				"严格相等 %q 需要两侧同类型，实际为 %s 与 %s", e.Operator, typeName(left), typeName(right))
 		}
-		if left != TypeNumber && left != TypeBool {
-			return "", failAt("nir.operand-type", e.Pos,
-				"严格相等 %q 只接受 number 或 bool，实际为 %s", e.Operator, left)
+		if left != TypeNumber && left != TypeBool && left != TypeString {
+			return 0, failAt("nir.operand-type", e.Pos,
+				"严格相等 %q 只接受 number、bool 或 string，实际为 %s", e.Operator, typeName(left))
 		}
 		return TypeBool, nil
 	default:
-		return "", failAt("nir.bad-op", e.Pos, "未知表达式 op %q", e.Op)
+		return 0, failAt("nir.bad-op", e.Pos, "未知表达式 op %q", e.Op)
 	}
 }
 

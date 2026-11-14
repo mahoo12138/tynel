@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
@@ -66,23 +67,46 @@ func DecodeBytes(data []byte, limits Limits) (*Module, error) {
 	if len(data) > limits.MaxBytes {
 		return nil, badf("nir.budget", "输入为 %d 字节，超过预算 %d", len(data), limits.MaxBytes)
 	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	var module Module
-	if err := dec.Decode(&module); err != nil {
+	// 先只读版本字段，再按版本选择解码结构。版本 1/2 的类型字段是字符串，
+	// 不能直接解进当前 Module；未知版本在读完整棵树之前就拒绝。
+	var header struct {
+		SchemaVersion int `json:"schemaVersion"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
 		return nil, malformed(err)
 	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return nil, badf("nir.trailing", "JSON 文档结束后还有多余内容")
+	if !CanRead(header.SchemaVersion) {
+		return nil, badf("nir.version", "schemaVersion 为 %d，本版本只接受 1..%d", header.SchemaVersion, SchemaVersion)
 	}
-	// 版本迁移先于格式检查：check 只处理当前版本，旧版本在这里升级或被拒绝。
-	if err := Migrate(&module); err != nil {
+
+	var module *Module
+	if header.SchemaVersion == SchemaVersion {
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		var current Module
+		if err := dec.Decode(&current); err != nil {
+			return nil, malformed(err)
+		}
+		if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+			return nil, badf("nir.trailing", "JSON 文档结束后还有多余内容")
+		}
+		module = &current
+	} else {
+		legacy, err := decodeLegacy(data, header.SchemaVersion)
+		if err != nil {
+			return nil, err
+		}
+		module = legacy
+	}
+
+	// 版本迁移先于格式检查：check 只处理当前版本，旧版本已经在这里升级。
+	if err := Migrate(module); err != nil {
 		return nil, err
 	}
 	if err := module.check(limits); err != nil {
 		return nil, err
 	}
-	return &module, nil
+	return module, nil
 }
 
 // Encode 把模块写成 JSON。它先完整编码再一次性写出，编码失败时不写任何字节。
@@ -106,7 +130,12 @@ func EncodeBytes(module *Module) ([]byte, error) {
 	if err := module.check(DefaultLimits()); err != nil {
 		return nil, err
 	}
-	data, err := json.MarshalIndent(module, "", "  ")
+	// 编码器按 ID 升序输出类型表，且总是写出 types 字段。复制一份再排序，
+	// 不修改调用方持有的模块。
+	out := *module
+	out.Types = append([]TypeDef{}, module.Types...)
+	sort.SliceStable(out.Types, func(i, j int) bool { return out.Types[i].ID < out.Types[j].ID })
+	data, err := json.MarshalIndent(&out, "", "  ")
 	if err != nil {
 		return nil, iof("序列化 NIR 失败：%v", err)
 	}
@@ -175,14 +204,18 @@ func (m *Module) check(limits Limits) error {
 	}
 
 	nodes := 0
+	types, err := checkTypes(m.Types, limits, &nodes)
+	if err != nil {
+		return err
+	}
 	for i := range m.Functions {
 		f := &m.Functions[i]
 		path := fmt.Sprintf("functions[%d]", i)
 		if f.Name == "" {
 			return badf("nir.missing", "%s 缺少 name", path)
 		}
-		if f.Result != TypeNumber && f.Result != TypeBool && f.Result != TypeVoid {
-			return badf("nir.bad-value", "%s.result 为 %q，只接受 number、bool 或 void", path, f.Result)
+		if !validTypeRef(types, f.Result, true) {
+			return badf("nir.type-ref", "%s.result 引用了不存在的类型 id %d", path, f.Result)
 		}
 		nodes++
 		for j := range f.Params {
@@ -191,12 +224,15 @@ func (m *Module) check(limits Limits) error {
 			if p.Name == "" {
 				return badf("nir.missing", "%s 缺少 name", ppath)
 			}
-			if p.Type != TypeNumber && p.Type != TypeBool {
-				return badf("nir.bad-value", "%s.type 为 %q，只接受 number 或 bool", ppath, p.Type)
+			if p.Type == TypeVoid {
+				return badf("nir.type-void", "%s.type 是 void；void 只能作为函数结果", ppath)
+			}
+			if !validTypeRef(types, p.Type, false) {
+				return badf("nir.type-ref", "%s.type 引用了不存在的类型 id %d", ppath, p.Type)
 			}
 			nodes++
 		}
-		if err := checkStmts(f.Body, path+".body", 1, &nodes, limits, make(map[*Stmt]bool), false); err != nil {
+		if err := checkStmts(f.Body, path+".body", 1, &nodes, limits, make(map[*Stmt]bool), false, types); err != nil {
 			return err
 		}
 	}
@@ -208,7 +244,7 @@ func (m *Module) check(limits Limits) error {
 
 // checkStmts 递归检查一个语句块。语句同样必须是树：共享或循环的块会让任何
 // 遍历都不终止，所以在进入之前先按指针去重。
-func checkStmts(stmts []Stmt, rootPath string, depth int, nodes *int, limits Limits, seen map[*Stmt]bool, prelude bool) error {
+func checkStmts(stmts []Stmt, rootPath string, depth int, nodes *int, limits Limits, seen map[*Stmt]bool, prelude bool, types map[int]*TypeDef) error {
 	if depth > limits.MaxDepth {
 		return badf("nir.budget", "%s 的语句块嵌套超过预算 %d", rootPath, limits.MaxDepth)
 	}
@@ -237,7 +273,7 @@ func checkStmts(stmts []Stmt, rootPath string, depth int, nodes *int, limits Lim
 		}
 		switch s.Op {
 		case OpReturn, OpPrint, OpLet, OpDiscard:
-			if s.Cond != nil || len(s.Then) > 0 || len(s.Else) > 0 || s.ThenValue != nil || s.ElseValue != nil || s.Type != "" {
+			if s.Cond != nil || len(s.Then) > 0 || len(s.Else) > 0 || s.ThenValue != nil || s.ElseValue != nil || s.Type != 0 {
 				return badf("nir.unexpected-field", "%s（op=%s）不接受字段 cond、then、else、thenValue、elseValue 或 type", spath, s.Op)
 			}
 			if s.Operator != "" || s.Left != nil || len(s.Right) > 0 {
@@ -278,7 +314,7 @@ func checkStmts(stmts []Stmt, rootPath string, depth int, nodes *int, limits Lim
 			if s.ThenValue != nil || s.ElseValue != nil {
 				return badf("nir.unexpected-field", "%s（op=if）不接受字段 thenValue 或 elseValue", spath)
 			}
-			if s.Type != "" {
+			if s.Type != 0 {
 				return badf("nir.unexpected-field", "%s（op=if）不接受字段 type", spath)
 			}
 			if s.Operator != "" || s.Left != nil || len(s.Right) > 0 {
@@ -287,11 +323,11 @@ func checkStmts(stmts []Stmt, rootPath string, depth int, nodes *int, limits Lim
 			if err := checkExpr(s.Cond, spath+".cond", 1, nodes, limits); err != nil {
 				return err
 			}
-			if err := checkStmts(s.Then, spath+".then", depth+1, nodes, limits, seen, false); err != nil {
+			if err := checkStmts(s.Then, spath+".then", depth+1, nodes, limits, seen, false, types); err != nil {
 				return err
 			}
 			if len(s.Else) > 0 {
-				if err := checkStmts(s.Else, spath+".else", depth+1, nodes, limits, seen, false); err != nil {
+				if err := checkStmts(s.Else, spath+".else", depth+1, nodes, limits, seen, false, types); err != nil {
 					return err
 				}
 			}
@@ -314,7 +350,7 @@ func checkStmts(stmts []Stmt, rootPath string, depth int, nodes *int, limits Lim
 			if s.ThenValue != nil || s.ElseValue != nil {
 				return badf("nir.unexpected-field", "%s（op=short）不接受字段 thenValue 或 elseValue", spath)
 			}
-			if s.Type != "" {
+			if s.Type != 0 {
 				return badf("nir.unexpected-field", "%s（op=short）不接受字段 type", spath)
 			}
 			if err := checkExpr(s.Left, spath+".left", 1, nodes, limits); err != nil {
@@ -323,7 +359,7 @@ func checkStmts(stmts []Stmt, rootPath string, depth int, nodes *int, limits Lim
 			if err := checkExpr(s.Value, spath+".value", 1, nodes, limits); err != nil {
 				return err
 			}
-			if err := checkStmts(s.Right, spath+".right", depth+1, nodes, limits, seen, true); err != nil {
+			if err := checkStmts(s.Right, spath+".right", depth+1, nodes, limits, seen, true, types); err != nil {
 				return err
 			}
 		case OpSelect:
@@ -339,8 +375,11 @@ func checkStmts(stmts []Stmt, rootPath string, depth int, nodes *int, limits Lim
 			if s.ElseValue == nil {
 				return badf("nir.missing", "%s 的 select 缺少 elseValue", spath)
 			}
-			if s.Type != TypeNumber && s.Type != TypeBool {
-				return badf("nir.result-type", "%s 的 select.type 为 %q，只接受 number 或 bool", spath, s.Type)
+			if s.Type == TypeVoid {
+				return badf("nir.type-void", "%s 的 select.type 是 void；结果必须是值类型", spath)
+			}
+			if !validTypeRef(types, s.Type, false) {
+				return badf("nir.type-ref", "%s 的 select.type 引用了不存在的类型 id %d", spath, s.Type)
 			}
 			if s.Value != nil || s.Operator != "" || s.Left != nil || len(s.Right) > 0 {
 				return badf("nir.unexpected-field", "%s（op=select）不接受字段 value、operator、left 或 right", spath)
@@ -354,10 +393,10 @@ func checkStmts(stmts []Stmt, rootPath string, depth int, nodes *int, limits Lim
 			if err := checkExpr(s.ElseValue, spath+".elseValue", 1, nodes, limits); err != nil {
 				return err
 			}
-			if err := checkStmts(s.Then, spath+".then", depth+1, nodes, limits, seen, true); err != nil {
+			if err := checkStmts(s.Then, spath+".then", depth+1, nodes, limits, seen, true, types); err != nil {
 				return err
 			}
-			if err := checkStmts(s.Else, spath+".else", depth+1, nodes, limits, seen, true); err != nil {
+			if err := checkStmts(s.Else, spath+".else", depth+1, nodes, limits, seen, true, types); err != nil {
 				return err
 			}
 		case OpSet:
@@ -370,7 +409,7 @@ func checkStmts(stmts []Stmt, rootPath string, depth int, nodes *int, limits Lim
 			if s.Cond != nil || len(s.Then) > 0 || len(s.Else) > 0 || s.ThenValue != nil || s.ElseValue != nil {
 				return badf("nir.unexpected-field", "%s（op=set）不接受 cond、then、else、thenValue 或 elseValue", spath)
 			}
-			if s.Operator != "" || s.Left != nil || len(s.Right) > 0 || s.Type != "" {
+			if s.Operator != "" || s.Left != nil || len(s.Right) > 0 || s.Type != 0 {
 				return badf("nir.unexpected-field", "%s（op=set）不接受 operator、left、right 或 type", spath)
 			}
 			if err := checkExpr(s.Value, spath+".value", 1, nodes, limits); err != nil {
@@ -384,17 +423,17 @@ func checkStmts(stmts []Stmt, rootPath string, depth int, nodes *int, limits Lim
 				return badf("nir.missing", "%s 的 while 缺少正整数 id", spath)
 			}
 			if s.Name != "" || s.Value != nil || len(s.Then) > 0 || len(s.Else) > 0 ||
-				s.ThenValue != nil || s.ElseValue != nil || s.Type != "" || s.Mutable ||
+				s.ThenValue != nil || s.ElseValue != nil || s.Type != 0 || s.Mutable ||
 				s.Operator != "" || s.Left != nil || len(s.Right) > 0 || s.Target != 0 {
 				return badf("nir.unexpected-field", "%s（op=while）只接受 condPre、cond、body 与 id", spath)
 			}
 			if err := checkExpr(s.Cond, spath+".cond", 1, nodes, limits); err != nil {
 				return err
 			}
-			if err := checkStmts(s.CondPre, spath+".condPre", depth+1, nodes, limits, seen, true); err != nil {
+			if err := checkStmts(s.CondPre, spath+".condPre", depth+1, nodes, limits, seen, true, types); err != nil {
 				return err
 			}
-			if err := checkStmts(s.Body, spath+".body", depth+1, nodes, limits, seen, false); err != nil {
+			if err := checkStmts(s.Body, spath+".body", depth+1, nodes, limits, seen, false, types); err != nil {
 				return err
 			}
 		case OpBreak, OpContinue:
@@ -403,7 +442,7 @@ func checkStmts(stmts []Stmt, rootPath string, depth int, nodes *int, limits Lim
 			}
 			if s.Name != "" || s.Value != nil || s.Cond != nil || len(s.Then) > 0 || len(s.Else) > 0 ||
 				s.Operator != "" || s.Left != nil || len(s.Right) > 0 || s.ThenValue != nil || s.ElseValue != nil ||
-				s.Type != "" || s.Mutable || len(s.CondPre) > 0 || len(s.Body) > 0 || s.ID != 0 {
+				s.Type != 0 || s.Mutable || len(s.CondPre) > 0 || len(s.Body) > 0 || s.ID != 0 {
 				return badf("nir.unexpected-field", "%s（op=%s）只接受 target", spath, s.Op)
 			}
 		case "":
@@ -454,10 +493,36 @@ func checkExpr(root *Expr, rootPath string, depth int, nodes *int, limits Limits
 			if err := onlyFields(e, it.path, "value"); err != nil {
 				return err
 			}
-			if e.Value == nil {
-				// false 是合法值，不能靠「零值」判断缺失；这里看的是指针。
-				return badf("nir.missing", "%s 的 bool 缺少 value", it.path)
+			if _, ok := e.BoolValue(); !ok {
+				// false 是合法值，不能靠「零值」判断缺失；这里看字段是否存在。
+				return badf("nir.missing", "%s 的 bool 缺少布尔 value", it.path)
 			}
+		case OpString:
+			if err := onlyFields(e, it.path, "value"); err != nil {
+				return err
+			}
+			if _, ok := e.StringValue(); !ok {
+				return badf("nir.missing", "%s 的 string 缺少字符串 value", it.path)
+			}
+		case OpConcat:
+			if err := onlyFields(e, it.path, "left,right"); err != nil {
+				return err
+			}
+			if e.Left == nil || e.Right == nil {
+				return badf("nir.missing", "%s 的 concat 缺少 left 或 right", it.path)
+			}
+			stack = append(stack,
+				item{e.Left, it.path + ".left", it.depth + 1},
+				item{e.Right, it.path + ".right", it.depth + 1},
+			)
+		case OpStrlen:
+			if err := onlyFields(e, it.path, "operand"); err != nil {
+				return err
+			}
+			if e.Operand == nil {
+				return badf("nir.missing", "%s 的 strlen 缺少 operand", it.path)
+			}
+			stack = append(stack, item{e.Operand, it.path + ".operand", it.depth + 1})
 		case OpNot:
 			if err := onlyFields(e, it.path, "operand"); err != nil {
 				return err
@@ -514,7 +579,7 @@ func checkExpr(root *Expr, rootPath string, depth int, nodes *int, limits Limits
 		case "":
 			return badf("nir.missing", "%s 缺少 op", it.path)
 		default:
-			return badf("nir.bad-op", "%s.op 为 %q，只接受 number、bool、param、local、call、binary、compare 或 not", it.path, e.Op)
+			return badf("nir.bad-op", "%s.op 为 %q，只接受 number、bool、string、param、local、call、binary、concat、strlen、compare 或 not", it.path, e.Op)
 		}
 	}
 	return nil
@@ -528,7 +593,7 @@ func onlyFields(e *Expr, path, allowed string) error {
 	}
 	present := map[string]bool{
 		"bits":     e.Bits != "",
-		"value":    e.Value != nil,
+		"value":    len(e.Value) > 0,
 		"name":     e.Name != "",
 		"function": e.Function != "",
 		"args":     len(e.Args) > 0,
