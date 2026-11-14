@@ -4,6 +4,8 @@ Tynel 是一个学习型 TypeScript-to-native 编译器项目。目标是复用 
 
 MVP 的交付物是编译器本身：通过 `tynel build input.ts -o out/program` 将约定子集的 TypeScript 编译为 `darwin/arm64` 原生二进制，并提供类型与能力检查、错误诊断和可重复构建。应用服务不是验收条件。
 
+当前里程碑标记为 Tynel Language Preview 0。长期方向、三层兼容性和决策流程由[语言宪章](LANGUAGE.md)规定，逐项能力状态见 [TypeScript 兼容性矩阵](docs/language/compatibility.md)，已定义与未定义语义见[语义索引](docs/language/semantics/README.md)，阶段计划见[长期路线图](ROADMAP.md)。Preview 0 不表示完整 TypeScript 或 JavaScript 兼容。
+
 节点 01 已完成（`mvp/01-native-ir`）：`tools/toolchain` 能准备隔离工具链，`compiler/nir` 定义并验证最小中间表示，`bridge/go` 把手写 NIR 经修改版 Go 编译器编成原生程序，`tynel build-ir` 负责输入快照、临时输出后发布和构建记录，`tests/native` 用原生回归核对数值与反汇编——`add(40, 2)` 输出 42，改成 41 得到 43。第一篇笔记见[一份加法描述怎样成为二进制](docs/notes/01-native-ir.md)。
 
 02.01 已完成：`tools/toolchain` 现在也按锁文件解压 TypeScript 前端源码并校验身份，`bridge/tsgo/_adapter` 在上游模块树内提供稳定的检查接口，外部宿主 `bridge/tsgo/consumer` 能检查单个 `.ts` 文件并拿到带错误码和字节位置的诊断。

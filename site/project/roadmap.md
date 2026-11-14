@@ -4,6 +4,8 @@
 
 ## 已验证（MVP，2026-11-09）
 
+当前里程碑为 Tynel Language Preview 0。长期方向与三层兼容性见[语言宪章](https://github.com/Mahoo12138/tynel/blob/main/LANGUAGE.md)、[长期路线图](https://github.com/Mahoo12138/tynel/blob/main/ROADMAP.md)和[兼容性矩阵](https://github.com/Mahoo12138/tynel/blob/main/docs/language/compatibility.md)。
+
 - `number` / `boolean` / `void` 子集：函数、递归、分支、短路、三元式、`while`、赋值、多文件模块。
 - 命令契约：`version` / `check` / `build` / `run`，统一诊断与退出状态。
 - 构建事务：失败不覆盖旧产物，同输出并发拒绝，中断可恢复。

@@ -1,6 +1,6 @@
 # Tynel 编译器 MVP 范围契约
 
-状态：MVP 已实现并通过验收。开发与验收记录见 [PLAN.md](PLAN.md) 和 `docs/validation/`；本文件继续作为首版编译器的范围契约，归档代码和旧测试仅供参考。
+状态：MVP 已实现并通过验收，标记为 Tynel Language Preview 0。开发与验收记录见 [PLAN.md](PLAN.md) 和 `docs/validation/`；长期方向见 [LANGUAGE.md](LANGUAGE.md) 与 [ROADMAP.md](ROADMAP.md)。本文件继续作为首版编译器的范围契约，归档代码和旧测试仅供参考。
 
 ## 1. 交付目标
 

@@ -1,6 +1,6 @@
 # 操作支持表
 
-这张表描述 `mvp/06-compiler-mvp` 的最终支持范围。`支持` 表示有源码夹具和验证记录；`拒绝` 表示能力检查或 TypeScript 会明确报错；`计划` 表示尚未实现，不能靠推测当成可用。完整能力矩阵见[06.07 验收记录](../validation/06-07-mvp.md)，命令入口见[命令行参考](cli.md)。
+这张表描述 `mvp/06-compiler-mvp`（Tynel Language Preview 0）的最终支持范围。长期方向与三层兼容状态见[语言宪章](../../LANGUAGE.md)和 [TypeScript 兼容性矩阵](../language/compatibility.md)。`支持` 表示有源码夹具和验证记录；`拒绝` 表示能力检查或 TypeScript 会明确报错；`计划` 表示尚未实现，不能靠推测当成可用。完整能力矩阵见[06.07 验收记录](../validation/06-07-mvp.md)，命令入口见[命令行参考](cli.md)。
 
 ## 值
 
