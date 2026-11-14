@@ -75,6 +75,10 @@ func DecodeBytes(data []byte, limits Limits) (*Module, error) {
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return nil, badf("nir.trailing", "JSON 文档结束后还有多余内容")
 	}
+	// 版本迁移先于格式检查：check 只处理当前版本，旧版本在这里升级或被拒绝。
+	if err := Migrate(&module); err != nil {
+		return nil, err
+	}
 	if err := module.check(limits); err != nil {
 		return nil, err
 	}

@@ -147,9 +147,10 @@ func TestIdentityIsStableAndContentAddressed(t *testing.T) {
 		t.Error("目标配置变化没有改变产物输入身份")
 	}
 
-	// NIR 字节变化：即使源码列表不变，产物输入身份和 build tag 也必须换，
-	// 否则 Go 缓存可能把旧对象当成这次输入。
-	differentNIR := append(append([]byte{}, data...), '\n')
+	// NIR 语义变化：即使源码列表不变，产物输入身份和 build tag 也必须换，
+	// 否则 Go 缓存可能把旧对象当成这次输入。格式化或尾随空白会被规范化，
+	// 所以这里改一个实际数值。
+	differentNIR := []byte(strings.Replace(string(data), "0x4044000000000000", "0x4045000000000000", 1))
 	fifth, err := Run(identityOptions(root, output, changedType, source, differentNIR), runner)
 	if err != nil {
 		t.Fatalf("NIR 变化后构建失败：%v", err)

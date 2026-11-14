@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 2,
+  "entry": "main",
+  "functions": [
+    {
+      "name": "add",
+      "params": [
+        {"name": "a", "type": "number", "pos": {"file": "replay.ts", "line": 1, "column": 15}},
+        {"name": "b", "type": "number", "pos": {"file": "replay.ts", "line": 1, "column": 28}}
+      ],
+      "result": "number",
+      "body": [
+        {
+          "op": "return",
+          "value": {
+            "op": "binary",
+            "operator": "+",
+            "left": {"op": "param", "name": "a", "pos": {"file": "replay.ts", "line": 2, "column": 10}},
+            "right": {"op": "param", "name": "b", "pos": {"file": "replay.ts", "line": 2, "column": 14}},
+            "pos": {"file": "replay.ts", "line": 2, "column": 10}
+          },
+          "pos": {"file": "replay.ts", "line": 2, "column": 3}
+        }
+      ],
+      "pos": {"file": "replay.ts", "line": 1, "column": 1}
+    },
+    {
+      "name": "main",
+      "params": [],
+      "result": "void",
+      "body": [
+        {
+          "op": "print",
+          "value": {
+            "op": "call",
+            "function": "add",
+            "args": [
+              {"op": "number", "bits": "0x4044000000000000", "pos": {"file": "replay.ts", "line": 5, "column": 14}},
+              {"op": "number", "bits": "0x4000000000000000", "pos": {"file": "replay.ts", "line": 5, "column": 17}}
+            ],
+            "pos": {"file": "replay.ts", "line": 5, "column": 14}
+          },
+          "pos": {"file": "replay.ts", "line": 5, "column": 1}
+        }
+      ],
+      "pos": {"file": "replay.ts", "line": 5, "column": 1}
+    }
+  ],
+  "debug": {
+    "functions": [
+      {
+        "function": "add",
+        "scopes": [
+          {
+            "id": 1,
+            "parent": 0,
+            "path": "function",
+            "kind": "function",
+            "start": {"file": "replay.ts", "line": 1, "column": 1},
+            "end": {"file": "replay.ts", "line": 3, "column": 2}
+          }
+        ],
+        "locals": [
+          {"name": "a", "sourceName": "a", "kind": "parameter", "type": "number", "scope": 1, "pos": {"file": "replay.ts", "line": 1, "column": 15}},
+          {"name": "b", "sourceName": "b", "kind": "parameter", "type": "number", "scope": 1, "pos": {"file": "replay.ts", "line": 1, "column": 28}}
+        ]
+      }
+    ]
+  }
+}

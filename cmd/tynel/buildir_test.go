@@ -22,8 +22,8 @@ func TestBuildIRRejectsBadNIR(t *testing.T) {
 		code string
 	}{
 		{
-			name: "旧协议",
-			body: `{"schemaVersion":2,"entry":"main","functions":[]}`,
+			name: "未知协议",
+			body: `{"schemaVersion":3,"entry":"main","functions":[]}`,
 			code: "nir.version",
 		},
 		{

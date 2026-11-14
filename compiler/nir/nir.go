@@ -22,8 +22,8 @@ import (
 )
 
 // SchemaVersion 是当前文件格式版本。格式不兼容时递增，旧文件必须被拒绝，
-// 不能靠缺省值兼容。
-const SchemaVersion = 1
+// 不能靠缺省值兼容。版本 2 增加可选的 debug 段；执行语义与版本 1 相同。
+const SchemaVersion = 2
 
 // 结果类型与参数类型。首版支持 number、bool 和 void。
 const (
@@ -85,6 +85,11 @@ type Module struct {
 	SchemaVersion int        `json:"schemaVersion"`
 	Entry         string     `json:"entry"`
 	Functions     []Function `json:"functions"`
+	Debug         *DebugInfo `json:"debug,omitempty"`
+
+	// OriginalSchemaVersion 记录解码时读到的版本，迁移后保留。它不写进 JSON，
+	// 只供构建器判断是否需要把迁移结果重新落盘。
+	OriginalSchemaVersion int `json:"-"`
 }
 
 // Function 是具名函数。首版只有顶层函数，没有闭包和方法。

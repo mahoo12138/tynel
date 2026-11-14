@@ -125,6 +125,15 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 	if err := nir.Verify(module); err != nil {
 		return nil, err
 	}
+	// 迁移过的 NIR 要以当前版本落盘：后端桥接包只读当前 schema，不能把旧
+	// 字节原样交给它。当前版本则保持原始字节，避免手写 NIR 的格式被重排。
+	if module.OriginalSchemaVersion != nir.SchemaVersion {
+		data, err = nir.EncodeBytes(module)
+		if err != nil {
+			return nil, err
+		}
+		inputSHA = sha256Hex(data)
+	}
 
 	// 2. 工具：隔离 SDK 的 go、修改版 compiler、工具包装。
 	report, err := toolchain.LoadReport(filepath.Join(opts.Root, filepath.FromSlash(toolchain.ReportPath)))

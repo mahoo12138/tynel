@@ -81,8 +81,8 @@ func inject(target *ir.Package, path string) error {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return fmt.Errorf("解析 NIR %s 失败：%w", path, err)
 	}
-	if m.SchemaVersion != 1 {
-		return fmt.Errorf("NIR schemaVersion 为 %d，只接受 1", m.SchemaVersion)
+	if m.SchemaVersion != 1 && m.SchemaVersion != 2 {
+		return fmt.Errorf("NIR schemaVersion 为 %d，只接受 1 或 2", m.SchemaVersion)
 	}
 	if len(m.Functions) == 0 {
 		return fmt.Errorf("NIR 没有函数")

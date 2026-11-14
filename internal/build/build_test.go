@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
+	"github.com/Mahoo12138/tynel/compiler/nir"
 	"github.com/Mahoo12138/tynel/internal/toolchain"
 )
 
@@ -122,6 +123,21 @@ func exampleNIR(t *testing.T) []byte {
 	return data
 }
 
+// currentNIR 返回示例迁移到当前协议后的规范字节；构建器会把旧版本 NIR
+// 以当前版本落盘，记录里的输入哈希对应这份字节。
+func currentNIR(t *testing.T, data []byte) []byte {
+	t.Helper()
+	module, err := nir.DecodeBytes(data, nir.DefaultLimits())
+	if err != nil {
+		t.Fatalf("解码示例 NIR 失败：%v", err)
+	}
+	encoded, err := nir.EncodeBytes(module)
+	if err != nil {
+		t.Fatalf("编码示例 NIR 失败：%v", err)
+	}
+	return encoded
+}
+
 func TestRunPublishesArtifactAndRecord(t *testing.T) {
 	root, runner := newProject(t)
 	runner.writeOutput = true
@@ -140,7 +156,7 @@ func TestRunPublishesArtifactAndRecord(t *testing.T) {
 	if record.Output.Bytes != int64(len("binary-content")) {
 		t.Errorf("记录里的产物大小为 %d", record.Output.Bytes)
 	}
-	if record.Input.SHA256 != sha256Hex(exampleNIR(t)) {
+	if record.Input.SHA256 != sha256Hex(currentNIR(t, exampleNIR(t))) {
 		t.Errorf("记录里的输入哈希不符")
 	}
 	if _, err := os.Stat(SnapshotDirPath(root, record)); err != nil {
@@ -442,7 +458,7 @@ func TestRunRejectsCorruptSnapshot(t *testing.T) {
 	data := exampleNIR(t)
 	input := filepath.Join(root, "add.nir.json")
 	writeFile(t, input, string(data))
-	snapshot := filepath.Join(root, filepath.FromSlash(SnapshotDir), sha256Hex(data)+".nir.json")
+	snapshot := filepath.Join(root, filepath.FromSlash(SnapshotDir), sha256Hex(currentNIR(t, data))+".nir.json")
 	writeFile(t, snapshot, "被改动过的内容")
 
 	_, err := Run(Options{Root: root, Input: input, Output: filepath.Join(root, "out", "app")}, runner)
@@ -475,7 +491,7 @@ func TestRunAcceptsInMemoryNIR(t *testing.T) {
 	if !strings.Contains(record.Input.Path, ".work/build/snapshots/") {
 		t.Errorf("input 应指向快照：%q", record.Input.Path)
 	}
-	if record.Input.SHA256 != sha256Hex(exampleNIR(t)) {
+	if record.Input.SHA256 != sha256Hex(currentNIR(t, exampleNIR(t))) {
 		t.Errorf("input 哈希不符")
 	}
 	if _, err := os.Stat(record.Input.Path); err != nil {

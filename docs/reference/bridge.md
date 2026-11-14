@@ -46,6 +46,10 @@ exec "$tool" "$@"
 
 代价是每次工具调用多一个进程和一层 shell 转发。对本项目几十个包的构建可以忽略；这也是 06.x 打包时仍要保留真实工具路径、而不是把整个工具链塞进一个文件的原因。
 
+## NIR 版本
+
+bridge 在 `TYNEL_NIR` 指向的文件里直接读 `schemaVersion`，当前接受 1 和 2，并忽略可选的 `debug` 段。CLI 的迁移发生在写快照之前：`build-ir` 和 `tynel build` 交给后端的输入已经是当前版本。升级 NIR 协议时，除了在 `compiler/nir` 增加迁移，还要同步 bridge 的本地 `module` 结构和版本判断；否则会出现 CLI 接受、后端拒绝的分叉。
+
 ## 固定支持文件建立了什么
 
 `bridge/go/support/support.go` 是一个对所有输入都相同的 `package main`，只提供三件事：

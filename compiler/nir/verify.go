@@ -53,6 +53,9 @@ func VerifyWithLimits(module *Module, limits Limits) error {
 			return err
 		}
 	}
+	if err := c.debug(module.Debug); err != nil {
+		return err
+	}
 	return nil
 }
 

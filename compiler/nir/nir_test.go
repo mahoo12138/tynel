@@ -3,6 +3,7 @@ package nir
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -10,6 +11,14 @@ import (
 	"strings"
 	"testing"
 )
+
+// equalModules 比较语义结构，忽略只在构建期使用的原始版本记录。
+func equalModules(a, b *Module) bool {
+	left, right := *a, *b
+	left.OriginalSchemaVersion = 0
+	right.OriginalSchemaVersion = 0
+	return reflect.DeepEqual(left, right)
+}
 
 func minimalModule() *Module {
 	return &Module{
@@ -47,7 +56,7 @@ func TestRoundTripExample(t *testing.T) {
 	if err != nil {
 		t.Fatalf("回读失败：%v", err)
 	}
-	if !reflect.DeepEqual(*first, *second) {
+	if !equalModules(first, second) {
 		t.Fatalf("保存后读回不一致：\n原始：%+v\n回读：%+v", *first, *second)
 	}
 	again, err := EncodeBytes(second)
@@ -213,7 +222,7 @@ func TestDecodeRejectsInvalidStructure(t *testing.T) {
 		mutate func(*Module)
 		code   string
 	}{
-		{"坏版本", func(m *Module) { m.SchemaVersion = 2 }, "nir.version"},
+		{"坏版本", func(m *Module) { m.SchemaVersion = SchemaVersion + 1 }, "nir.version"},
 		{"缺 entry", func(m *Module) { m.Entry = "" }, "nir.missing"},
 		{"没有函数", func(m *Module) { m.Functions = nil }, "nir.missing"},
 		{"非法结果类型", func(m *Module) { m.Functions[0].Result = "string" }, "nir.bad-value"},
@@ -274,7 +283,7 @@ func TestDecodeRejectsMalformedJSON(t *testing.T) {
 		{"空输入", nil},
 		{"尾随内容", append(append([]byte{}, valid...), []byte("\n{}")...)},
 		{"未知字段", []byte(strings.Replace(string(valid), `"entry"`, `"extra":1,"entry"`, 1))},
-		{"类型不符", []byte(strings.Replace(string(valid), `"schemaVersion":1`, `"schemaVersion":"1"`, 1))},
+		{"类型不符", []byte(strings.Replace(string(valid), fmt.Sprintf(`"schemaVersion":%d`, SchemaVersion), `"schemaVersion":"1"`, 1))},
 	}
 	for _, c := range cases {
 		got, err := DecodeBytes(c.input, DefaultLimits())
@@ -397,7 +406,7 @@ func FuzzDecode(f *testing.F) {
 		if err != nil {
 			t.Fatalf("回读自己写出的内容失败：%v", err)
 		}
-		if !reflect.DeepEqual(*module, *again) {
+		if !equalModules(module, again) {
 			t.Fatal("往返后结构不一致")
 		}
 	})

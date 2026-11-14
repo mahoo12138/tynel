@@ -43,6 +43,7 @@ func Lower(snapshot *source.Snapshot, facts *frontend.Facts) (*nir.Module, error
 		snapshot: snapshot,
 		facts:    facts,
 		names:    make(map[int]string, len(facts.Declarations)),
+		debug:    &nir.DebugInfo{},
 	}
 	l.reserveNames(facts)
 	module := &nir.Module{SchemaVersion: nir.SchemaVersion, Entry: EntryName}
@@ -75,6 +76,9 @@ func Lower(snapshot *source.Snapshot, facts *frontend.Facts) (*nir.Module, error
 		return nil, err
 	}
 	module.Functions = append(module.Functions, *entry)
+	if len(l.debug.Functions) > 0 {
+		module.Debug = l.debug
+	}
 
 	if err := nir.Verify(module); err != nil {
 		// 走到这里说明降低产出了自己都不认的模块，属于内部故障。
@@ -98,6 +102,7 @@ func LowerMerged(facts *frontend.Facts, snapshots map[string]*source.Snapshot, b
 		snapshots: snapshots,
 		facts:     facts,
 		names:     make(map[int]string, len(facts.Declarations)),
+		debug:     &nir.DebugInfo{},
 	}
 	l.reserveNames(facts)
 	if len(snapshots) > 0 {
@@ -124,7 +129,18 @@ func LowerMerged(facts *frontend.Facts, snapshots map[string]*source.Snapshot, b
 	}
 
 	initFn := &nir.Function{Name: mergedInitName, Result: nir.TypeVoid}
-	sc := &scope{params: map[int]string{}, locals: map[int]string{}, mutable: map[int]bool{}}
+	// __init 的根作用域以第一个模块体为准；函数降低可能已经把 l.snapshot
+	// 切到别的文件，必须先切回来，否则根作用域的行列会落到错误的快照上。
+	if snapshot := snapshots[order[0]]; snapshot != nil {
+		l.snapshot = snapshot
+	}
+	l.beginDebugFunction(mergedInitName)
+	start, length := 0, 0
+	if body := bodies[order[0]]; body != nil {
+		start, length = body.Start, body.Length
+	}
+	sc := l.rootScope(start, length)
+	sc.params = map[int]string{}
 	l.inInit = true
 	for i, path := range order {
 		// 模块前缀让不同模块的同名常量在共享作用域里不冲突；声明 ID 仍是
@@ -136,6 +152,7 @@ func LowerMerged(facts *frontend.Facts, snapshots map[string]*source.Snapshot, b
 		initFn.Body = append(initFn.Body, stmts...)
 	}
 	l.inInit = false
+	l.finishDebugFunction()
 	initFn.Body = append(initFn.Body, nir.Stmt{Op: nir.OpReturn})
 	module.Functions = append(module.Functions, *initFn)
 
@@ -146,6 +163,9 @@ func LowerMerged(facts *frontend.Facts, snapshots map[string]*source.Snapshot, b
 	})
 	mainFn.Body = append(mainFn.Body, nir.Stmt{Op: nir.OpReturn})
 	module.Functions = append(module.Functions, *mainFn)
+	if len(l.debug.Functions) > 0 {
+		module.Debug = l.debug
+	}
 
 	if err := nir.Verify(module); err != nil {
 		return nil, diagnostic.New(diagnostic.Internal, "lower.invalid-output", "合并降低产出的 NIR 没有通过验证").WithDetail(err.Error())
@@ -165,6 +185,9 @@ type lowerer struct {
 	reserved      map[string]bool // 用户声明占用的名字，临时名必须绕开
 	loops         []int           // 当前函数内由内到外的循环 id
 	nextLoop      int             // 下一个循环 id
+	debug         *nir.DebugInfo  // 整个模块的调试段
+	debugFn       *nir.DebugFunction
+	nextScope     int // 当前函数内下一个作用域 id
 }
 
 // scope 是当前可见的声明。用声明 ID 而不是名字做键：两个函数里同名的参数是
@@ -172,13 +195,11 @@ type lowerer struct {
 // 按语句块分层，子块可以遮蔽父块，退出子块后声明不可见。
 type scope struct {
 	parent  *scope
+	id      int
+	path    string
 	params  map[int]string
 	locals  map[int]string
 	mutable map[int]bool
-}
-
-func (s *scope) child() *scope {
-	return &scope{parent: s, locals: make(map[int]string), mutable: make(map[int]bool)}
 }
 
 func (s *scope) lookup(id int) (string, bool) {
@@ -220,6 +241,104 @@ func (s *scope) isMutable(id int) bool {
 	return false
 }
 
+// beginDebugFunction 开始记录一个函数的调试信息。根作用域由 rootScope 建立；
+// 函数结束前必须调用 finishDebugFunction，否则调试段不会进入模块。
+func (l *lowerer) beginDebugFunction(name string) {
+	l.debugFn = &nir.DebugFunction{Function: name}
+	l.nextScope = 0
+}
+
+func (l *lowerer) finishDebugFunction() {
+	if l.debugFn == nil {
+		return
+	}
+	l.debug.Functions = append(l.debug.Functions, *l.debugFn)
+	l.debugFn = nil
+}
+
+// rootScope 建立函数根作用域，id 固定为 1。
+func (l *lowerer) rootScope(start, length int) *scope {
+	return l.newScope(nil, nir.DebugScopeFunction, "function", start, length)
+}
+
+// childScope 建立子作用域。node 提供源码范围；node 为空时退化为零长度范围，
+// 只用于不来自源码的合成作用域。
+func (l *lowerer) childScope(parent *scope, kind string, node *frontend.Node) *scope {
+	if node == nil {
+		return l.newScope(parent, kind, l.debugPath(parent, kind), 0, 0)
+	}
+	return l.newScope(parent, kind, l.debugPath(parent, kind), node.Start, node.Length)
+}
+
+func (l *lowerer) newScope(parent *scope, kind, path string, start, length int) *scope {
+	l.nextScope++
+	id := l.nextScope
+	parentID := 0
+	if parent != nil {
+		parentID = parent.id
+	}
+	l.debugFn.Scopes = append(l.debugFn.Scopes, nir.DebugScope{
+		ID:     id,
+		Parent: parentID,
+		Path:   path,
+		Kind:   kind,
+		Start:  l.pos(start),
+		End:    l.pos(start + length),
+	})
+	return &scope{
+		parent:  parent,
+		id:      id,
+		path:    path,
+		locals:  make(map[int]string),
+		mutable: make(map[int]bool),
+	}
+}
+
+// debugPath 生成人类可读的作用域路径。序号只在同一父作用域、同一 kind 内
+// 递增；它不是跨版本稳定标识，只用于同一次编译结果里的阅读和排查。
+func (l *lowerer) debugPath(parent *scope, kind string) string {
+	if parent == nil {
+		return "function"
+	}
+	ordinal := 0
+	for _, s := range l.debugFn.Scopes {
+		if s.Parent == parent.id && s.Kind == kind {
+			ordinal++
+		}
+	}
+	return fmt.Sprintf("%s/%s#%d", parent.path, kind, ordinal+1)
+}
+
+func (l *lowerer) addDebugLocal(sc *scope, name, sourceName, kind, typ string, pos *nir.Pos, mutable bool) {
+	if l.debugFn == nil || sc == nil {
+		return
+	}
+	l.debugFn.Locals = append(l.debugFn.Locals, nir.DebugLocal{
+		Name:       name,
+		SourceName: sourceName,
+		Kind:       kind,
+		Type:       typ,
+		Scope:      sc.id,
+		Pos:        pos,
+		Mutable:    mutable,
+	})
+}
+
+// emitLet 同时生成 NIR let 和调试局部值。所有 let 都应经过这里，避免执行
+// 语句和调试信息两条路径各自维护。
+func (l *lowerer) emitLet(sc *scope, name string, value *nir.Expr, pos *nir.Pos, sourceName, kind, typ string, mutable bool) nir.Stmt {
+	l.addDebugLocal(sc, name, sourceName, kind, typ, pos, mutable)
+	return nir.Stmt{Op: nir.OpLet, Name: name, Value: value, Mutable: mutable, Pos: pos}
+}
+
+func (l *lowerer) emitTemp(sc *scope, name string, value *nir.Expr, pos *nir.Pos, typ string) nir.Stmt {
+	return l.emitLet(sc, name, value, pos, "", nir.DebugLocalTemporary, typ, false)
+}
+
+func (l *lowerer) addTempBinding(sc *scope, name, typ string, pos *nir.Pos) {
+	l.addDebugLocal(sc, name, "", nir.DebugLocalTemporary, typ, pos, false)
+}
+
 func (l *lowerer) function(decl *frontend.Declaration) (*nir.Function, error) {
 	l.loops = nil
 	l.currentModule = decl.Module
@@ -237,7 +356,9 @@ func (l *lowerer) function(decl *frontend.Declaration) (*nir.Function, error) {
 		Result: nirType(decl.Result.Kind),
 		Pos:    l.pos(decl.Start),
 	}
-	sc := &scope{params: make(map[int]string, len(decl.Parameters)), locals: make(map[int]string), mutable: make(map[int]bool)}
+	l.beginDebugFunction(decl.Name)
+	sc := l.rootScope(decl.Start, decl.Length)
+	sc.params = make(map[int]string, len(decl.Parameters))
 	for _, id := range decl.Parameters {
 		param, ok := l.facts.Declaration(id)
 		if !ok || param.Kind != frontend.DeclParameter {
@@ -248,6 +369,7 @@ func (l *lowerer) function(decl *frontend.Declaration) (*nir.Function, error) {
 		}
 		fn.Params = append(fn.Params, nir.Param{Name: param.Name, Type: nirType(param.Type.Kind), Pos: l.pos(param.Start)})
 		sc.params[id] = param.Name
+		l.addDebugLocal(sc, param.Name, param.Name, nir.DebugLocalParameter, nirType(param.Type.Kind), l.pos(param.Start), false)
 	}
 	if decl.Body == nil {
 		return nil, l.fail(decl.Start, "lower.missing-body", "函数 %q 没有函数体", decl.Name)
@@ -259,6 +381,7 @@ func (l *lowerer) function(decl *frontend.Declaration) (*nir.Function, error) {
 		return nil, err
 	}
 	fn.Body = body
+	l.finishDebugFunction()
 	return fn, nil
 }
 
@@ -269,7 +392,13 @@ func (l *lowerer) entry() (*nir.Function, error) {
 
 func (l *lowerer) entryWith(name string, body *frontend.Node, module string) (*nir.Function, error) {
 	fn := &nir.Function{Name: name, Result: nir.TypeVoid}
-	sc := &scope{params: map[int]string{}, locals: map[int]string{}, mutable: map[int]bool{}}
+	l.beginDebugFunction(name)
+	start, length := 0, 0
+	if body != nil {
+		start, length = body.Start, body.Length
+	}
+	sc := l.rootScope(start, length)
+	sc.params = map[int]string{}
 	l.inInit = true
 	defer func() { l.inInit = false }()
 	stmts, err := l.initBody(body, module, sc, "")
@@ -277,6 +406,7 @@ func (l *lowerer) entryWith(name string, body *frontend.Node, module string) (*n
 		return nil, err
 	}
 	fn.Body = append(stmts, nir.Stmt{Op: nir.OpReturn})
+	l.finishDebugFunction()
 	return fn, nil
 }
 
@@ -328,7 +458,7 @@ func (l *lowerer) initBody(body *frontend.Node, module string, sc *scope, prefix
 			}
 			name := prefix + decl.Name
 			out = append(out, pre...)
-			out = append(out, nir.Stmt{Op: nir.OpLet, Name: name, Value: value, Pos: l.pos(stmt.Start)})
+			out = append(out, l.emitLet(sc, name, value, l.pos(stmt.Start), decl.Name, nir.DebugLocalModuleConst, nirType(decl.Type.Kind), false))
 			sc.locals[decl.ID] = name
 		case "ExpressionStatement":
 			s, err := l.statement(stmt, sc)
@@ -461,13 +591,13 @@ func (l *lowerer) ifStatement(stmt *frontend.Node, sc *scope) ([]nir.Stmt, error
 	if err != nil {
 		return nil, err
 	}
-	then, err := l.branchStmts(&stmt.Children[1], sc.child())
+	then, err := l.branchStmts(&stmt.Children[1], l.childScope(sc, nir.DebugScopeBranch, &stmt.Children[1]))
 	if err != nil {
 		return nil, err
 	}
 	var els []nir.Stmt
 	if len(stmt.Children) == 3 {
-		els, err = l.branchStmts(&stmt.Children[2], sc.child())
+		els, err = l.branchStmts(&stmt.Children[2], l.childScope(sc, nir.DebugScopeBranch, &stmt.Children[2]))
 		if err != nil {
 			return nil, err
 		}
@@ -494,14 +624,15 @@ func (l *lowerer) whileStatement(stmt *frontend.Node, sc *scope) ([]nir.Stmt, er
 	if err := l.typedOperand(condNode, frontend.KindBoolean, "while 的条件"); err != nil {
 		return nil, err
 	}
-	cond, condPre, err := l.expr(condNode, sc, 1)
+	condScope := l.childScope(sc, nir.DebugScopePrelude, condNode)
+	cond, condPre, err := l.expr(condNode, condScope, 1)
 	if err != nil {
 		return nil, err
 	}
 	id := l.nextLoop + 1
 	l.nextLoop = id
 	l.loops = append(l.loops, id)
-	body, err := l.branchStmts(bodyNode, sc.child())
+	body, err := l.branchStmts(bodyNode, l.childScope(sc, nir.DebugScopeLoop, bodyNode))
 	l.loops = l.loops[:len(l.loops)-1]
 	if err != nil {
 		return nil, err
@@ -609,7 +740,7 @@ func (l *lowerer) localDeclaration(stmt *frontend.Node, sc *scope) ([]nir.Stmt, 
 	if !sc.define(decl.ID, decl.Name, decl.Mutable) {
 		return nil, l.fail(decl.Start, "lower.duplicate-name", "局部值 %q 在同一个块里重复定义", decl.Name)
 	}
-	return append(pre, nir.Stmt{Op: nir.OpLet, Name: decl.Name, Value: value, Mutable: decl.Mutable, Pos: l.pos(stmt.Start)}), nil
+	return append(pre, l.emitLet(sc, decl.Name, value, l.pos(stmt.Start), decl.Name, nir.DebugLocalLocal, nirType(decl.Type.Kind), decl.Mutable)), nil
 }
 
 func variableList(stmt *frontend.Node) *frontend.Node {
@@ -857,14 +988,14 @@ func (l *lowerer) call(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir
 		for _, j := range pending {
 			name := l.tempName()
 			value := exprs[j]
-			pre = append(pre, nir.Stmt{Op: nir.OpLet, Name: name, Value: &value, Pos: l.pos(args[j].Start)})
+			pre = append(pre, l.emitTemp(sc, name, &value, l.pos(args[j].Start), nodeNirType(&args[j])))
 			exprs[j] = nir.Expr{Op: nir.OpLocal, Name: name}
 		}
 		pending = nil
 		pre = append(pre, argPre...)
 		name := l.tempName()
 		value := exprs[i]
-		pre = append(pre, nir.Stmt{Op: nir.OpLet, Name: name, Value: &value, Pos: l.pos(args[i].Start)})
+		pre = append(pre, l.emitTemp(sc, name, &value, l.pos(args[i].Start), nodeNirType(&args[i])))
 		exprs[i] = nir.Expr{Op: nir.OpLocal, Name: name}
 	}
 	return &nir.Expr{Op: nir.OpCall, Function: decl.Name, Args: exprs, Pos: l.pos(n.Start)}, pre, nil
@@ -888,11 +1019,13 @@ func (l *lowerer) shortCircuit(n *frontend.Node, sc *scope, depth int) (*nir.Exp
 	if err != nil {
 		return nil, nil, err
 	}
-	right, rightPre, err := l.expr(rightNode, sc, depth+1)
+	rightScope := l.childScope(sc, nir.DebugScopePrelude, rightNode)
+	right, rightPre, err := l.expr(rightNode, rightScope, depth+1)
 	if err != nil {
 		return nil, nil, err
 	}
 	name := l.tempName()
+	l.addTempBinding(sc, name, nir.TypeBool, l.pos(n.Start))
 	pre := append(leftPre, nir.Stmt{
 		Op:       nir.OpShort,
 		Name:     name,
@@ -945,7 +1078,7 @@ func (l *lowerer) pairOperands(leftNode, rightNode *frontend.Node, sc *scope, de
 	if len(rightPre) > 0 {
 		name := l.tempName()
 		value := *left
-		pre = append(pre, nir.Stmt{Op: nir.OpLet, Name: name, Value: &value, Pos: l.pos(leftNode.Start)})
+		pre = append(pre, l.emitTemp(sc, name, &value, l.pos(leftNode.Start), nodeNirType(leftNode)))
 		left = &nir.Expr{Op: nir.OpLocal, Name: name, Pos: l.pos(leftNode.Start)}
 	}
 	pre = append(pre, rightPre...)
@@ -975,11 +1108,13 @@ func (l *lowerer) conditional(n *frontend.Node, sc *scope, depth int) (*nir.Expr
 	if err != nil {
 		return nil, nil, err
 	}
-	then, thenPre, err := l.expr(thenNode, sc, depth+1)
+	thenScope := l.childScope(sc, nir.DebugScopePrelude, thenNode)
+	elseScope := l.childScope(sc, nir.DebugScopePrelude, elseNode)
+	then, thenPre, err := l.expr(thenNode, thenScope, depth+1)
 	if err != nil {
 		return nil, nil, err
 	}
-	els, elsePre, err := l.expr(elseNode, sc, depth+1)
+	els, elsePre, err := l.expr(elseNode, elseScope, depth+1)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -988,6 +1123,7 @@ func (l *lowerer) conditional(n *frontend.Node, sc *scope, depth int) (*nir.Expr
 	if thenNode.Type.Kind == frontend.KindBoolean {
 		resultType = nir.TypeBool
 	}
+	l.addTempBinding(sc, name, resultType, l.pos(n.Start))
 	pre := append(condPre, nir.Stmt{
 		Op:        nir.OpSelect,
 		Name:      name,
@@ -1055,6 +1191,16 @@ func nirType(k frontend.Kind) string {
 		return nir.TypeVoid
 	case frontend.KindBoolean:
 		return nir.TypeBool
+	}
+	return nir.TypeNumber
+}
+
+// nodeNirType 返回表达式节点在 NIR 里的类型。调用方已经用 typedOperand 核对过
+// 类型，这里只是把类别翻译成 NIR 字符串；缺类型时退回 number，避免调试段
+// 因为一条不完整事实而崩溃。
+func nodeNirType(n *frontend.Node) string {
+	if n != nil && n.Type != nil {
+		return nirType(n.Type.Kind)
 	}
 	return nir.TypeNumber
 }

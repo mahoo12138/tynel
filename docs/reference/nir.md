@@ -14,17 +14,36 @@ JSON 没有联合类型，所有字段只能平铺在同一层。因此文件里
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "entry": "main",
-  "functions": [ ]
+  "functions": [ ],
+  "debug": { "functions": [ ] }
 }
 ```
 
 | 字段 | 含义 | 约束 |
 | --- | --- | --- |
-| `schemaVersion` | 文件格式版本 | 必须等于 1，其他值一律拒绝 |
+| `schemaVersion` | 文件格式版本 | 当前为 2；解码先迁移，未知版本按 `nir.version` 拒绝 |
 | `entry` | 入口函数名 | 非空；是否真的存在由验证器检查 |
 | `functions` | 函数列表 | 非空，数量受预算限制 |
+| `debug` | 可选调试段 | 缺失表示没有调试信息；存在时按下面的调试段规则校验 |
+
+## 版本与迁移
+
+`schemaVersion` 是 NIR 文件格式的协议版本，和语言版本、编译器版本、工具链版本分开记录。编码器总是写当前版本；解码器先按 JSON 外壳读出模块，再调用 `nir.Migrate` 把受支持的旧版本升级到当前版本，最后才做格式检查和语义验证。
+
+当前版本 2 支持读取版本 1 和 2。版本 1 没有调试段，迁移时把 `debug` 置空；版本 2 的调试段只描述源码结构，不参与执行。新增、删除或改变字段含义、操作形状和预算时递增版本，并为旧版本写显式迁移；没有迁移规则的版本直接按 `nir.version` 拒绝。不能用缺省值猜测旧字段，也不能让旧文件悄悄按新语义执行。
+
+构建器解码后会检查迁移前的原始版本：只有发生迁移时才把结果重新编码成当前版本再落盘，当前版本则保持原始字节，避免手写 NIR 的格式被重排。后端桥接包接受版本 1 和 2，只读执行核心，忽略 `debug`。
+
+回放夹具 `compiler/nir/testdata/replay-v1.json` 固定了一份版本 1 的模块。下面这条命令验证版本迁移、v1 回放、调试段校验和编解码往返：
+
+```zsh
+# 版本迁移、v1 回放、调试段校验和编解码往返。
+go test ./compiler/nir -run 'Version|Replay|Debug'
+```
+
+`tynel build-ir` 读取 NIR 时走同一条解码路径，因此登记在支持列表里的旧版本会先迁移，未知版本在进入后端前就被拒绝。作用域 ID 与调试段的完整设计见[设计记录](../design/nir-schema-2-debug.md)。
 
 ## 函数、参数与位置
 
@@ -156,6 +175,66 @@ JSON 没有联合类型，所有字段只能平铺在同一层。因此文件里
 
 `compare` 的输入类型按运算符分两组：`<`、`<=`、`>`、`>=` 要求两个 `number`；`===`、`!==` 要求两侧同为 `number` 或同为 `bool`。宽松相等 `==`、`!=` 不是 NIR 运算符，混入文件按 `nir.bad-op` 拒绝。浮点比较的具体结果见[比较语义](comparison.md)。
 
+## 调试段
+
+`debug` 是可选段，只描述源码结构和局部变量；后端执行时完全忽略它。缺失表示没有调试信息，手写 NIR 可以省略；存在时验证器检查自洽性。
+
+```json
+{
+  "debug": {
+    "functions": [
+      {
+        "function": "count",
+        "scopes": [
+          {"id": 1, "parent": 0, "path": "function", "kind": "function",
+           "start": {"file": "count.ts", "line": 1, "column": 1},
+           "end": {"file": "count.ts", "line": 11, "column": 2}},
+          {"id": 2, "parent": 1, "path": "function/loop#1", "kind": "loop",
+           "start": {"file": "count.ts", "line": 3, "column": 16},
+           "end": {"file": "count.ts", "line": 9, "column": 4}}
+        ],
+        "locals": [
+          {"name": "n", "sourceName": "n", "kind": "parameter",
+           "type": "number", "scope": 1},
+          {"name": "total", "sourceName": "total", "kind": "local",
+           "type": "number", "scope": 1, "mutable": true}
+        ]
+      }
+    ]
+  }
+}
+```
+
+| 字段 | 含义 | 约束 |
+| --- | --- | --- |
+| `functions` | 每个函数的调试信息 | `function` 必须是已存在的核心函数名，不能重复 |
+| `scopes` | 函数的作用域树 | 恰好一个根作用域，`id` 为 1、`parent` 为 0、`path` 为 `function` |
+| `locals` | 参数、局部值、模块常量和临时值 | `scope` 必须存在，`type` 只接受 `number` / `bool` |
+
+作用域字段：
+
+| 字段 | 含义 | 约束 |
+| --- | --- | --- |
+| `id` | 函数内作用域 ID | 正整数、唯一；根为 1 |
+| `parent` | 父作用域 ID | 根为 0；其余必须小于当前 ID 且存在 |
+| `path` | 人类可读路径 | 同函数内唯一；根为 `function`，子作用域以父 path 加 `/kind#序号` 开头 |
+| `kind` | 作用域种类 | `function`、`branch`、`loop`、`prelude` |
+| `start` / `end` | 源码范围 | 同一文件，`end` 不得早于 `start` |
+
+局部变量字段：
+
+| 字段 | 含义 | 约束 |
+| --- | --- | --- |
+| `name` | NIR 名 | 同一作用域内唯一；不同作用域可以同名表示遮蔽 |
+| `sourceName` | 源码名 | 非临时值必填；`temporary` 必须为空 |
+| `kind` | 变量种类 | `parameter`、`local`、`module-const`、`temporary` |
+| `type` | NIR 类型 | 当前只接受 `number` / `bool` |
+| `scope` | 所属作用域 | 必须存在；参数和模块常量必须在根作用域 |
+| `pos` | 声明位置 | 可选；出现时必须合法 |
+| `mutable` | 是否可赋值 | 只有可变 `let` 为 true |
+
+作用域 ID 和 `path` 只保证在同一次编译结果内有意义，不是跨编译器版本或跨构建的 ABI。调试段的完整设计、生成规则和备选方案见[设计记录](../design/nir-schema-2-debug.md)。
+
 ## 数字为什么存位模式
 
 `number` 不写 `40`，写 `"bits": "0x4044000000000000"`。原因不是喜欢十六进制，而是十进制文本存不住 JavaScript 数值的全部取值：
@@ -214,7 +293,7 @@ JSON 没有联合类型，所有字段只能平铺在同一层。因此文件里
 
 | 代码 | 层 | 触发条件 |
 | --- | --- | --- |
-| `nir.version` | 格式 | `schemaVersion` 不是 1 |
+| `nir.version` | 格式 | `schemaVersion` 不在支持列表内，或没有迁移规则 |
 | `nir.missing` | 格式 | 缺少必填字段 |
 | `nir.bad-value` | 格式 | 字段值不在允许集合内，例如 `result` 为 `string` |
 | `nir.bad-op` | 格式 | 未知的 `op` 或运算符 |
@@ -235,6 +314,9 @@ JSON 没有联合类型，所有字段只能平铺在同一层。因此文件里
 | `nir.print-type` | 语义 | `print` 的参数不是 `number` 或 `bool` |
 | `nir.local-type` | 语义 | `let` 的值不是 `number` 或 `bool` |
 | `nir.condition-type` | 语义 | `if` 或 `while` 的条件不是 `bool` |
+| `nir.debug-shape` | 语义 | 调试段的函数、作用域 ID、父链、path 或种类不自洽 |
+| `nir.debug-span` | 语义 | 调试段的作用域范围或局部变量位置不合法 |
+| `nir.debug-local` | 语义 | 调试段的局部变量缺少名字、作用域不存在、种类或类型不认识 |
 | `nir.unknown-local` | 语义 | 引用了尚未定义的局部值，或局部值不在当前块及祖先块里；也包括 `set` 的目标 |
 | `nir.immutable-local` | 语义 | `set` 的目标不是可变的 `let` |
 | `nir.assign-type` | 语义 | `set` 的右值与目标类型不同 |
