@@ -181,6 +181,11 @@ func (f *Facts) Validate() error {
 		if !arity.Allows(len(call.Arguments)) {
 			return diagnostic.New(diagnostic.Internal, "facts.arg-count", "调用 %q 给了 %d 个实参，函数声明需要 %d 到 %d 个", callee.Name, len(call.Arguments), arity.Required, arity.Total)
 		}
+		// 泛型函数的形参含类型参数，实参和返回值的具体类型由调用点推断；
+		// 这里只核对个数，类型匹配留给能力检查和单态化。
+		if len(f.TypeParametersOf(callee)) > 0 {
+			continue
+		}
 		for i, pid := range callee.Parameters {
 			param, ok := byID[pid]
 			if !ok || param.Type == nil {
@@ -255,12 +260,23 @@ func (f *Facts) validateIndirectCall(call Call, callee *Declaration) error {
 	for i := range call.Arguments {
 		got := call.Arguments[i].Kind
 		want := &fn.Params[i].Type
+		// 函数值类型里可能还带未实例化的类型参数；具体类型留给能力检查和
+		// 单态化，事实层只保证形状和个数。
+		if ContainsTypeParameter(want) {
+			continue
+		}
 		if got == want.Kind || memberOfNullable(got, want) {
 			continue
 		}
 		return diagnostic.New(diagnostic.Internal, "facts.arg-type", "间接调用 %q 的第 %d 个实参是 %s，形参是 %s", callee.Name, i+1, got, want.Kind)
 	}
-	if fn.Result == nil || call.Result.Kind != fn.Result.Kind {
+	if fn.Result == nil {
+		return diagnostic.New(diagnostic.Internal, "facts.result-type", "间接调用 %q 的函数类型没有返回类型", callee.Name)
+	}
+	if ContainsTypeParameter(fn.Result) {
+		return nil
+	}
+	if call.Result.Kind != fn.Result.Kind {
 		return diagnostic.New(diagnostic.Internal, "facts.result-type", "间接调用 %q 的返回类型摘要与函数类型不一致", callee.Name)
 	}
 	return nil

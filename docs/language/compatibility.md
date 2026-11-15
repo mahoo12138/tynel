@@ -39,7 +39,7 @@
 
 一个能力可以同时「当前 `rejected`」和「长期 `planned`」。`planned` 和 `deferred` 行如果当前不在子集内，编译器仍会拒绝；这两个状态描述长期方向，不表示今天可以编译。`rejected` 行表示当前有明确拒绝路径，长期方向可能是 `planned`、`deferred` 或 `not-targeted`。本表不使用「部分支持」；必须说明卡在哪一层、哪些写法不支持。
 
-Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semantics/objects-arrays.md)、[联合与空值 RFC](semantics/unions-null.md)、[函数 RFC](semantics/functions.md)、[泛型 RFC](semantics/generics.md)以及 [NIR schema 3 类型表设计](../design/nir-schema-3-types.md)已经确认。字符串最小闭环（字面量、拼接、`length`、严格相等和输出）已实现并有原生回归；索引、`slice`、模板插值和字符串方法仍未实现。对象第一个切片（必填属性、字面量、字段读取和引用身份）也已实现，可选属性、字段写入和结构性放宽仍拒绝。数组与元组第一个切片（字面量、索引、`length`、常量元组索引）已实现，数组方法、展开、赋值和身份比较仍拒绝。可空联合第一个切片（`T | null` / `T | undefined`、空值比较和前端缩窄）已实现；多成员联合、`??` / `?.` 和可选属性仍拒绝。函数值第一个切片（无捕获箭头、顶层函数值、函数类型和间接调用）已实现；闭包捕获、块体箭头、`void` 箭头、函数表达式和函数值身份比较仍拒绝。其他 RFC 不改变本表当前的 `rejected` 状态；只有实现并通过运行时验收后，状态才会变化。
+Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semantics/objects-arrays.md)、[联合与空值 RFC](semantics/unions-null.md)、[函数 RFC](semantics/functions.md)、[泛型 RFC](semantics/generics.md)以及 [NIR schema 3 类型表设计](../design/nir-schema-3-types.md)已经确认。字符串最小闭环（字面量、拼接、`length`、严格相等和输出）已实现并有原生回归；索引、`slice`、模板插值和字符串方法仍未实现。对象第一个切片（必填属性、字面量、字段读取和引用身份）也已实现，可选属性、字段写入和结构性放宽仍拒绝。数组与元组第一个切片（字面量、索引、`length`、常量元组索引）已实现，数组方法、展开、赋值和身份比较仍拒绝。可空联合第一个切片（`T | null` / `T | undefined`、空值比较和前端缩窄）已实现；多成员联合、`??` / `?.` 和可选属性仍拒绝。函数值第一个切片（无捕获箭头、顶层函数值、函数类型和间接调用）已实现；闭包捕获、块体箭头、`void` 箭头、函数表达式和函数值身份比较仍拒绝。泛型函数第一个切片（调用点推断与单态化）已实现；泛型接口、泛型别名、默认类型参数和约束驱动操作仍拒绝。其他 RFC 不改变本表当前的 `rejected` 状态；只有实现并通过运行时验收后，状态才会变化。
 
 ## 2. 基线
 
@@ -73,7 +73,9 @@ Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semanti
 | 字面量类型 | `tsgo` | `未定义` | `未实现` | `planned` | 阶段 3；需要与类型收窄一起设计 |
 | `any` / `unknown` | `tsgo` | `拒绝` | `拒绝` | `rejected` | `cap.any`；不作为原生表示目标，是否提供受控动态类型需另行 RFC |
 | `enum` | `tsgo` | `未定义` | `未实现` | `deferred` | 需要先决定编译期常量还是运行时对象，阶段 3B |
-| 泛型 | `tsgo` | `未定义` | `拒绝` | `rejected` | 通用泛型待实现策略 RFC（擦除、单态化或字典），阶段 3B |
+| 泛型函数（单态化） | `tsgo` | `Tynel` | `已验证` | `supported` | 调用点从实参推断类型实参，为每组具体类型生成一个 `identity$tN` 实例；NIR 不保留类型参数。见[泛型 RFC](semantics/generics.md) |
+| 泛型接口、泛型别名、默认类型参数 | `tsgo` | `拒绝` | `拒绝` | `rejected` | `cap.unsupported-syntax`；第一个泛型切片只做函数 |
+| 约束驱动操作、条件类型、映射类型 | `tsgo` | `未定义` | `拒绝` | `rejected` | 约束由 TypeScript 检查，函数体仍受当前能力子集限制；条件/映射类型留到后续 |
 | `class` | `tsgo` | `未定义` | `拒绝` | `rejected` | `cap.unsupported-syntax`；需要对象模型和构造语义，阶段 3C |
 | 类型断言、`as`、`satisfies`、非空断言 | `tsgo` | `拒绝` | `拒绝` | `rejected` | `cap.type-escape`；保留诊断，不作为绕过检查的通道 |
 | `bigint` | `tsgo` | `未定义` | `未实现` | `deferred` | 定宽整数与 `bigint` 尚未排期 |

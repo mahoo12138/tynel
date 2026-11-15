@@ -17,14 +17,23 @@ type typeTable struct {
 	defs  []nir.TypeDef
 	byKey map[string]int
 	next  int
+	subst map[string]frontend.Type // 单态化实例的类型实参
 }
 
 func newTypeTable(facts *frontend.Facts) *typeTable {
 	return &typeTable{facts: facts, byKey: make(map[string]int), next: nir.FirstComposite}
 }
 
-// id 返回一个事实类型的 NIR 类型 ID。void 由调用方按位置决定是否允许。
+// id 返回一个事实类型的 NIR 类型 ID。泛型实例降低期间，类型参数先按当前
+// 实例的类型实参替换；void 由调用方按位置决定是否允许。
 func (t *typeTable) id(typ *frontend.Type) (int, error) {
+	if len(t.subst) > 0 {
+		substituted, err := frontend.SubstituteType(typ, t.subst)
+		if err != nil {
+			return 0, err
+		}
+		typ = substituted
+	}
 	return t.idDepth(typ, 0)
 }
 

@@ -97,3 +97,5 @@ S2.3 数组与元组第一个切片已实现：同质数组字面量、索引、
 S2.4 可空联合第一个切片已实现：`T | null` 和 `T | undefined` 可以作为局部值、参数和返回值；`null` / `undefined` 的赋值、严格相等比较和前端控制流缩窄都能生成原生程序。bridge 用 `tag int32` 加成员 payload 表示联合，`unwrap` 前检查标签，标签不一致按数据错误退出 6。多成员联合、判别联合、`??` / `?.` 和可选属性仍拒绝。规则见[联合与空值 RFC](docs/language/semantics/unions-null.md)、[NIR 格式](docs/reference/nir.md)与[bridge 说明](docs/reference/bridge.md)，验收见[S2.4 验收记录](docs/validation/s2-04-nullable-unions.md)。
 
 S2.5 函数值第一个切片已实现：顶层函数可以作为值传递和返回，无捕获的表达式体箭头函数在降低时提升成合成具名函数；函数类型可以出现在参数、返回值、局部值和三元式结果里，通过函数值调用按函数类型核对实参。函数值不能输出，也还没有身份比较；闭包捕获、块体箭头和 `void` 箭头仍拒绝。规则见[函数与闭包 RFC](docs/language/semantics/functions.md)、[NIR 格式](docs/reference/nir.md)与[bridge 说明](docs/reference/bridge.md)，验收见[S2.5 验收记录](docs/validation/s2-05-function-values.md)。
+
+S2.6 泛型函数第一个切片已实现：`function identity<T>(value: T): T` 这样的泛型函数在调用点从实参推断类型实参，按具体类型单态化成 `identity$t1` 这样的独立函数；同一组类型实参复用同一个实例，NIR 的类型表和函数签名里不保留类型参数。类型参数可以出现在参数、数组、元组、对象属性和函数类型里，递归泛型调用也能收敛。泛型接口、泛型类型别名、默认类型参数和约束驱动操作仍拒绝。规则见[泛型 RFC](docs/language/semantics/generics.md)、[NIR 格式](docs/reference/nir.md)与[降低器](docs/reference/lowering.md)，验收见[S2.6 验收记录](docs/validation/s2-06-generics.md)。

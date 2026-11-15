@@ -30,8 +30,21 @@ func Check(snapshot *source.Snapshot, facts *frontend.Facts) ([]*diagnostic.Diag
 	if err := facts.Validate(); err != nil {
 		return nil, err
 	}
-	c := &checker{snapshot: snapshot, facts: facts, imports: valueImports(facts)}
+	c := &checker{snapshot: snapshot, facts: facts, imports: valueImports(facts), typeParams: make(map[string]bool)}
+	for i := range facts.Declarations {
+		decl := &facts.Declarations[i]
+		if decl.Kind != frontend.DeclFunction {
+			continue
+		}
+		for _, name := range facts.TypeParametersOf(decl) {
+			c.typeParams[name] = true
+		}
+	}
 	for _, alias := range facts.Aliases {
+		if frontend.ContainsTypeParameter(alias.Type) {
+			c.report(alias.Start, "cap.unsupported-syntax", "泛型类型别名 %q 不在本阶段子集内；先支持泛型函数", alias.Name)
+			continue
+		}
 		switch alias.Kind {
 		case frontend.KindNumber, frontend.KindBoolean, frontend.KindString:
 			// 基础别名只活在类型空间，不产生运行时值。
@@ -111,6 +124,7 @@ type checker struct {
 	loopDepth   int
 	resultType  *frontend.Type
 	arrowParams []map[string]bool
+	typeParams  map[string]bool
 }
 
 // importKey 是一条值导入绑定的完整身份：目标模块的解析后路径、那个模块
@@ -200,6 +214,14 @@ func (c *checker) declaredType(t *frontend.Type, offset int, format, name string
 		return
 	}
 	resolved := c.facts.ResolveType(t)
+	if resolved.Kind == frontend.KindTypeParameter {
+		// 泛型函数签名里的类型参数在调用点才会变成具体类型；约束和可用操作
+		// 由 TypeScript 检查，这里只确认名字属于某个泛型函数。
+		if reason := c.valueProblem(resolved, 0); reason != "" {
+			c.report(offset, "cap.bad-type", format+"的%s", name, reason)
+		}
+		return
+	}
 	for _, k := range allowed {
 		if resolved.Kind == k {
 			// void 只表示「没有值」，不参与值类型的递归检查。
@@ -758,6 +780,10 @@ func (c *checker) identifier(n *frontend.Node) {
 	case frontend.DeclFunction:
 		// 顶层函数可以作为值传递；具体位置是否允许函数类型由声明、赋值和
 		// 调用检查负责。没有函数类型摘要说明事实不完整。
+		if len(c.facts.TypeParametersOf(decl)) > 0 {
+			c.report(n.Start, "cap.unsupported-syntax", "泛型函数 %q 必须先实例化后才能作为值", n.Name)
+			return
+		}
 		if n.Type == nil || n.Type.Kind != frontend.KindFunction {
 			c.report(n.Start, "cap.bad-type", "函数 %q 作为值使用需要函数类型摘要", n.Name)
 		}
@@ -836,6 +862,10 @@ func (c *checker) call(n *frontend.Node) {
 				c.report(n.Start, "cap.arg-count", "调用 %q 给了 %d 个实参，函数声明需要 %d 到 %d 个", decl.Name, len(args), arity.Required, arity.Total)
 				return
 			}
+			if len(c.facts.TypeParametersOf(decl)) > 0 {
+				c.genericCall(n, decl, args)
+				return
+			}
 			for i := range args {
 				c.valueNode(&args[i], "调用 "+decl.Name+" 的实参")
 				if i < len(decl.Parameters) {
@@ -876,6 +906,60 @@ func (c *checker) call(n *frontend.Node) {
 			return
 		}
 		c.report(n.Start, "cap.unknown-callee", "调用目标不是直接函数名")
+	}
+}
+
+// genericCall 从实参推断泛型函数的类型实参，再按实例化后的参数类型检查
+// 实参。类型参数无法推断或出现在不可推断的复合位置上时按能力限制拒绝。
+func (c *checker) genericCall(n *frontend.Node, decl *frontend.Declaration, args []frontend.Node) {
+	var params []frontend.Type
+	for _, id := range decl.Parameters {
+		param, ok := c.facts.Declaration(id)
+		if !ok || param.Type == nil {
+			c.report(decl.Start, "cap.bad-type", "泛型函数 %q 的参数缺少类型摘要", decl.Name)
+			return
+		}
+		params = append(params, *c.facts.ResolveType(param.Type))
+	}
+	actuals := make([]frontend.Type, len(args))
+	for i := range args {
+		if args[i].Type == nil {
+			c.report(args[i].Start, "cap.bad-type", "泛型调用 %q 的实参缺少类型摘要", decl.Name)
+			return
+		}
+		actuals[i] = *c.facts.ResolveType(args[i].Type)
+	}
+	subst, ok := frontend.InferTypeParams(params, actuals)
+	if !ok {
+		c.report(decl.Start, "cap.bad-type", "无法从实参推断泛型函数 %q 的类型实参", decl.Name)
+		return
+	}
+	for _, name := range c.facts.TypeParametersOf(decl) {
+		if _, ok := subst[name]; !ok {
+			c.report(decl.Start, "cap.bad-type", "泛型函数 %q 的类型参数 %q 无法从实参推断", decl.Name, name)
+			return
+		}
+	}
+	if decl.Result == nil || n.Type == nil {
+		c.report(decl.Start, "cap.bad-type", "泛型函数 %q 缺少返回类型摘要", decl.Name)
+		return
+	}
+	want, err := frontend.SubstituteType(decl.Result, subst)
+	if err != nil {
+		c.report(decl.Start, "cap.bad-type", "泛型函数 %q 的类型实参：%v", decl.Name, err)
+		return
+	}
+	if !frontend.SameType(c.facts.ResolveType(n.Type), want) {
+		c.report(n.Start, "cap.bad-type", "泛型调用 %q 的结果类型是 %s，推断实例返回 %s", decl.Name, describeType(c.facts.ResolveType(n.Type)), describeType(want))
+		return
+	}
+	for i := range args {
+		param, err := frontend.SubstituteType(&params[i], subst)
+		if err != nil {
+			c.report(decl.Start, "cap.bad-type", "泛型函数 %q 的类型实参：%v", decl.Name, err)
+			return
+		}
+		c.typedValue(&args[i], param, "调用 "+decl.Name+" 的实参")
 	}
 }
 
@@ -1132,6 +1216,11 @@ func (c *checker) valueProblem(t *frontend.Type, depth int) string {
 		return c.unionProblem(resolved, depth)
 	case frontend.KindFunction:
 		return c.functionProblem(resolved, depth)
+	case frontend.KindTypeParameter:
+		if resolved.Name != "" && c.typeParams[resolved.Name] {
+			return ""
+		}
+		return "是未绑定的类型参数"
 	case frontend.KindAny:
 		return "是 any 或 unknown 类型"
 	}

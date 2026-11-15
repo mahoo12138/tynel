@@ -41,11 +41,12 @@ func Lower(snapshot *source.Snapshot, facts *frontend.Facts) (*nir.Module, error
 	}
 
 	l := &lowerer{
-		snapshot: snapshot,
-		facts:    facts,
-		names:    make(map[int]string, len(facts.Declarations)),
-		types:    newTypeTable(facts),
-		debug:    &nir.DebugInfo{},
+		snapshot:         snapshot,
+		facts:            facts,
+		names:            make(map[int]string, len(facts.Declarations)),
+		types:            newTypeTable(facts),
+		debug:            &nir.DebugInfo{},
+		genericInstances: make(map[string]*genericInstance),
 	}
 	l.reserveNames(facts)
 	module := &nir.Module{SchemaVersion: nir.SchemaVersion, Types: []nir.TypeDef{}, Entry: EntryName}
@@ -64,6 +65,9 @@ func Lower(snapshot *source.Snapshot, facts *frontend.Facts) (*nir.Module, error
 	for i := range facts.Declarations {
 		decl := &facts.Declarations[i]
 		if decl.Kind != frontend.DeclFunction {
+			continue
+		}
+		if len(facts.TypeParametersOf(decl)) > 0 {
 			continue
 		}
 		fn, err := l.function(decl)
@@ -103,11 +107,12 @@ func LowerMerged(facts *frontend.Facts, snapshots map[string]*source.Snapshot, b
 		return nil, err
 	}
 	l := &lowerer{
-		snapshots: snapshots,
-		facts:     facts,
-		names:     make(map[int]string, len(facts.Declarations)),
-		types:     newTypeTable(facts),
-		debug:     &nir.DebugInfo{},
+		snapshots:        snapshots,
+		facts:            facts,
+		names:            make(map[int]string, len(facts.Declarations)),
+		types:            newTypeTable(facts),
+		debug:            &nir.DebugInfo{},
+		genericInstances: make(map[string]*genericInstance),
 	}
 	l.reserveNames(facts)
 	if len(snapshots) > 0 {
@@ -124,6 +129,9 @@ func LowerMerged(facts *frontend.Facts, snapshots map[string]*source.Snapshot, b
 	for i := range facts.Declarations {
 		decl := &facts.Declarations[i]
 		if decl.Kind != frontend.DeclFunction {
+			continue
+		}
+		if len(facts.TypeParametersOf(decl)) > 0 {
 			continue
 		}
 		fn, err := l.function(decl)
@@ -181,24 +189,32 @@ func LowerMerged(facts *frontend.Facts, snapshots map[string]*source.Snapshot, b
 }
 
 type lowerer struct {
-	snapshot      *source.Snapshot
-	snapshots     map[string]*source.Snapshot
-	facts         *frontend.Facts
-	currentModule string
-	inInit        bool
-	names         map[int]string  // 函数声明 ID → NIR 函数名
-	types         *typeTable      // 事实类型 → NIR 类型 ID
-	result        int             // 当前正在降低的函数的返回类型 ID
-	temp          int             // 短路结果与实参物化的临时名序号
-	reserved      map[string]bool // 用户声明占用的名字，临时名必须绕开
-	loops         []int           // 当前函数内由内到外的循环 id
-	nextLoop      int             // 下一个循环 id
-	debug         *nir.DebugInfo  // 整个模块的调试段
-	debugFn       *nir.DebugFunction
-	nextScope     int               // 当前函数内下一个作用域 id
-	lifted        []nir.Function    // 由箭头函数提升出的合成函数
-	nextArrow     int               // 下一个箭头函数名序号
-	arrowParams   []map[string]bool // 正在降低的箭头函数的参数名栈
+	snapshot         *source.Snapshot
+	snapshots        map[string]*source.Snapshot
+	facts            *frontend.Facts
+	currentModule    string
+	inInit           bool
+	names            map[int]string  // 函数声明 ID → NIR 函数名
+	types            *typeTable      // 事实类型 → NIR 类型 ID
+	result           int             // 当前正在降低的函数的返回类型 ID
+	temp             int             // 短路结果与实参物化的临时名序号
+	reserved         map[string]bool // 用户声明占用的名字，临时名必须绕开
+	loops            []int           // 当前函数内由内到外的循环 id
+	nextLoop         int             // 下一个循环 id
+	debug            *nir.DebugInfo  // 整个模块的调试段
+	debugFn          *nir.DebugFunction
+	nextScope        int                         // 当前函数内下一个作用域 id
+	lifted           []nir.Function              // 由箭头函数提升出的合成函数
+	nextArrow        int                         // 下一个箭头函数名序号
+	arrowParams      []map[string]bool           // 正在降低的箭头函数的参数名栈
+	genericInstances map[string]*genericInstance // 单态化实例缓存
+}
+
+// genericInstance 是一次泛型函数的单态化结果。函数体可能正在降低，缓存项
+// 先登记名字，递归调用才能复用同一个实例。
+type genericInstance struct {
+	name string
+	fn   *nir.Function
 }
 
 // scope 是当前可见的声明。用声明 ID 而不是名字做键：两个函数里同名的参数是
@@ -937,6 +953,9 @@ func (l *lowerer) identifier(n *frontend.Node, sc *scope, depth int) (*nir.Expr,
 		}
 		return l.narrowedRead(n, decl, &nir.Expr{Op: nir.OpLocal, Name: name, Pos: l.pos(n.Start)}, sc)
 	case frontend.DeclFunction:
+		if len(l.facts.TypeParametersOf(decl)) > 0 {
+			return nil, nil, l.fail(n.Start, "lower.function-value", "泛型函数 %q 必须先实例化后才能作为值", n.Name)
+		}
 		if n.Type == nil || n.Type.Kind != frontend.KindFunction {
 			return nil, nil, l.fail(n.Start, "lower.function-value", "函数 %q 作为值使用时缺少函数类型摘要", n.Name)
 		}
@@ -1460,6 +1479,9 @@ func (l *lowerer) call(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir
 
 // directCall 降低对具名函数的直接调用。
 func (l *lowerer) directCall(n, callee *frontend.Node, decl *frontend.Declaration, sc *scope, depth int) (*nir.Expr, []nir.Stmt, error) {
+	if len(l.facts.TypeParametersOf(decl)) > 0 {
+		return l.genericDirectCall(n, decl, sc, depth)
+	}
 	args := n.Children[1:]
 	// 这里要求实参与形参一一对应：后端不会合成缺省值，少一个实参就凑不出
 	// 目标函数的调用。可省略的参数在能力检查阶段已按 cap.unsupported-parameter
@@ -1485,6 +1507,201 @@ func (l *lowerer) directCall(n, callee *frontend.Node, decl *frontend.Declaratio
 		return nil, nil, err
 	}
 	return &nir.Expr{Op: nir.OpCall, Function: decl.Name, Args: exprs, Pos: l.pos(n.Start)}, pre, nil
+}
+
+// genericDirectCall 在调用点推断类型实参，取得（或创建）对应的单态化实例，
+// 再按实例的具体参数类型降低实参。
+func (l *lowerer) genericDirectCall(n *frontend.Node, decl *frontend.Declaration, sc *scope, depth int) (*nir.Expr, []nir.Stmt, error) {
+	args := n.Children[1:]
+	if len(args) != len(decl.Parameters) {
+		return nil, nil, l.fail(n.Start, "lower.bad-arity", "调用 %q 给了 %d 个实参，声明有 %d 个参数", decl.Name, len(args), len(decl.Parameters))
+	}
+	params := make([]frontend.Type, 0, len(decl.Parameters))
+	names := l.facts.TypeParametersOf(decl)
+	// 被调用函数自己的类型参数不能被调用方的实参替换掉，否则递归调用
+	// down<T> 会把形参 T 提前变成外层实例的 number，推断就失去了变量。
+	paramSubst := make(map[string]frontend.Type, len(l.types.subst))
+	for name, value := range l.types.subst {
+		paramSubst[name] = value
+	}
+	for _, name := range names {
+		delete(paramSubst, name)
+	}
+	for _, id := range decl.Parameters {
+		param, ok := l.facts.Declaration(id)
+		if !ok || param.Type == nil {
+			return nil, nil, l.fail(n.Start, "lower.unknown-param", "泛型函数 %q 的参数没有类型摘要", decl.Name)
+		}
+		resolved, err := l.substituteWith(l.facts.ResolveType(param.Type), paramSubst)
+		if err != nil {
+			return nil, nil, l.fail(n.Start, "lower.bad-type", "泛型函数 %q 的参数：%v", decl.Name, err)
+		}
+		params = append(params, *resolved)
+	}
+	actuals := make([]frontend.Type, len(args))
+	for i := range args {
+		if args[i].Type == nil {
+			return nil, nil, l.fail(args[i].Start, "lower.bad-type", "泛型调用 %q 的实参缺少类型摘要", decl.Name)
+		}
+		resolved, err := l.substituteCurrent(l.facts.ResolveType(args[i].Type))
+		if err != nil {
+			return nil, nil, l.fail(args[i].Start, "lower.bad-type", "泛型调用 %q 的实参：%v", decl.Name, err)
+		}
+		actuals[i] = *resolved
+	}
+	subst, ok := frontend.InferTypeParams(params, actuals)
+	if !ok {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "无法从实参推断泛型函数 %q 的类型实参", decl.Name)
+	}
+	typeIDs := make([]int, 0, len(names))
+	for _, name := range names {
+		value, ok := subst[name]
+		if !ok {
+			return nil, nil, l.fail(n.Start, "lower.bad-type", "泛型函数 %q 的类型参数 %q 无法推断", decl.Name, name)
+		}
+		id, err := l.types.id(&value)
+		if err != nil {
+			return nil, nil, l.fail(n.Start, "lower.bad-type", "泛型函数 %q 的类型实参：%v", decl.Name, err)
+		}
+		typeIDs = append(typeIDs, id)
+	}
+	instance, err := l.instantiate(decl, subst, typeIDs, depth)
+	if err != nil {
+		return nil, nil, err
+	}
+	paramIDs := make([]int, len(instance.fn.Params))
+	for i := range instance.fn.Params {
+		paramIDs[i] = instance.fn.Params[i].Type
+	}
+	exprs, pre, err := l.callArguments(args, paramIDs, sc, depth)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &nir.Expr{Op: nir.OpCall, Function: instance.name, Args: exprs, Pos: l.pos(n.Start)}, pre, nil
+}
+
+// instantiate 为一次泛型调用生成具体函数。缓存项先登记名字和参数表，再降低
+// 函数体，递归或相互递归的泛型调用因此不会无限展开。
+func (l *lowerer) instantiate(decl *frontend.Declaration, subst map[string]frontend.Type, typeIDs []int, depth int) (*genericInstance, error) {
+	key := fmt.Sprintf("%d", decl.ID)
+	for _, id := range typeIDs {
+		key += fmt.Sprintf(":%d", id)
+	}
+	if instance, ok := l.genericInstances[key]; ok {
+		return instance, nil
+	}
+	name := l.instanceName(decl.Name, typeIDs)
+	fn := &nir.Function{Name: name, Pos: l.pos(decl.Start)}
+	instance := &genericInstance{name: name, fn: fn}
+	l.genericInstances[key] = instance
+
+	savedResult, savedDebug, savedScope, savedLoops := l.result, l.debugFn, l.nextScope, l.loops
+	savedSnapshot, savedModule, savedInit := l.snapshot, l.currentModule, l.inInit
+	savedSubst, savedArrows := l.types.subst, l.arrowParams
+	restore := func() {
+		l.result, l.debugFn, l.nextScope, l.loops = savedResult, savedDebug, savedScope, savedLoops
+		l.snapshot, l.currentModule, l.inInit = savedSnapshot, savedModule, savedInit
+		l.types.subst, l.arrowParams = savedSubst, savedArrows
+	}
+	l.loops = nil
+	l.inInit = false
+	l.arrowParams = nil
+	if snapshot := l.snapshots[decl.Module]; snapshot != nil {
+		l.snapshot = snapshot
+	}
+	l.currentModule = decl.Module
+	l.types.subst = subst
+	l.beginDebugFunction(name)
+	if decl.Body == nil {
+		l.finishDebugFunction()
+		restore()
+		return nil, l.fail(decl.Start, "lower.missing-body", "泛型函数 %q 没有函数体", decl.Name)
+	}
+	if decl.Result == nil {
+		l.finishDebugFunction()
+		restore()
+		return nil, l.fail(decl.Start, "lower.bad-type", "泛型函数 %q 缺少返回类型摘要", decl.Name)
+	}
+	resultID, err := l.types.id(decl.Result)
+	if err != nil {
+		l.finishDebugFunction()
+		restore()
+		return nil, l.fail(decl.Start, "lower.bad-type", "泛型函数 %q 的返回类型：%v", decl.Name, err)
+	}
+	fn.Result = resultID
+	sc := l.rootScope(decl.Start, decl.Length)
+	sc.params = make(map[int]string, len(decl.Parameters))
+	for _, id := range decl.Parameters {
+		param, ok := l.facts.Declaration(id)
+		if !ok || param.Type == nil {
+			l.finishDebugFunction()
+			restore()
+			return nil, l.fail(decl.Start, "lower.unknown-param", "泛型函数 %q 的参数 ID %d 不存在", decl.Name, id)
+		}
+		paramID, err := l.types.id(param.Type)
+		if err != nil {
+			l.finishDebugFunction()
+			restore()
+			return nil, l.fail(param.Start, "lower.bad-type", "泛型函数 %q 的参数 %q：%v", decl.Name, param.Name, err)
+		}
+		fn.Params = append(fn.Params, nir.Param{Name: param.Name, Type: paramID, Pos: l.pos(param.Start)})
+		sc.params[id] = param.Name
+		l.addDebugLocal(sc, param.Name, param.Name, nir.DebugLocalParameter, paramID, l.pos(param.Start), false)
+	}
+	l.result = resultID
+	body, err := l.block(decl.Body, sc, resultID)
+	if err != nil {
+		l.finishDebugFunction()
+		restore()
+		return nil, err
+	}
+	fn.Body = body
+	l.finishDebugFunction()
+	restore()
+	l.lifted = append(l.lifted, *fn)
+	return instance, nil
+}
+
+// substituteCurrent 把当前实例的类型实参应用到类型摘要上；没有实例时原样
+// 返回。它用于在推断前把外层泛型函数的 T 变成具体类型。
+func (l *lowerer) substituteCurrent(t *frontend.Type) (*frontend.Type, error) {
+	return l.substituteWith(t, l.types.subst)
+}
+
+func (l *lowerer) substituteWith(t *frontend.Type, subst map[string]frontend.Type) (*frontend.Type, error) {
+	if t == nil {
+		return nil, fmt.Errorf("缺少类型摘要")
+	}
+	if len(subst) == 0 {
+		return t, nil
+	}
+	return frontend.SubstituteType(t, subst)
+}
+
+// instanceName 用具体类型 ID 生成稳定的实例名。类型 ID 在同一个模块内稳定；
+// 名字冲突时追加序号，避免用户声明占用同名。
+func (l *lowerer) instanceName(base string, typeIDs []int) string {
+	var b strings.Builder
+	b.WriteString(base)
+	b.WriteString("$t")
+	for i, id := range typeIDs {
+		if i > 0 {
+			b.WriteByte('_')
+		}
+		fmt.Fprintf(&b, "%d", id)
+	}
+	name := b.String()
+	if !l.reserved[name] {
+		l.reserved[name] = true
+		return name
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s$%d", name, i)
+		if !l.reserved[candidate] {
+			l.reserved[candidate] = true
+			return candidate
+		}
+	}
 }
 
 // indirectCall 降低通过函数值发起的调用。被调用者先于实参求值；实参顺序与

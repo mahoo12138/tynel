@@ -21,7 +21,7 @@ Stage 1 已完成前端事实结构化、模块解析器扩展点、NIR schema 2
 - **数组**：同质 `T[]`，首版越界采用运行时边界错误（进程退出 6），这是有意不同于 JavaScript `undefined` 的行为；元组固定长度，索引越界在编译期拒绝；数组切片复制，不共享底层存储。
 - **联合与空值**：`null` 和 `undefined` 都是独立类型和值；联合使用 `tag int32` 加按最大成员对齐的 payload；`??` / `?.` 使用 JavaScript 短路语义。
 - **函数与闭包**：函数值使用 `code uintptr + env *ClosureEnv` ABI；闭包按引用捕获，允许捕获可变 `let`，生命周期由 GC 管理；Go `func` 不进入公共 API。
-- **泛型**：单态化；NIR 不保留运行时类型参数；首版约束只支持有限集合，类型实例缓存键使用结构化类型身份。
+- **泛型**：单态化；NIR 不保留运行时类型参数；首个切片只从调用点实参推断并生成具体实例，约束由 TypeScript 检查，暂不进入布局；类型实例缓存键使用结构化类型身份。
 - **NIR schema 3**：内置类型 ID 1–7 为 `number`、`bool`、`void`、`string`、`null`、`undefined`、`never`；复合类型 ID 从 8 开始；`Function.result`、`Param.type`、`Stmt.type`、`DebugLocal.type` 改为类型 ID；允许通过 ID 表达递归对象类型，验证器和消费者使用遍历预算；类型去重忽略 `name`。
 
 NIR schema 3 的详细字段、迁移和校验见[设计记录](../design/nir-schema-3-types.md)。

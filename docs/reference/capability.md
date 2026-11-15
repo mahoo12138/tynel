@@ -56,6 +56,7 @@ function neverCalled(n: number): number {
 | 运算 | `+` `-` `*` `/`，数字字面量上的一元 `-` `+`、`!`，比较 `<` `<=` `>` `>=` `===` `!==`，短路 `&&` `\|\|`，三元式 `? :` | 有序比较只接受 `number`；严格相等要求两侧同为 `number`、`boolean`、`string` 或同一个对象形状；`+` 只接受两个 `number` 或两个 `string`；`&&` / `\|\|` 两侧都必须是 `boolean`；三元式的条件必须是 `boolean`，两臂同类型；一元 `-` / `+` 不接受变量或一般表达式 |
 | 调用 | 本文件内声明的函数、经值导入绑定到项目模块导出的函数，或函数类型的值；实参个数与形参一致 | 间接调用要求被调用者确实是函数类型；方法调用和标准库全局函数不支持 |
 | 函数值 | 顶层函数作为值、无捕获的表达式体箭头函数、函数类型参数/返回值/局部值、三元式两臂同签名、通过函数值调用 | 闭包捕获、块体箭头、`void` 箭头函数和函数表达式仍拒绝；函数值不能输出，也还没有身份比较 |
+| 泛型函数 | 泛型函数声明、调用点从实参推断类型实参、单态化后的具体参数和返回值 | 泛型函数未实例化不能作为值；泛型类型别名、泛型接口、无法推断的类型参数和依赖约束的运算仍拒绝 |
 | 语句 | `return`、表达式语句、语句块、`if` / `else` / `else if`、`while`、`break` / `continue`、分支内 `const` 与已初始化的 `let`、独立的简单赋值 | 表达式语句的结果被丢弃；`if` / `while` 的条件必须是 `boolean`；`break` / `continue` 只能作用于最近循环 |
 | 输出 | `console.log(<number 或 boolean 或 string>)` | 必须是内置 `console`，见下 |
 | 字符串 | 字面量、无插值模板、`+` 拼接、`===` / `!==`、`s.length` | 索引、`slice`、模板插值和字符串方法仍拒绝；`s.length` 的结果是 `number`，按 UTF-16 code unit 计数 |
@@ -76,6 +77,8 @@ function neverCalled(n: number): number {
 可空联合只支持一个可执行成员加 `null` 或 `undefined`。`const x: number | null = 5` 和 `x = null` 都可以；`if (x !== null) { console.log(x + 1); }` 使用前端缩窄后的 `number`。`number | string`、`number | null | undefined` 和判别联合都会按 `cap.bad-type` 拒绝；`x ?? 0`、`x?.length` 仍不在子集内；`console.log(x)` 在未缩窄时按 `cap.bad-console-call` 拒绝。
 
 函数值第一个切片只支持无捕获的函数：顶层函数可以直接作为值，箭头函数必须是表达式体且只引用自己的参数和顶层函数。`const inc = (x: number): number => x + 1` 可以；`const n = 1; const inc = (x: number) => x + n` 按 `cap.closure` 拒绝；`() => { return 1; }` 按 `cap.unsupported-syntax` 拒绝，`(): void => ...` 也尚未支持。函数值可以作为参数、返回值、局部值和三元式结果，调用时按函数类型的参数表核对实参；`console.log(f)` 按 `cap.bad-console-call` 拒绝，`f === g` 按 `cap.bad-type` 拒绝。
+
+泛型函数第一个切片只支持调用点能直接推断的类型参数。`function identity<T>(value: T): T` 可以用 `identity(42)` 和 `identity("hi")` 分别实例化成 `identity$t1` 与 `identity$t4`；类型参数可以出现在参数、数组、元组、对象属性和函数类型里。泛型函数不能直接作为值（`const f = identity` 按 `cap.unsupported-syntax` 拒绝），类型参数推断不出来（`empty()`）或出现在联合里按 `cap.bad-type` 拒绝。约束由 TypeScript 在调用点检查，本轮不读取约束；`T extends number` 不会让 `value + 1` 自动通过，运算符仍要求具体 `number`。
 
 `&&` 与 `||` 的两个操作数都必须是 `boolean`。TypeScript 允许 `true && 1`，结果类型是 `1`；本阶段按 `cap.bad-type` 拒绝，不做数字真假转换。右侧即使被短路跳过也要检查：`false && (1 % 2 === 0)` 仍报 `cap.bad-operator`。
 
@@ -119,7 +122,7 @@ const x = announce(1);     // 拒绝：void 没有值可以绑
 | --- | --- |
 | `cap.any` | 参数、返回值或常量声明为 `any` / `unknown` |
 | `cap.type-escape` | `as`、`<T>x`、后缀 `!`（非空断言）、`satisfies` 这类绕过检查的写法 |
-| `cap.unsupported-syntax` | 数组展开与空槽、字段形式不是 `name: value` 的对象字面量、变量元组索引、`for` / `do`、未初始化的 `let`、`var`、`new`、嵌套函数、匿名或默认导出的函数声明等本阶段不支持的语法 |
+| `cap.unsupported-syntax` | 数组展开与空槽、字段形式不是 `name: value` 的对象字面量、变量元组索引、`for` / `do`、未初始化的 `let`、`var`、`new`、嵌套函数、匿名或默认导出的函数声明、泛型类型别名和未实例化的泛型函数值等本阶段不支持的语法 |
 | `cap.unknown-callee` | 调用目标不是本文件声明的函数、不是函数值、不是 `console.log`，也没有对上一条值导入绑定的项目模块导出 |
 | `cap.closure` | 箭头函数引用了外层局部值或外层箭头参数；第一个函数值切片只支持无捕获函数 |
 | `cap.forbidden-global` | 调用 `eval` |

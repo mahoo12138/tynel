@@ -1,6 +1,6 @@
 # 操作支持表
 
-这张表描述当前已实现的支持范围，起点是 `mvp/06-compiler-mvp`（Tynel Language Preview 0），并包含 Stage 2 已经落地的字符串最小闭环、静态对象、数组/元组、可空联合与函数值第一个切片。长期方向与三层兼容状态见[语言宪章](../../LANGUAGE.md)和 [TypeScript 兼容性矩阵](../language/compatibility.md)。`支持` 表示有源码夹具和验证记录；`拒绝` 表示能力检查或 TypeScript 会明确报错；`计划` 表示尚未实现，不能靠推测当成可用。完整能力矩阵见[06.07 验收记录](../validation/06-07-mvp.md)，命令入口见[命令行参考](cli.md)。
+这张表描述当前已实现的支持范围，起点是 `mvp/06-compiler-mvp`（Tynel Language Preview 0），并包含 Stage 2 已经落地的字符串最小闭环、静态对象、数组/元组、可空联合、函数值与泛型函数第一个切片。长期方向与三层兼容状态见[语言宪章](../../LANGUAGE.md)和 [TypeScript 兼容性矩阵](../language/compatibility.md)。`支持` 表示有源码夹具和验证记录；`拒绝` 表示能力检查或 TypeScript 会明确报错；`计划` 表示尚未实现，不能靠推测当成可用。完整能力矩阵见[06.07 验收记录](../validation/06-07-mvp.md)，命令入口见[命令行参考](cli.md)。
 
 ## 值
 
@@ -37,6 +37,8 @@
 | 数组与元组别名 | 支持 | `type Nums = number[]`、`type Pair = [number, string]` |
 | 可空联合别名 | 部分支持 | `type Maybe = number \| null`；多成员联合仍拒绝 |
 | 函数类型别名 | 部分支持 | `type Unary = (x: number) => number`；可选参数和不可执行成员仍拒绝 |
+| 泛型函数 | 部分支持 | `function identity<T>(value: T): T`；调用点推断类型实参并单态化成 `identity$t1` 这样的实例；泛型接口、默认类型参数和约束驱动操作仍拒绝 |
+| 泛型类型别名 | 拒绝 | `cap.unsupported-syntax`；第一个泛型切片只做函数 |
 | 多成员联合、`any` 别名 | 拒绝 | `cap.bad-type` / `cap.any` |
 | 模块级 `let` | 拒绝 | `cap.module-let`，模块体只接受 `const` |
 | 局部 `var` | 拒绝 | `cap.unsupported-syntax` |
