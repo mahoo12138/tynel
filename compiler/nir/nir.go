@@ -51,6 +51,8 @@ const (
 	OpParam     = "param"
 	OpLocal     = "local"
 	OpCall      = "call"
+	OpFunc      = "func"
+	OpInvoke    = "invoke"
 	OpBinary    = "binary"
 	OpConcat    = "concat"
 	OpStrlen    = "strlen"
@@ -189,11 +191,12 @@ type Expr struct {
 	Name     string          `json:"name,omitempty"`
 	Function string          `json:"function,omitempty"`
 	Args     []Expr          `json:"args,omitempty"`
+	Callee   *Expr           `json:"callee,omitempty"`
 	Operator string          `json:"operator,omitempty"`
 	Left     *Expr           `json:"left,omitempty"`
 	Right    *Expr           `json:"right,omitempty"`
 	Operand  *Expr           `json:"operand,omitempty"`
-	Type     int             `json:"type,omitempty"` // 仅 is 使用：目标成员类型 ID
+	Type     int             `json:"type,omitempty"` // 仅 is、func 或 invoke 使用：目标成员、函数类型或结果类型 ID
 	Pos      *Pos            `json:"pos,omitempty"`
 }
 

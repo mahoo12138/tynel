@@ -707,6 +707,30 @@ func checkExpr(root *Expr, rootPath string, depth int, nodes *int, limits Limits
 			for i := range e.Args {
 				stack = append(stack, item{&e.Args[i], fmt.Sprintf("%s.args[%d]", it.path, i), it.depth + 1})
 			}
+		case OpFunc:
+			if err := onlyFields(e, it.path, "function,type"); err != nil {
+				return err
+			}
+			if e.Function == "" {
+				return badf("nir.missing", "%s 的 func 缺少 function", it.path)
+			}
+			if e.Type == 0 {
+				return badf("nir.missing", "%s 的 func 缺少 type", it.path)
+			}
+		case OpInvoke:
+			if err := onlyFields(e, it.path, "callee,args,type"); err != nil {
+				return err
+			}
+			if e.Callee == nil {
+				return badf("nir.missing", "%s 的 invoke 缺少 callee", it.path)
+			}
+			if e.Type == 0 {
+				return badf("nir.missing", "%s 的 invoke 缺少 type", it.path)
+			}
+			stack = append(stack, item{e.Callee, it.path + ".callee", it.depth + 1})
+			for i := range e.Args {
+				stack = append(stack, item{&e.Args[i], fmt.Sprintf("%s.args[%d]", it.path, i), it.depth + 1})
+			}
 		case OpBinary:
 			if err := onlyFields(e, it.path, "operator,left,right"); err != nil {
 				return err
@@ -738,7 +762,7 @@ func checkExpr(root *Expr, rootPath string, depth int, nodes *int, limits Limits
 		case "":
 			return badf("nir.missing", "%s 缺少 op", it.path)
 		default:
-			return badf("nir.bad-op", "%s.op 为 %q，只接受 number、bool、string、null、undefined、param、local、call、binary、concat、strlen、len、field、is、compare 或 not", it.path, e.Op)
+			return badf("nir.bad-op", "%s.op 为 %q，只接受 number、bool、string、null、undefined、param、local、call、func、invoke、binary、concat、strlen、len、field、is、compare 或 not", it.path, e.Op)
 		}
 	}
 	return nil
@@ -756,6 +780,7 @@ func onlyFields(e *Expr, path, allowed string) error {
 		"name":     e.Name != "",
 		"function": e.Function != "",
 		"args":     len(e.Args) > 0,
+		"callee":   e.Callee != nil,
 		"operator": e.Operator != "",
 		"left":     e.Left != nil,
 		"right":    e.Right != nil,

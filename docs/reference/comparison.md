@@ -8,6 +8,10 @@
 | `===` `!==` | `number` | `number` | `boolean` |
 | `===` `!==` | `boolean` | `boolean` | `boolean` |
 | `===` `!==` | `string` | `string` | `boolean` |
+| `===` `!==` | 同一对象形状 | 同一对象形状 | `boolean`，比较引用身份 |
+| `===` `!==` | 可空联合 | `null` / `undefined` | `boolean`，比较联合标签 |
+
+数组、元组和函数值还没有身份比较；可空联合也不能直接与另一个联合比较。它们按 `cap.bad-type` 拒绝。
 
 `==` 与 `!=` 不在子集内，能力检查按 `cap.bad-operator` 拒绝。混合类型比较由 TypeScript 先拒绝（TS2367）；能力检查与降低仍会核对两侧类型，防止伪造的事实绕过前端。
 

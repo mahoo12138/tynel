@@ -95,3 +95,5 @@ S2.2 第一个对象切片已实现：接口和对象别名展开成静态形状
 S2.3 数组与元组第一个切片已实现：同质数组字面量、索引、`length`、嵌套数组、对象数组、数组参数/返回值/局部值和对象字段都能生成原生程序；元组支持字面量、常量索引、参数和返回值。数组索引先求值数组再求值下标，运行时检查整数性和边界，越界按数据错误退出 6，而不是 Go panic 或 JavaScript `undefined`；元组越界在编译期拒绝。数组方法、展开、赋值、扩容和身份比较仍拒绝。规则见[对象与数组 RFC](docs/language/semantics/objects-arrays.md)、[NIR 格式](docs/reference/nir.md)与[bridge 说明](docs/reference/bridge.md)，验收见[S2.3 验收记录](docs/validation/s2-03-arrays.md)。
 
 S2.4 可空联合第一个切片已实现：`T | null` 和 `T | undefined` 可以作为局部值、参数和返回值；`null` / `undefined` 的赋值、严格相等比较和前端控制流缩窄都能生成原生程序。bridge 用 `tag int32` 加成员 payload 表示联合，`unwrap` 前检查标签，标签不一致按数据错误退出 6。多成员联合、判别联合、`??` / `?.` 和可选属性仍拒绝。规则见[联合与空值 RFC](docs/language/semantics/unions-null.md)、[NIR 格式](docs/reference/nir.md)与[bridge 说明](docs/reference/bridge.md)，验收见[S2.4 验收记录](docs/validation/s2-04-nullable-unions.md)。
+
+S2.5 函数值第一个切片已实现：顶层函数可以作为值传递和返回，无捕获的表达式体箭头函数在降低时提升成合成具名函数；函数类型可以出现在参数、返回值、局部值和三元式结果里，通过函数值调用按函数类型核对实参。函数值不能输出，也还没有身份比较；闭包捕获、块体箭头和 `void` 箭头仍拒绝。规则见[函数与闭包 RFC](docs/language/semantics/functions.md)、[NIR 格式](docs/reference/nir.md)与[bridge 说明](docs/reference/bridge.md)，验收见[S2.5 验收记录](docs/validation/s2-05-function-values.md)。

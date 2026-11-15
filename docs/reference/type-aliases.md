@@ -42,6 +42,7 @@ console.log(value + 1);
 | `type Nums = number[]` | 允许；同质数组 |
 | `type Pair = [number, string]` | 允许；定长元组 |
 | `type Maybe = number \| null` | 允许；两成员可空联合 |
+| `type Unary = (x: number) => number` | 允许；无捕获函数类型 |
 | `type Value = number \| string` | `cap.bad-type`，多成员联合拒绝 |
 | `type Amount = number \| boolean` | `cap.bad-type`，多成员联合拒绝 |
 | `type Amount = any` | `cap.any` |
@@ -49,7 +50,7 @@ console.log(value + 1);
 | `Amount` 当值 | TypeScript `TS2693` |
 | `Amount(1)`（纯类型导入） | TypeScript `TS2693` |
 
-别名链只允许最终落到 `number`、`boolean`、`string`、静态对象、同质数组、定长元组或两成员可空联合。`type A = B` 且 `B = number` 可以通过；链里出现多成员联合、`any` 或不受支持的元素类型就拒绝。接口只有能展开成必填属性的静态对象时才允许。
+别名链只允许最终落到 `number`、`boolean`、`string`、静态对象、同质数组、定长元组、两成员可空联合或可执行函数类型。`type A = B` 且 `B = number` 可以通过；链里出现多成员联合、`any` 或不受支持的元素类型就拒绝。接口只有能展开成必填属性的静态对象时才允许。
 
 ## 修改别名后的错误
 
@@ -73,8 +74,9 @@ main.ts:3:7: error TS2322: Type 'number' is not assignable to type 'string'.
 
 ## 本轮边界
 
-- 只支持非递归、无类型参数、最终为 `number`、`boolean`、`string`、静态对象、同质数组、定长元组或两成员可空联合的别名。
-- 不支持多成员联合、字面量联合、函数、泛型别名；空元组也没有可执行布局。
+- 只支持非递归、无类型参数、最终为 `number`、`boolean`、`string`、静态对象、同质数组、定长元组、两成员可空联合或函数类型的别名。
+- 不支持多成员联合、字面量联合、泛型别名；空元组也没有可执行布局。
+- 函数类型别名要求参数必填、参数和返回值都在当前执行子集内；函数值本身不能输出。
 - 不支持值导入和跨模块函数/常量绑定；这些留到 05.04。
 - 别名不产生运行时值，也不改变数值宽度或初始化顺序。
 

@@ -173,11 +173,22 @@ func TestUnknownCalleeAndEval(t *testing.T) {
 	wantCode(t, check(t, facts), "cap.forbidden-global")
 }
 
-func TestFunctionValueIsRejected(t *testing.T) {
+func TestFunctionValueIsAllowed(t *testing.T) {
 	facts := base()
-	body := node("Block", node("ExpressionStatement", ident("add", 1)))
+	number := frontend.Type{Kind: frontend.KindNumber}
+	fn := typed("Identifier", frontend.KindFunction)
+	fn.Name = "add"
+	fn.Target = 1
+	fn.Type = &frontend.Type{
+		Kind:   frontend.KindFunction,
+		Params: []frontend.Field{{Name: "a", Type: number}, {Name: "b", Type: number}},
+		Result: &number,
+	}
+	body := node("Block", node("ExpressionStatement", fn))
 	facts.Declarations[0].Body = &body
-	wantCode(t, check(t, facts), "cap.unsupported-syntax")
+	if findings := check(t, facts); len(findings) != 0 {
+		t.Fatalf("函数值应通过能力检查，实际 %v", codes(findings))
+	}
 }
 
 func TestUncalledFunctionIsStillChecked(t *testing.T) {

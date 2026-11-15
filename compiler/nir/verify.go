@@ -439,7 +439,7 @@ func (c *checker) valueType(id int) bool {
 		return false
 	}
 	switch def.Kind {
-	case TypeKindObject, TypeKindArray, TypeKindTuple, TypeKindUnion:
+	case TypeKindObject, TypeKindArray, TypeKindTuple, TypeKindUnion, TypeKindFunction:
 		return true
 	}
 	return false
@@ -589,6 +589,57 @@ func (c *checker) exprType(e *Expr, sc *scope) (int, error) {
 			}
 		}
 		return target.Result, nil
+	case OpFunc:
+		if e.Function == "" || e.Type == 0 {
+			return 0, failAt("nir.missing", e.Pos, "func 缺少 function 或 type")
+		}
+		def, ok := c.types[e.Type]
+		if !ok || def.Kind != TypeKindFunction {
+			return 0, failAt("nir.type-kind", e.Pos, "func 的 type 不是 function 类型：%s", typeName(e.Type))
+		}
+		target, ok := c.funcs[e.Function]
+		if !ok {
+			return 0, failAt("nir.unknown-function", e.Pos, "func 引用了不存在的函数 %q", e.Function)
+		}
+		if len(def.Params) != len(target.Params) || def.Result != target.Result {
+			return 0, failAt("nir.function-signature", e.Pos, "函数 %q 的签名与 func 的类型不一致", e.Function)
+		}
+		for i := range def.Params {
+			if def.Params[i] != target.Params[i].Type {
+				return 0, failAt("nir.function-signature", e.Pos,
+					"函数 %q 的第 %d 个参数与 func 的类型不一致", e.Function, i+1)
+			}
+		}
+		return e.Type, nil
+	case OpInvoke:
+		if e.Callee == nil || e.Type == 0 {
+			return 0, failAt("nir.missing", e.Pos, "invoke 缺少 callee 或 type")
+		}
+		callee, err := c.exprType(e.Callee, sc)
+		if err != nil {
+			return 0, err
+		}
+		def, ok := c.types[callee]
+		if !ok || def.Kind != TypeKindFunction {
+			return 0, failAt("nir.type-kind", e.Pos, "invoke 的被调用者不是 function 类型：%s", typeName(callee))
+		}
+		if len(e.Args) != len(def.Params) {
+			return 0, failAt("nir.arg-count", e.Pos, "间接调用需要 %d 个实参，实际 %d 个", len(def.Params), len(e.Args))
+		}
+		for i := range e.Args {
+			got, err := c.exprType(&e.Args[i], sc)
+			if err != nil {
+				return 0, err
+			}
+			if want := def.Params[i]; got != want {
+				return 0, failAt("nir.arg-type", argPos(&e.Args[i], e.Pos),
+					"间接调用的第 %d 个实参需要 %s，实际为 %s", i+1, typeName(want), typeName(got))
+			}
+		}
+		if e.Type != def.Result {
+			return 0, failAt("nir.result-type", e.Pos, "invoke 的结果类型是 %s，函数类型返回 %s", typeName(e.Type), typeName(def.Result))
+		}
+		return e.Type, nil
 	case OpField:
 		if e.Name == "" || e.Operand == nil {
 			return 0, failAt("nir.missing", e.Pos, "field 缺少 name 或 operand")

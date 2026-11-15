@@ -77,6 +77,7 @@ func Lower(snapshot *source.Snapshot, facts *frontend.Facts) (*nir.Module, error
 	if err != nil {
 		return nil, err
 	}
+	module.Functions = append(module.Functions, l.lifted...)
 	module.Functions = append(module.Functions, *entry)
 	if len(l.debug.Functions) > 0 {
 		module.Debug = l.debug
@@ -158,6 +159,7 @@ func LowerMerged(facts *frontend.Facts, snapshots map[string]*source.Snapshot, b
 	l.inInit = false
 	l.finishDebugFunction()
 	initFn.Body = append(initFn.Body, nir.Stmt{Op: nir.OpReturn})
+	module.Functions = append(module.Functions, l.lifted...)
 	module.Functions = append(module.Functions, *initFn)
 
 	mainFn := &nir.Function{Name: EntryName, Result: nir.TypeVoid}
@@ -193,7 +195,10 @@ type lowerer struct {
 	nextLoop      int             // 下一个循环 id
 	debug         *nir.DebugInfo  // 整个模块的调试段
 	debugFn       *nir.DebugFunction
-	nextScope     int // 当前函数内下一个作用域 id
+	nextScope     int               // 当前函数内下一个作用域 id
+	lifted        []nir.Function    // 由箭头函数提升出的合成函数
+	nextArrow     int               // 下一个箭头函数名序号
+	arrowParams   []map[string]bool // 正在降低的箭头函数的参数名栈
 }
 
 // scope 是当前可见的声明。用声明 ID 而不是名字做键：两个函数里同名的参数是
@@ -807,6 +812,8 @@ func (l *lowerer) expr(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir
 		return &nir.Expr{Op: nir.OpNull, Pos: l.pos(n.Start)}, nil, nil
 	case "UndefinedKeyword":
 		return &nir.Expr{Op: nir.OpUndefined, Pos: l.pos(n.Start)}, nil, nil
+	case "ArrowFunction":
+		return l.liftArrow(n, depth)
 	case "StringLiteral", "NoSubstitutionTemplateLiteral":
 		if n.Type == nil || n.Type.Kind != frontend.KindString {
 			return nil, nil, l.fail(n.Start, "lower.bad-type", "字符串字面量缺少 string 类型摘要")
@@ -884,6 +891,11 @@ func (l *lowerer) expr(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir
 }
 
 func (l *lowerer) identifier(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir.Stmt, error) {
+	if n.Target == 0 {
+		if len(l.arrowParams) > 0 && l.arrowParams[len(l.arrowParams)-1][n.Name] {
+			return &nir.Expr{Op: nir.OpParam, Name: n.Name, Pos: l.pos(n.Start)}, nil, nil
+		}
+	}
 	if n.Target == 0 && n.Type != nil {
 		switch n.Type.Kind {
 		case frontend.KindUndefined:
@@ -924,6 +936,15 @@ func (l *lowerer) identifier(n *frontend.Node, sc *scope, depth int) (*nir.Expr,
 			return nil, nil, l.fail(n.Start, "lower.unknown-name", "局部值 %q 不在当前作用域内", n.Name)
 		}
 		return l.narrowedRead(n, decl, &nir.Expr{Op: nir.OpLocal, Name: name, Pos: l.pos(n.Start)}, sc)
+	case frontend.DeclFunction:
+		if n.Type == nil || n.Type.Kind != frontend.KindFunction {
+			return nil, nil, l.fail(n.Start, "lower.function-value", "函数 %q 作为值使用时缺少函数类型摘要", n.Name)
+		}
+		id, err := l.types.id(n.Type)
+		if err != nil {
+			return nil, nil, l.fail(n.Start, "lower.bad-type", "函数 %q 作为值：%v", n.Name, err)
+		}
+		return &nir.Expr{Op: nir.OpFunc, Function: decl.Name, Type: id, Pos: l.pos(n.Start)}, nil, nil
 	default:
 		return nil, nil, l.fail(n.Start, "lower.function-value", "函数 %q 作为值使用", n.Name)
 	}
@@ -1426,13 +1447,19 @@ func (l *lowerer) call(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir
 		return nil, nil, l.fail(n.Start, "lower.bad-arity", "调用没有实参列表")
 	}
 	callee := &n.Children[0]
-	if callee.Kind != "Identifier" {
-		return nil, nil, l.fail(n.Start, "lower.unknown-callee", "调用目标不是直接函数名")
+	if callee.Kind == "Identifier" {
+		if decl, ok := l.facts.Declaration(callee.Target); ok && decl.Kind == frontend.DeclFunction {
+			return l.directCall(n, callee, decl, sc, depth)
+		}
 	}
-	decl, ok := l.facts.Declaration(callee.Target)
-	if !ok || decl.Kind != frontend.DeclFunction {
-		return nil, nil, l.fail(n.Start, "lower.unknown-callee", "调用目标 %q 不是本文件里的函数", callee.Name)
+	if callee.Type != nil && callee.Type.Kind == frontend.KindFunction {
+		return l.indirectCall(n, callee, sc, depth)
 	}
+	return nil, nil, l.fail(n.Start, "lower.unknown-callee", "调用目标 %q 不是函数值", callee.Name)
+}
+
+// directCall 降低对具名函数的直接调用。
+func (l *lowerer) directCall(n, callee *frontend.Node, decl *frontend.Declaration, sc *scope, depth int) (*nir.Expr, []nir.Stmt, error) {
 	args := n.Children[1:]
 	// 这里要求实参与形参一一对应：后端不会合成缺省值，少一个实参就凑不出
 	// 目标函数的调用。可省略的参数在能力检查阶段已按 cap.unsupported-parameter
@@ -1441,10 +1468,8 @@ func (l *lowerer) call(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir
 	if len(args) != len(decl.Parameters) {
 		return nil, nil, l.fail(n.Start, "lower.bad-arity", "调用 %q 给了 %d 个实参，声明有 %d 个参数", decl.Name, len(args), len(decl.Parameters))
 	}
-	exprs := make([]nir.Expr, len(args))
-	var pre []nir.Stmt
-	var pending []int
-	for i := range args {
+	paramIDs := make([]int, 0, len(decl.Parameters))
+	for i := range decl.Parameters {
 		param, ok := l.facts.Declaration(decl.Parameters[i])
 		if !ok || param.Type == nil {
 			return nil, nil, l.fail(n.Start, "lower.unknown-param", "函数 %q 的第 %d 个参数没有类型摘要", decl.Name, i+1)
@@ -1453,7 +1478,50 @@ func (l *lowerer) call(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir
 		if err != nil {
 			return nil, nil, l.fail(n.Start, "lower.bad-type", "函数 %q 的参数：%v", decl.Name, err)
 		}
-		arg, argPre, err := l.valueAs(&args[i], paramID, "调用的实参", sc, depth+1)
+		paramIDs = append(paramIDs, paramID)
+	}
+	exprs, pre, err := l.callArguments(args, paramIDs, sc, depth)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &nir.Expr{Op: nir.OpCall, Function: decl.Name, Args: exprs, Pos: l.pos(n.Start)}, pre, nil
+}
+
+// indirectCall 降低通过函数值发起的调用。被调用者先于实参求值；实参顺序与
+// 直接调用共用同一套物化规则。
+func (l *lowerer) indirectCall(n, callee *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir.Stmt, error) {
+	calleeID, err := l.types.id(callee.Type)
+	if err != nil {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "间接调用的函数值：%v", err)
+	}
+	def := l.types.functionDef(calleeID)
+	if def == nil {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "间接调用的目标不是函数类型")
+	}
+	args := n.Children[1:]
+	if len(args) != len(def.Params) {
+		return nil, nil, l.fail(n.Start, "lower.bad-arity", "间接调用给了 %d 个实参，函数类型需要 %d 个", len(args), len(def.Params))
+	}
+	base, basePre, err := l.expr(callee, sc, depth+1)
+	if err != nil {
+		return nil, nil, err
+	}
+	exprs, argPre, err := l.callArguments(args, def.Params, sc, depth)
+	if err != nil {
+		return nil, nil, err
+	}
+	pre := append(basePre, argPre...)
+	return &nir.Expr{Op: nir.OpInvoke, Callee: base, Args: exprs, Type: def.Result, Pos: l.pos(n.Start)}, pre, nil
+}
+
+// callArguments 按源码顺序降低实参，并在某个实参带准备语句时先把前面的实参
+// 物化，避免后面的副作用跑到前面。
+func (l *lowerer) callArguments(args []frontend.Node, paramIDs []int, sc *scope, depth int) ([]nir.Expr, []nir.Stmt, error) {
+	exprs := make([]nir.Expr, len(args))
+	var pre []nir.Stmt
+	var pending []int
+	for i := range args {
+		arg, argPre, err := l.valueAs(&args[i], paramIDs[i], "调用的实参", sc, depth+1)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1462,8 +1530,6 @@ func (l *lowerer) call(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir
 			pending = append(pending, i)
 			continue
 		}
-		// 这个实参带准备工作。先把它之前还没物化的实参按顺序算出来，
-		// 再执行准备工作，最后物化它自己——否则后面的副作用会跑到前面。
 		for _, j := range pending {
 			name := l.tempName()
 			value := exprs[j]
@@ -1477,7 +1543,103 @@ func (l *lowerer) call(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir
 		pre = append(pre, l.emitTemp(sc, name, &value, l.pos(args[i].Start), l.nodeNirType(&args[i])))
 		exprs[i] = nir.Expr{Op: nir.OpLocal, Name: name}
 	}
-	return &nir.Expr{Op: nir.OpCall, Function: decl.Name, Args: exprs, Pos: l.pos(n.Start)}, pre, nil
+	return exprs, pre, nil
+}
+
+// liftArrow 把无捕获的箭头函数提升成合成具名函数，并返回一个函数值表达式。
+// NIR 没有匿名函数节点：函数体必须先有名字才能被间接调用。
+func (l *lowerer) liftArrow(n *frontend.Node, depth int) (*nir.Expr, []nir.Stmt, error) {
+	if n.Type == nil || n.Type.Kind != frontend.KindFunction {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "箭头函数缺少函数类型摘要")
+	}
+	funcID, err := l.types.id(n.Type)
+	if err != nil {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "箭头函数：%v", err)
+	}
+	def := l.types.functionDef(funcID)
+	if def == nil {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "箭头函数的类型不是 function 类型")
+	}
+	resolved := l.facts.ResolveType(n.Type)
+	if len(n.Children) != 1 || n.Children[0].Kind == "Block" {
+		return nil, nil, l.fail(n.Start, "lower.unsupported-arrow", "块体箭头函数不在本阶段子集内")
+	}
+	bodyNode := &n.Children[0]
+
+	name := l.arrowName()
+	savedResult, savedDebug, savedScope, savedLoops := l.result, l.debugFn, l.nextScope, l.loops
+	l.loops = nil
+	l.beginDebugFunction(name)
+	fn := &nir.Function{Name: name, Result: def.Result, Pos: l.pos(n.Start)}
+	sc := l.rootScope(n.Start, n.Length)
+	sc.params = map[int]string{}
+	params := make(map[string]bool, len(resolved.Params))
+	for i := range resolved.Params {
+		paramName := resolved.Params[i].Name
+		if paramName == "" {
+			paramName = fmt.Sprintf("p%d", i)
+		}
+		if params[paramName] {
+			l.finishDebugFunction()
+			l.restoreFunctionState(savedResult, savedDebug, savedScope, savedLoops)
+			return nil, nil, l.fail(n.Start, "lower.duplicate-name", "箭头函数参数 %q 重复", paramName)
+		}
+		paramID, err := l.types.id(&resolved.Params[i].Type)
+		if err != nil {
+			l.finishDebugFunction()
+			l.restoreFunctionState(savedResult, savedDebug, savedScope, savedLoops)
+			return nil, nil, l.fail(n.Start, "lower.bad-type", "箭头函数参数：%v", err)
+		}
+		if paramID == nir.TypeVoid {
+			l.finishDebugFunction()
+			l.restoreFunctionState(savedResult, savedDebug, savedScope, savedLoops)
+			return nil, nil, l.fail(n.Start, "lower.bad-type", "箭头函数参数不能是 void")
+		}
+		params[paramName] = true
+		fn.Params = append(fn.Params, nir.Param{Name: paramName, Type: paramID, Pos: l.pos(n.Start)})
+		l.addDebugLocal(sc, paramName, paramName, nir.DebugLocalParameter, paramID, l.pos(n.Start), false)
+	}
+	l.arrowParams = append(l.arrowParams, params)
+	l.result = def.Result
+	value, pre, err := l.valueAs(bodyNode, def.Result, "箭头函数返回值", sc, depth+1)
+	l.arrowParams = l.arrowParams[:len(l.arrowParams)-1]
+	if err != nil {
+		l.finishDebugFunction()
+		l.restoreFunctionState(savedResult, savedDebug, savedScope, savedLoops)
+		return nil, nil, err
+	}
+	fn.Body = pre
+	if def.Result == nir.TypeVoid {
+		fn.Body = append(fn.Body,
+			nir.Stmt{Op: nir.OpDiscard, Value: value, Pos: l.pos(bodyNode.Start)},
+			nir.Stmt{Op: nir.OpReturn, Pos: l.pos(n.Start)},
+		)
+	} else {
+		fn.Body = append(fn.Body, nir.Stmt{Op: nir.OpReturn, Value: value, Pos: l.pos(bodyNode.Start)})
+	}
+	l.finishDebugFunction()
+	l.restoreFunctionState(savedResult, savedDebug, savedScope, savedLoops)
+	l.lifted = append(l.lifted, *fn)
+	return &nir.Expr{Op: nir.OpFunc, Function: name, Type: funcID, Pos: l.pos(n.Start)}, nil, nil
+}
+
+func (l *lowerer) restoreFunctionState(result int, debug *nir.DebugFunction, scope int, loops []int) {
+	l.result = result
+	l.debugFn = debug
+	l.nextScope = scope
+	l.loops = loops
+}
+
+// arrowName 分配一个不与用户声明冲突的合成函数名。
+func (l *lowerer) arrowName() string {
+	for {
+		l.nextArrow++
+		name := fmt.Sprintf("_arrow_%d", l.nextArrow)
+		if !l.reserved[name] {
+			l.reserved[name] = true
+			return name
+		}
+	}
 }
 
 // shortCircuit 降低 && 与 ||。左侧的准备工作在外层执行；右侧的准备工作与

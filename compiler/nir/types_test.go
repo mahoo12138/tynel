@@ -482,3 +482,89 @@ func TestUnionOperationsRejectBadMembers(t *testing.T) {
 }
 
 func ptrExpr(e Expr) *Expr { return &e }
+
+// functionValueModule 构造一个引用具名函数并通过函数值调用的模块。
+func functionValueModule() *Module {
+	m := typedModule(TypeDef{ID: 8, Kind: TypeKindFunction, Params: []int{TypeNumber}, Result: TypeNumber})
+	m.Functions = append(m.Functions, Function{
+		Name:   "inc",
+		Params: []Param{{Name: "x", Type: TypeNumber}},
+		Result: TypeNumber,
+		Body: []Stmt{{Op: OpReturn, Value: ptrExpr(Expr{
+			Op:       OpBinary,
+			Operator: "+",
+			Left:     ptrExpr(Expr{Op: OpParam, Name: "x"}),
+			Right:    ptrExpr(num(1)),
+		})}},
+	})
+	m.Functions[0].Body = []Stmt{
+		{Op: OpLet, Name: "f", Value: ptrExpr(Expr{Op: OpFunc, Function: "inc", Type: 8})},
+		{Op: OpPrint, Value: ptrExpr(Expr{
+			Op:     OpInvoke,
+			Callee: ptrExpr(local("f")),
+			Args:   []Expr{num(4)},
+			Type:   TypeNumber,
+		})},
+		{Op: OpReturn},
+	}
+	return m
+}
+
+func TestFunctionValueAndInvoke(t *testing.T) {
+	m := functionValueModule()
+	if err := Verify(m); err != nil {
+		t.Fatalf("函数值模块应通过验证：%v", err)
+	}
+	data, err := EncodeBytes(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := DecodeBytes(data, DefaultLimits())
+	if err != nil {
+		t.Fatalf("函数值模块应能解码：%v", err)
+	}
+	body := back.Functions[0].Body
+	if body[0].Value == nil || body[0].Value.Op != OpFunc || body[0].Value.Function != "inc" || body[0].Value.Type != 8 {
+		t.Fatalf("func 表达式回读不完整：%+v", body[0].Value)
+	}
+	if body[1].Value == nil || body[1].Value.Op != OpInvoke || body[1].Value.Callee == nil || len(body[1].Value.Args) != 1 {
+		t.Fatalf("invoke 表达式回读不完整：%+v", body[1].Value)
+	}
+}
+
+func TestFunctionValueRejectsBadCalls(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Module)
+		code   string
+	}{
+		{"func 签名不符", func(m *Module) {
+			m.Types[0].Params = []int{TypeNumber, TypeNumber}
+		}, "nir.function-signature"},
+		{"invoke 实参个数不符", func(m *Module) {
+			m.Functions[0].Body[1].Value.Args = nil
+		}, "nir.arg-count"},
+		{"invoke 实参类型不符", func(m *Module) {
+			m.Functions[0].Body[1].Value.Args[0] = String("a")
+		}, "nir.arg-type"},
+		{"invoke 结果类型不符", func(m *Module) {
+			m.Functions[0].Body[1].Value.Type = TypeBool
+		}, "nir.result-type"},
+		{"invoke 目标不是函数", func(m *Module) {
+			m.Functions[0].Body[1].Value.Callee = ptrExpr(num(1))
+		}, "nir.type-kind"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := functionValueModule()
+			c.mutate(m)
+			err := Verify(m)
+			if err == nil {
+				t.Fatal("坏函数值调用应被拒绝")
+			}
+			if got := diagnosticCode(err); got != c.code {
+				t.Fatalf("错误码应为 %s，实际 %s（%v）", c.code, got, err)
+			}
+		})
+	}
+}

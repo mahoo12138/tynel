@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 3,
+  "types": [
+    {"id": 8, "kind": "function", "params": [1], "result": 1},
+    {"id": 9, "kind": "function", "params": [1, 1], "result": 1}
+  ],
+  "entry": "main",
+  "functions": [
+    {
+      "name": "inc",
+      "params": [{"name": "x", "type": 1}],
+      "result": 1,
+      "body": [
+        {"op": "return", "value": {"op": "binary", "operator": "+",
+          "left": {"op": "param", "name": "x"},
+          "right": {"op": "number", "bits": "0x3ff0000000000000"}}}
+      ]
+    },
+    {
+      "name": "add",
+      "params": [{"name": "a", "type": 1}, {"name": "b", "type": 1}],
+      "result": 1,
+      "body": [
+        {"op": "return", "value": {"op": "binary", "operator": "+",
+          "left": {"op": "param", "name": "a"},
+          "right": {"op": "param", "name": "b"}}}
+      ]
+    },
+    {
+      "name": "apply",
+      "params": [{"name": "value", "type": 1}, {"name": "f", "type": 8}],
+      "result": 1,
+      "body": [
+        {"op": "return", "value": {"op": "invoke", "type": 1,
+          "callee": {"op": "param", "name": "f"},
+          "args": [{"op": "param", "name": "value"}]}}
+      ]
+    },
+    {
+      "name": "main",
+      "params": [],
+      "result": 3,
+      "body": [
+        {"op": "let", "name": "incValue", "value": {"op": "func", "function": "inc", "type": 8}},
+        {"op": "print", "value": {"op": "invoke", "type": 1,
+          "callee": {"op": "local", "name": "incValue"},
+          "args": [{"op": "number", "bits": "0x4010000000000000"}]}},
+        {"op": "let", "name": "addValue", "value": {"op": "func", "function": "add", "type": 9}},
+        {"op": "print", "value": {"op": "invoke", "type": 1,
+          "callee": {"op": "local", "name": "addValue"},
+          "args": [{"op": "number", "bits": "0x4034000000000000"},
+                   {"op": "number", "bits": "0x4036000000000000"}]}},
+        {"op": "print", "value": {"op": "call", "function": "apply",
+          "args": [{"op": "number", "bits": "0x4014000000000000"},
+                   {"op": "local", "name": "incValue"}]}},
+        {"op": "return"}
+      ]
+    }
+  ]
+}

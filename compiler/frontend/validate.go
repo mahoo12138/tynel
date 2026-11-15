@@ -167,6 +167,12 @@ func (f *Facts) Validate() error {
 			return diagnostic.New(diagnostic.Internal, "facts.unknown-target", "调用指向不存在的声明 ID %d", call.Callee)
 		}
 		if callee.Kind != DeclFunction {
+			if callee.Type != nil && callee.Type.Kind == KindFunction {
+				if err := f.validateIndirectCall(call, callee); err != nil {
+					return err
+				}
+				continue
+			}
 			return diagnostic.New(diagnostic.Internal, "facts.call-target", "调用指向 %s %q，它不是函数", callee.Kind, callee.Name)
 		}
 		// 参数数量规则与能力检查共用：必填参数个数是下界，可省略的尾部参数
@@ -235,6 +241,27 @@ func (f *Facts) Validate() error {
 		if err := validateType(&expr.Type, "表达式 "+expr.Kind, 0, &nodes); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// validateIndirectCall 校验通过函数值发起的调用：实参个数必须与函数类型的
+// 参数表一致，类型按摘要核对，返回值摘要必须与函数类型一致。
+func (f *Facts) validateIndirectCall(call Call, callee *Declaration) error {
+	fn := callee.Type
+	if len(call.Arguments) != len(fn.Params) {
+		return diagnostic.New(diagnostic.Internal, "facts.arg-count", "间接调用 %q 给了 %d 个实参，函数类型需要 %d 个", callee.Name, len(call.Arguments), len(fn.Params))
+	}
+	for i := range call.Arguments {
+		got := call.Arguments[i].Kind
+		want := &fn.Params[i].Type
+		if got == want.Kind || memberOfNullable(got, want) {
+			continue
+		}
+		return diagnostic.New(diagnostic.Internal, "facts.arg-type", "间接调用 %q 的第 %d 个实参是 %s，形参是 %s", callee.Name, i+1, got, want.Kind)
+	}
+	if fn.Result == nil || call.Result.Kind != fn.Result.Kind {
+		return diagnostic.New(diagnostic.Internal, "facts.result-type", "间接调用 %q 的返回类型摘要与函数类型不一致", callee.Name)
 	}
 	return nil
 }

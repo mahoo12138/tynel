@@ -79,6 +79,7 @@ func TestFixtureOutputs(t *testing.T) {
 		{"对象字段与身份", filepath.Join("tests", "native", "fixtures", "object.nir.json"), "42\ntrue\nfalse\n"},
 		{"数组、嵌套数组与元组", filepath.Join("tests", "native", "fixtures", "array.nir.json"), "6\n3\n2\n1\n7\ntrue\n"},
 		{"可空联合与缩窄", filepath.Join("tests", "native", "fixtures", "union.nir.json"), "5\n0\ntrue\n"},
+		{"函数值与间接调用", filepath.Join("tests", "native", "fixtures", "function.nir.json"), "5\n42\n6\n"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

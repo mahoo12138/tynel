@@ -74,6 +74,8 @@ NIR（`consumer -nir`，省略了位置）：
 
 可空联合同样进入类型表：成员按类型 ID 排序去重后分配联合 ID。成员值赋给联合位置时，降低器先生成值，再生成 `wrap` 把它包成联合；已被前端缩窄的读取按缩窄类型生成 `unwrap`，bridge 在运行时核对标签。与 `null` / `undefined` 的比较生成 `is`；如果前端已把操作数缩窄成具体类型，比较结果在降低期就是常量，但操作数仍按源码求值一次。
 
+函数类型也进入类型表：参数表与返回类型共同构成去重键。顶层函数作为值使用时生成 `func`；无捕获的表达式体箭头函数在降低时提升成合成具名函数 `_arrow_N`，再用 `func` 引用它；通过函数值发起的调用生成 `invoke`。嵌套箭头函数不会继承外层作用域，因此捕获外层值在能力检查阶段就会被拒绝。
+
 ## 模块体变成入口函数
 
 NIR 只有函数，没有顶层语句。降低因此造一个 `main`：
@@ -213,7 +215,7 @@ bridge 对这两种被丢弃的表达式处理不同：`void` 调用本身就是
 
 | 错误码 | 触发条件 |
 | --- | --- |
-| `lower.bad-type` | 操作数、实参、返回值、`let` 值或三元式分支的类型摘要与期望类型不符（标量、对象、数组、元组或可空联合）；三元式两臂类型不同 |
+| `lower.bad-type` | 操作数、实参、返回值、`let` 值或三元式分支的类型摘要与期望类型不符（标量、对象、数组、元组、可空联合或函数类型）；三元式两臂类型不同 |
 | `lower.bad-arity` | 二元运算不是两个操作数、`return` 多个值、实参个数与形参不符、`while` 不是两个子节点 |
 | `lower.bad-operator` | 运算符不在算术、一元 `- +`、`!`、比较与短路之内（包括宽松 `==` / `!=`） |
 | `lower.bad-unary` | 防御路径：伪造事实里一元负号作用在非字面量上；合法源码应先在能力检查报 `cap.bad-unary` |
@@ -226,7 +228,8 @@ bridge 对这两种被丢弃的表达式处理不同：`void` 调用本身就是
 | `lower.labeled-jump` | 带标签的 `break` / `continue` |
 | `lower.loop-target` | `break` / `continue` 不在循环里 |
 | `lower.module-const-in-function` | 函数内引用模块级常量（需要全局变量，本阶段没有） |
-| `lower.function-value` | 把函数当值使用 |
+| `lower.function-value` | 函数作为值时缺少函数类型摘要，或其他不支持的声明种类作为值 |
+| `lower.unsupported-arrow` | 防御路径：块体箭头函数；合法源码应先在能力检查拒绝 |
 | `lower.unknown-callee` | 调用目标不是本文件里的函数 |
 | `lower.entry-conflict` | 用户函数占用了 `main` |
 | `lower.missing-return` | 返回 `number` 或 `boolean` 的函数有路径没有 `return` |

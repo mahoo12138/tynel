@@ -69,7 +69,7 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 | 6 | `undefined` |
 | 7 | `never` |
 
-复合类型从 8 开始，由 `types` 表定义。ID 必须唯一；编码器按 ID 升序输出。当前降低器会为静态对象、同质数组、定长元组和两成员可空联合按首次使用顺序分配 ID，结构相同的形状（忽略类型名）复用同一个条目；函数等其余复合类型仍只支持手写 NIR。手写 NIR 可以使用任意合法 ID，但引用必须自洽。
+复合类型从 8 开始，由 `types` 表定义。ID 必须唯一；编码器按 ID 升序输出。当前降低器会为静态对象、同质数组、定长元组、两成员可空联合和函数类型按首次使用顺序分配 ID，结构相同的形状（忽略类型名）复用同一个条目；其余复合类型仍只支持手写 NIR。手写 NIR 可以使用任意合法 ID，但引用必须自洽。
 
 ```json
 {
@@ -111,7 +111,7 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 }
 ```
 
-`result` 是类型 ID，可以是内置类型或 `types` 表里的复合类型；`params[].type` 是类型 ID，但不能是 `void`。当前后端能执行 `number`、`bool`、`string`、对象引用、数组、元组、可空联合和 `void` 结果。`pos` 可以省略，手写 NIR 时通常不写；前端产出时填写，用于把后端的错误指回源码。参数表为空时，Go 的编码会写成 `null`；读入时 `null` 与 `[]` 等价，都表示没有参数。
+`result` 是类型 ID，可以是内置类型或 `types` 表里的复合类型；`params[].type` 是类型 ID，但不能是 `void`。当前后端能执行 `number`、`bool`、`string`、对象引用、数组、元组、可空联合、函数值和 `void` 结果。`pos` 可以省略，手写 NIR 时通常不写；前端产出时填写，用于把后端的错误指回源码。参数表为空时，Go 的编码会写成 `null`；读入时 `null` 与 `[]` 等价，都表示没有参数。
 
 ## 语句
 
@@ -214,7 +214,7 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
   "elseValue": {"op": "number", "bits": "0x4000000000000000"} }
 ```
 
-条件为真时执行 `then` 列表，在同一个子作用域里求值 `thenValue`；为假时走 `else`。`then` / `else` 只接受 `let`、`short`、`select`、`object`、`array`、`tuple`、`index`、`wrap` 与 `unwrap`。`name` 在语句之后可见，类型由 `type` 声明，两条分支的类型必须与它一致。当前可执行结果是 `number`、`bool`、`string`、对象引用、数组、元组或可空联合。完整语义见[三元式](ternary.md)。
+条件为真时执行 `then` 列表，在同一个子作用域里求值 `thenValue`；为假时走 `else`。`then` / `else` 只接受 `let`、`short`、`select`、`object`、`array`、`tuple`、`index`、`wrap` 与 `unwrap`。`name` 在语句之后可见，类型由 `type` 声明，两条分支的类型必须与它一致。当前可执行结果是 `number`、`bool`、`string`、对象引用、数组、元组、可空联合或函数值。完整语义见[三元式](ternary.md)。
 
 `object` 语句构造一个对象并把结果绑定到 `name`：
 
@@ -266,6 +266,8 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 | `param` | `name` | 引用当前函数的参数 |
 | `local` | `name` | 引用前面 `let` 定义的局部值 |
 | `call` | `function`，`args` 可选 | 直接调用具名函数 |
+| `func` | `function`、`type` | 把具名函数当成值；`type` 必须是对应的 `function` 类型 ID |
+| `invoke` | `callee`、`type`，`args` 可选 | 通过函数值调用；`callee` 必须是 `function` 类型，`type` 是结果类型 |
 | `binary` | `operator`、`left`、`right` | 算术运算，运算符限 `+`、`-`、`*`、`/`，结果是 `number` |
 | `concat` | `left`、`right` | 两个 `string` 按 UTF-16 code unit 拼接，结果是 `string` |
 | `strlen` | `operand` | `string` 的 UTF-16 code unit 数，结果是 `number` |
@@ -296,6 +298,21 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 ```
 
 `{"op":"is","type":5,"operand":{"op":"local","name":"a"}}` 判断联合值是否为 `null`。`null` / `undefined` 只作为 `wrap` 的成员值出现；单独作为局部值或输出参数会被类型规则拒绝。联合标签不一致时 bridge 按数据错误退出 6。
+
+函数值由 `func` 取具名函数的入口，由 `invoke` 间接调用：
+
+```json
+{ "op": "let", "name": "f",
+  "value": {"op": "func", "function": "inc", "type": 8} }
+```
+
+```json
+{ "op": "invoke", "type": 1,
+  "callee": {"op": "local", "name": "f"},
+  "args": [{"op": "number", "bits": "0x4010000000000000"}] }
+```
+
+`func` 的 `type` 必须与目标函数的参数表和返回类型一致；`invoke` 的实参个数和类型必须与函数类型一致，`type` 必须等于函数类型的返回类型。函数值可以存放在 `let`、参数、返回值、三元式和联合以外的聚合位置；`print` 仍然只接受标量。函数值身份比较还没有对应的 NIR 操作。
 
 ## 调试段
 
@@ -390,6 +407,7 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 | 参数引用 | `param` 的名字必须是当前函数的参数 |
 | 局部值 | `local` 必须在当前块或祖先块里由前面的 `let` 定义 |
 | 调用 | 目标函数必须存在；实参个数等于形参个数；每个实参类型等于对应形参类型 |
+| 函数值 | `func` 的目标函数必须存在，签名与 `type` 指向的函数类型一致；`invoke` 的被调用者必须是函数类型，实参个数与类型匹配，`type` 等于函数类型的返回类型 |
 | 类型 | 字面量是 `number`、`bool` 或 `string`；参数取它声明的类型；四则运算的结果是 `number`；`concat` 的结果是 `string`，`strlen` 的结果是 `number`，`len` 的结果是 `number`；`compare` 的结果是 `bool`，输入按运算符分组；`not` 的操作数与结果都是 `bool`；调用表达式的类型是被调函数的返回类型 |
 | 类型表 | 内置 ID 1–7 不能被覆盖；复合 ID >= 8 且唯一；引用必须存在；`void` 只能作为函数结果 |
 | 对象 | `object` 语句的字段必须覆盖目标类型的所有必填属性；字段名存在且不重复；`field` 只能读取已存在的必填属性；当前切片拒绝可选属性 |
@@ -401,7 +419,7 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 | 赋值 | `set` 的目标必须由前面的 `mutable` `let` 定义；右值与目标同类型 |
 | 循环 | `while` 的 `cond` 必须是 `bool`；`condPre` 只含表达式准备；`body` 在独立子作用域里检查；`id` 在函数内唯一 |
 | 跳转 | `break` / `continue` 的 `target` 必须等于当前最内层循环的 `id` |
-| 返回值 | 返回 `number`、`bool`、`string`、对象引用、数组或元组的函数必须在每条路径上以带值的 `return` 结束，值类型与声明一致；`void` 函数的 `return` 不带值。`if` 只有两臂都存在且都结束时才算覆盖路径 |
+| 返回值 | 返回 `number`、`bool`、`string`、对象引用、数组、元组、可空联合或函数值的函数必须在每条路径上以带值的 `return` 结束，值类型与声明一致；`void` 函数的 `return` 不带值。`if` 只有两臂都存在且都结束时才算覆盖路径 |
 | 输出 | `print` 只接受 `number`、`bool` 或 `string`，`void` 调用不能作为值使用 |
 | 丢弃 | `discard` 的表达式必须成立，结果类型不限 |
 
@@ -436,9 +454,10 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 | `nir.unknown-function` | 语义 | 调用了不存在的函数 |
 | `nir.arg-count` | 语义 | 实参个数与形参不符 |
 | `nir.arg-type` | 语义 | 实参类型与形参不符 |
-| `nir.result-type` | 语义 | 返回值与函数声明不符，`void` 函数带返回值，或 `select` 的两条分支类型不同、与 `type` 不一致 |
+| `nir.result-type` | 语义 | 返回值与函数声明不符，`void` 函数带返回值，`select` 的两条分支类型不同，或 `invoke` 的结果类型与函数类型不符 |
+| `nir.function-signature` | 语义 | `func` 引用的具名函数签名与目标函数类型不一致 |
 | `nir.print-type` | 语义 | `print` 的参数不是 `number`、`bool` 或 `string` |
-| `nir.local-type` | 语义 | `let` 的值不是标量、对象、数组或元组 |
+| `nir.local-type` | 语义 | `let` 的值不是标量、对象、数组、元组、可空联合或函数值 |
 | `nir.condition-type` | 语义 | `if` 或 `while` 的条件不是 `bool` |
 | `nir.debug-shape` | 语义 | 调试段的函数、作用域 ID、父链、path 或种类不自洽 |
 | `nir.debug-span` | 语义 | 调试段的作用域范围或局部变量位置不合法 |

@@ -57,6 +57,8 @@ func (t *typeTable) idDepth(typ *frontend.Type, depth int) (int, error) {
 		return t.tuple(resolved, depth)
 	case frontend.KindUnion:
 		return t.union(resolved, depth)
+	case frontend.KindFunction:
+		return t.function(resolved, depth)
 	}
 	return 0, fmt.Errorf("类型 %s 还没有 NIR 表示", resolved.Kind)
 }
@@ -89,6 +91,10 @@ func (t *typeTable) tupleDef(id int) *nir.TypeDef {
 
 func (t *typeTable) unionDef(id int) *nir.TypeDef {
 	return t.defOf(id, nir.TypeKindUnion)
+}
+
+func (t *typeTable) functionDef(id int) *nir.TypeDef {
+	return t.defOf(id, nir.TypeKindFunction)
 }
 
 // isUnionMember 报告 member 是否是 union 的成员。
@@ -242,6 +248,43 @@ func (t *typeTable) union(typ *frontend.Type, depth int) (int, error) {
 		return id, nil
 	}
 	def := nir.TypeDef{ID: t.next, Kind: nir.TypeKindUnion, Members: members}
+	t.next++
+	t.byKey[key.String()] = def.ID
+	t.defs = append(t.defs, def)
+	return def.ID, nil
+}
+
+// function 为函数类型分配类型 ID。参数不能是 void，返回值可以是 void；
+// 参数表和返回值共同构成去重键。
+func (t *typeTable) function(typ *frontend.Type, depth int) (int, error) {
+	if typ.Result == nil {
+		return 0, fmt.Errorf("函数类型缺少返回类型")
+	}
+	params := make([]int, 0, len(typ.Params))
+	for i := range typ.Params {
+		id, err := t.idDepth(&typ.Params[i].Type, depth+1)
+		if err != nil {
+			return 0, fmt.Errorf("函数类型第 %d 个参数：%w", i+1, err)
+		}
+		if id == nir.TypeVoid {
+			return 0, fmt.Errorf("函数类型第 %d 个参数不能是 void", i+1)
+		}
+		params = append(params, id)
+	}
+	result, err := t.idDepth(typ.Result, depth+1)
+	if err != nil {
+		return 0, fmt.Errorf("函数类型返回值：%w", err)
+	}
+	var key strings.Builder
+	key.WriteString("function{")
+	for _, id := range params {
+		fmt.Fprintf(&key, "%d;", id)
+	}
+	fmt.Fprintf(&key, "}->%d", result)
+	if id, ok := t.byKey[key.String()]; ok {
+		return id, nil
+	}
+	def := nir.TypeDef{ID: t.next, Kind: nir.TypeKindFunction, Params: params, Result: result}
 	t.next++
 	t.byKey[key.String()] = def.ID
 	t.defs = append(t.defs, def)

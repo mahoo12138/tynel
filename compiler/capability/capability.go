@@ -51,6 +51,10 @@ func Check(snapshot *source.Snapshot, facts *frontend.Facts) ([]*diagnostic.Diag
 			if reason := c.unionProblem(c.facts.ResolveType(alias.Type), 0); reason != "" {
 				c.report(alias.Start, "cap.bad-type", "联合类型 %q 的%s", alias.Name, reason)
 			}
+		case frontend.KindFunction:
+			if reason := c.functionProblem(c.facts.ResolveType(alias.Type), 0); reason != "" {
+				c.report(alias.Start, "cap.bad-type", "函数类型 %q 的%s", alias.Name, reason)
+			}
 		case "interface":
 			if alias.Type == nil {
 				c.report(alias.Start, "cap.interface", "接口 %q 没有可读取的结构摘要", alias.Name)
@@ -98,14 +102,15 @@ func Check(snapshot *source.Snapshot, facts *frontend.Facts) ([]*diagnostic.Diag
 }
 
 type checker struct {
-	snapshot   *source.Snapshot
-	facts      *frontend.Facts
-	imports    map[importKey]bool
-	findings   []*diagnostic.Diagnostic
-	err        error
-	inFunction bool
-	loopDepth  int
-	resultType *frontend.Type
+	snapshot    *source.Snapshot
+	facts       *frontend.Facts
+	imports     map[importKey]bool
+	findings    []*diagnostic.Diagnostic
+	err         error
+	inFunction  bool
+	loopDepth   int
+	resultType  *frontend.Type
+	arrowParams []map[string]bool
 }
 
 // importKey 是一条值导入绑定的完整身份：目标模块的解析后路径、那个模块
@@ -147,7 +152,7 @@ func (c *checker) declaration(d *frontend.Declaration) {
 			c.report(d.Start, "cap.unsupported-declaration", "函数 %q 只有声明没有实现（ambient 或重载签名），本阶段不支持", d.Name)
 			return
 		}
-		c.declaredType(d.Result, d.Start, "函数 %q 的返回类型", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple, frontend.KindUnion, frontend.KindVoid)
+		c.declaredType(d.Result, d.Start, "函数 %q 的返回类型", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple, frontend.KindUnion, frontend.KindFunction, frontend.KindVoid)
 	case frontend.DeclParameter:
 		// 默认参数与可选参数都需要后端合成缺省值，本阶段还没实现。先在这里
 		// 明确拒绝，别让合法的 add(5) 一路走到降低阶段才报内部故障；事实层
@@ -160,19 +165,19 @@ func (c *checker) declaration(d *frontend.Declaration) {
 			c.report(d.Start, "cap.unsupported-parameter", "参数 %q 是可选参数，本阶段只支持必填参数", d.Name)
 			return
 		}
-		c.declaredType(d.Type, d.Start, "参数 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple, frontend.KindUnion)
+		c.declaredType(d.Type, d.Start, "参数 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple, frontend.KindUnion, frontend.KindFunction)
 	case frontend.DeclConst:
 		if d.Body == nil {
 			// declare const 只有类型声明，没有初始化表达式；入口降低需要值。
 			c.report(d.Start, "cap.unsupported-declaration", "常量 %q 没有初始化表达式（ambient 声明），本阶段不支持", d.Name)
 			return
 		}
-		c.declaredType(d.Type, d.Start, "常量 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple, frontend.KindUnion)
+		c.declaredType(d.Type, d.Start, "常量 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple, frontend.KindUnion, frontend.KindFunction)
 		if d.Body.Type != nil && d.Body.Type.Kind == frontend.KindVoid {
 			c.report(d.Body.Start, "cap.void-value", "常量 %q 的初始值是 void 调用，没有可用的值", d.Name)
 		}
 	case frontend.DeclLocal, frontend.DeclLet:
-		c.declaredType(d.Type, d.Start, "局部值 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple, frontend.KindUnion)
+		c.declaredType(d.Type, d.Start, "局部值 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple, frontend.KindUnion, frontend.KindFunction)
 	case frontend.DeclModuleLet:
 		c.report(d.Start, "cap.module-let", "模块级 let %q 不在本阶段子集内；模块体只接受 const", d.Name)
 	case frontend.DeclVar:
@@ -502,7 +507,9 @@ func (c *checker) node(n *frontend.Node) {
 		c.report(n.Start, "cap.unsupported-syntax", "控制流 %s 不在本阶段子集内", n.Kind)
 	case "NewExpression":
 		c.report(n.Start, "cap.unsupported-syntax", "new 表达式不在本阶段子集内")
-	case "FunctionExpression", "ArrowFunction", "ClassExpression":
+	case "ArrowFunction":
+		c.arrowFunction(n)
+	case "FunctionExpression", "ClassExpression":
 		c.report(n.Start, "cap.unsupported-syntax", "嵌套函数与类不在本阶段子集内")
 	case "FunctionDeclaration":
 		// 顶层具名函数已被前端提取成声明；骨架里的函数声明是匿名、默认导出或嵌套声明。
@@ -733,6 +740,9 @@ func (c *checker) identifier(n *frontend.Node) {
 	if n.Name == "null" && n.Target == 0 && n.Type != nil && n.Type.Kind == frontend.KindNull {
 		return
 	}
+	if n.Target == 0 && c.enclosingArrowParam(n.Name) {
+		return
+	}
 	decl, ok := c.facts.Declaration(n.Target)
 	// 跨模块值引用只允许在模块初始化阶段；函数捕获模块值仍由
 	// module.captured-variable 拒绝。跨模块函数调用不受这条限制，它会被
@@ -746,7 +756,11 @@ func (c *checker) identifier(n *frontend.Node) {
 	}
 	switch decl.Kind {
 	case frontend.DeclFunction:
-		c.report(n.Start, "cap.unsupported-syntax", "函数 %q 作为值使用不在本阶段子集内", n.Name)
+		// 顶层函数可以作为值传递；具体位置是否允许函数类型由声明、赋值和
+		// 调用检查负责。没有函数类型摘要说明事实不完整。
+		if n.Type == nil || n.Type.Kind != frontend.KindFunction {
+			c.report(n.Start, "cap.bad-type", "函数 %q 作为值使用需要函数类型摘要", n.Name)
+		}
 	case frontend.DeclConst:
 		if c.inFunction {
 			c.report(n.Start, "cap.module-const-in-function", "函数内引用模块常量 %q 需要全局变量，本阶段不支持", n.Name)
@@ -813,36 +827,77 @@ func (c *checker) call(n *frontend.Node) {
 			return
 		}
 		decl, ok := c.facts.Declaration(callee.Target)
+		if ok && decl.Kind == frontend.DeclFunction {
+			// 与事实校验共用同一套参数数量规则；能力检查拿到的事实可能不是刚从
+			// 前端出来的那一份，不能假设上游一定检查过。可省略的尾部参数会先被
+			// declaration 里的 cap.unsupported-parameter 拒绝，这里只核对范围。
+			arity := c.facts.ArityOf(decl)
+			if !arity.Allows(len(args)) {
+				c.report(n.Start, "cap.arg-count", "调用 %q 给了 %d 个实参，函数声明需要 %d 到 %d 个", decl.Name, len(args), arity.Required, arity.Total)
+				return
+			}
+			for i := range args {
+				c.valueNode(&args[i], "调用 "+decl.Name+" 的实参")
+				if i < len(decl.Parameters) {
+					if param, ok := c.facts.Declaration(decl.Parameters[i]); ok {
+						c.checkSameShape(&args[i], param.Type, "调用 "+decl.Name+" 的实参")
+					}
+				}
+			}
+			return
+		}
 		if (!ok || callee.Target == 0) && c.crossModuleUse(n, callee.Name) {
 			for i := range args {
 				c.valueNode(&args[i], "调用 "+callee.Name+" 的实参")
 			}
 			return
 		}
-		if !ok || callee.Target == 0 || decl.Kind != frontend.DeclFunction {
-			c.report(n.Start, "cap.unknown-callee", "调用目标 %q 不是本文件里声明的函数", callee.Name)
+		if ok && callee.Type != nil && callee.Type.Kind == frontend.KindFunction {
+			c.indirectCall(n, callee, args)
 			return
 		}
-		// 与事实校验共用同一套参数数量规则；能力检查拿到的事实可能不是刚从
-		// 前端出来的那一份，不能假设上游一定检查过。可省略的尾部参数会先被
-		// declaration 里的 cap.unsupported-parameter 拒绝，这里只核对范围。
-		arity := c.facts.ArityOf(decl)
-		if !arity.Allows(len(args)) {
-			c.report(n.Start, "cap.arg-count", "调用 %q 给了 %d 个实参，函数声明需要 %d 到 %d 个", decl.Name, len(args), arity.Required, arity.Total)
+		if callee.Target == 0 && c.enclosingArrowParam(callee.Name) &&
+			callee.Type != nil && callee.Type.Kind == frontend.KindFunction {
+			c.indirectCall(n, callee, args)
 			return
 		}
-		for i := range args {
-			c.valueNode(&args[i], "调用 "+decl.Name+" 的实参")
-			if i < len(decl.Parameters) {
-				if param, ok := c.facts.Declaration(decl.Parameters[i]); ok {
-					c.checkSameShape(&args[i], param.Type, "调用 "+decl.Name+" 的实参")
-				}
-			}
-		}
+		c.report(n.Start, "cap.unknown-callee", "调用目标 %q 不是本文件里声明的函数", callee.Name)
 	case "PropertyAccessExpression":
 		c.consoleCall(n, callee, args)
+	case "ArrowFunction", "CallExpression":
+		if callee.Type != nil && callee.Type.Kind == frontend.KindFunction {
+			c.indirectCall(n, callee, args)
+			return
+		}
+		c.report(n.Start, "cap.unknown-callee", "调用目标不是函数值")
 	default:
+		if callee.Type != nil && callee.Type.Kind == frontend.KindFunction {
+			c.indirectCall(n, callee, args)
+			return
+		}
 		c.report(n.Start, "cap.unknown-callee", "调用目标不是直接函数名")
+	}
+}
+
+// indirectCall 检查通过函数值发起的调用：被调用者本身也要是合法值，实参
+// 个数和类型按函数类型的参数表核对。
+func (c *checker) indirectCall(n, callee *frontend.Node, args []frontend.Node) {
+	typ := c.facts.ResolveType(callee.Type)
+	if typ.Kind != frontend.KindFunction {
+		c.report(n.Start, "cap.unknown-callee", "调用目标不是函数值")
+		return
+	}
+	if reason := c.functionProblem(typ, 0); reason != "" {
+		c.report(n.Start, "cap.bad-type", "间接调用的函数值%s", reason)
+		return
+	}
+	if len(args) != len(typ.Params) {
+		c.report(n.Start, "cap.arg-count", "间接调用给了 %d 个实参，函数类型需要 %d 个", len(args), len(typ.Params))
+		return
+	}
+	c.node(callee)
+	for i := range args {
+		c.typedValue(&args[i], &typ.Params[i].Type, "间接调用的实参")
 	}
 }
 
@@ -1075,6 +1130,8 @@ func (c *checker) valueProblem(t *frontend.Type, depth int) string {
 		return c.tupleProblem(resolved, depth)
 	case frontend.KindUnion:
 		return c.unionProblem(resolved, depth)
+	case frontend.KindFunction:
+		return c.functionProblem(resolved, depth)
 	case frontend.KindAny:
 		return "是 any 或 unknown 类型"
 	}
@@ -1126,6 +1183,110 @@ func (c *checker) unionProblem(t *frontend.Type, depth int) string {
 		return "的可执行成员" + reason
 	}
 	return ""
+}
+
+// functionProblem 检查函数值类型：参数不能可选或为 void，返回值可以是 void，
+// 其余参数和返回值必须是当前子集能表示的类型。
+func (c *checker) functionProblem(t *frontend.Type, depth int) string {
+	if t == nil || t.Kind != frontend.KindFunction {
+		return "不是函数类型"
+	}
+	if t.Result == nil {
+		return "缺少返回类型"
+	}
+	for i := range t.Params {
+		if t.Params[i].Optional {
+			return "有可选参数，函数值调用不支持省略实参"
+		}
+		if reason := c.valueProblem(&t.Params[i].Type, depth+1); reason != "" {
+			return fmt.Sprintf("第 %d 个参数%s", i+1, reason)
+		}
+	}
+	if t.Result.Kind != frontend.KindVoid {
+		if reason := c.valueProblem(t.Result, depth+1); reason != "" {
+			return "返回类型" + reason
+		}
+	}
+	return ""
+}
+
+// arrowFunction 检查无捕获的表达式体箭头函数。闭包捕获、块体和 void 结果
+// 留给后续切片。
+func (c *checker) arrowFunction(n *frontend.Node) {
+	if n.Type == nil || n.Type.Kind != frontend.KindFunction {
+		c.report(n.Start, "cap.bad-type", "箭头函数缺少函数类型摘要")
+		return
+	}
+	resolved := c.facts.ResolveType(n.Type)
+	if reason := c.functionProblem(resolved, 0); reason != "" {
+		c.report(n.Start, "cap.bad-type", "箭头函数的%s", reason)
+		return
+	}
+	if resolved.Result != nil && resolved.Result.Kind == frontend.KindVoid {
+		c.report(n.Start, "cap.unsupported-syntax", "void 箭头函数不在本阶段子集内")
+		return
+	}
+	if len(n.Children) != 1 || n.Children[0].Kind == "Block" {
+		c.report(n.Start, "cap.unsupported-syntax", "块体箭头函数不在本阶段子集内")
+		return
+	}
+	body := &n.Children[0]
+	params := make(map[string]bool, len(resolved.Params))
+	for i := range resolved.Params {
+		name := resolved.Params[i].Name
+		if name == "" {
+			name = fmt.Sprintf("p%d", i)
+		}
+		params[name] = true
+	}
+	if c.arrowCapture(n, params) {
+		c.report(n.Start, "cap.closure", "箭头函数捕获外层值不在本阶段子集内")
+		return
+	}
+	c.arrowParams = append(c.arrowParams, params)
+	c.typedValue(body, resolved.Result, "箭头函数返回值")
+	c.arrowParams = c.arrowParams[:len(c.arrowParams)-1]
+}
+
+// arrowCapture 报告箭头函数是否引用了外层局部值。顶层函数声明不是捕获：
+// 它们没有闭包环境，函数值可以直接指向代码入口。
+func (c *checker) arrowCapture(n *frontend.Node, params map[string]bool) bool {
+	captured := false
+	var walk func(*frontend.Node)
+	walk = func(x *frontend.Node) {
+		if captured || x == nil {
+			return
+		}
+		if x.Kind == "Identifier" {
+			if x.Target == 0 {
+				if !params[x.Name] && c.enclosingArrowParam(x.Name) {
+					captured = true
+					return
+				}
+			} else if decl, ok := c.facts.Declaration(x.Target); ok && decl.Kind != frontend.DeclFunction {
+				if decl.Start < n.Start || decl.Start >= n.Start+n.Length {
+					captured = true
+					return
+				}
+			}
+		}
+		for i := range x.Children {
+			walk(&x.Children[i])
+		}
+	}
+	for i := range n.Children {
+		walk(&n.Children[i])
+	}
+	return captured
+}
+
+func (c *checker) enclosingArrowParam(name string) bool {
+	for _, frame := range c.arrowParams {
+		if frame[name] {
+			return true
+		}
+	}
+	return false
 }
 
 // arrayLiteral 检查同质数组和定长元组的字面量。数组允许任意个数，元组必须
