@@ -9,6 +9,7 @@
   "cases": {
     "add": {"comparison": "shared"},
     "string": {"comparison": "shared"},
+    "object": {"comparison": "shared"},
     "let-string": {"comparison": "shared"},
     "order": {"comparison": "shared"},
     "nested": {"comparison": "shared"},

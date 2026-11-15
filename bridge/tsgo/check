@@ -257,7 +257,7 @@ else
   fail "支持子集应通过，实际退出 $code：$out"
 fi
 
-for pair in "any.ts:cap.any" "assert.ts:cap.type-escape" "object.ts:cap.unsupported-syntax" \
+for pair in "any.ts:cap.any" "assert.ts:cap.type-escape" "object.ts:cap.bad-console-call" \
             "eval.ts:cap.forbidden-global" "dynamic-function.ts:cap.unsupported-syntax" \
             "library.ts:cap.unknown-callee" "uncalled.ts:cap.unsupported-syntax" \
             "default-export-anon.ts:cap.unsupported-syntax" "default-export-named.ts:cap.unsupported-syntax" \

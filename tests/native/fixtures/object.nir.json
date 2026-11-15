@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 3,
+  "types": [
+    {
+      "id": 8,
+      "kind": "object",
+      "name": "Point",
+      "properties": [
+        {"name": "x", "type": 1},
+        {"name": "y", "type": 1}
+      ]
+    }
+  ],
+  "entry": "main",
+  "functions": [
+    {
+      "name": "sum",
+      "params": [{"name": "p", "type": 8}],
+      "result": 1,
+      "body": [
+        {
+          "op": "return",
+          "value": {
+            "op": "binary",
+            "operator": "+",
+            "left": {"op": "field", "name": "x", "operand": {"op": "param", "name": "p"}},
+            "right": {"op": "field", "name": "y", "operand": {"op": "param", "name": "p"}}
+          }
+        }
+      ]
+    },
+    {
+      "name": "main",
+      "params": [],
+      "result": 3,
+      "body": [
+        {
+          "op": "object",
+          "name": "p",
+          "type": 8,
+          "fields": [
+            {"name": "x", "value": {"op": "number", "bits": "0x4044000000000000"}},
+            {"name": "y", "value": {"op": "number", "bits": "0x4000000000000000"}}
+          ]
+        },
+        {
+          "op": "object",
+          "name": "q",
+          "type": 8,
+          "fields": [
+            {"name": "x", "value": {"op": "number", "bits": "0x4044000000000000"}},
+            {"name": "y", "value": {"op": "number", "bits": "0x4000000000000000"}}
+          ]
+        },
+        {
+          "op": "print",
+          "value": {
+            "op": "call",
+            "function": "sum",
+            "args": [{"op": "local", "name": "p"}]
+          }
+        },
+        {
+          "op": "print",
+          "value": {
+            "op": "compare",
+            "operator": "===",
+            "left": {"op": "local", "name": "p"},
+            "right": {"op": "local", "name": "p"}
+          }
+        },
+        {
+          "op": "print",
+          "value": {
+            "op": "compare",
+            "operator": "===",
+            "left": {"op": "local", "name": "p"},
+            "right": {"op": "local", "name": "q"}
+          }
+        },
+        {"op": "return"}
+      ]
+    }
+  ]
+}

@@ -10,7 +10,8 @@
 | `boolean` | 支持 | `true` / `false`，输出拼写与 TypeScript 一致 |
 | `void` | 支持 | 只用于函数结果和 `return` |
 | `string` | 部分支持 | 字面量、无插值模板、`+` 拼接、`===` / `!==`、`length` 和 `console.log` 可用；索引、`slice`、模板插值和字符串方法仍拒绝。语义见[字符串 RFC](../language/semantics/strings.md) |
-| 对象、数组、元组 | 拒绝 | `cap.unsupported-syntax` |
+| 静态对象 | 部分支持 | 必填属性、对象字面量、字段读取和引用身份可用；可选属性、字段写入、对象输出和结构性放宽仍拒绝。见[对象与数组 RFC](../language/semantics/objects-arrays.md) |
+| 数组、元组 | 拒绝 | `cap.unsupported-syntax` / `cap.bad-type` |
 | `any`、`unknown` | 拒绝 | `cap.any` |
 | 联合类型 | 拒绝 | 三元式两臂不同、声明为联合都会报 `cap.bad-type` |
 
@@ -19,7 +20,7 @@
 | 操作 | 状态 | 说明 |
 | --- | --- | --- |
 | 顶层函数声明 | 支持 | 直接调用，按函数名绑定；不能占用固定入口名 `main` |
-| 参数 | 支持 | `number`、`boolean` 或 `string` |
+| 参数 | 支持 | `number`、`boolean`、`string` 或静态对象 |
 | 顶层 `const` | 支持 | 初始化表达式按源码顺序求值 |
 | 块内 `const` | 支持 | 只在当前块可见，同名遮蔽外层 |
 | 块内 `let` | 支持 | 必须带初始值；可读、可遮蔽，可变 `let` 可赋值 |
@@ -29,7 +30,8 @@
 | 值导入 `import { x }` | 支持 | 可重命名；跨模块绑定到导出声明的完整身份 |
 | 默认导入、命名空间导入、再导出 | 拒绝 | 能力检查或 TypeScript 诊断 |
 | 函数读取模块级 `const` | 拒绝 | `module.captured-variable` |
-| 接口、联合、`any` 别名 | 拒绝 | `cap.interface` / `cap.bad-type` / `cap.any` |
+| 对象形状的 `interface` | 支持 | 展开成静态对象属性；非对象接口仍按 `cap.interface` 拒绝 |
+| 联合、`any` 别名 | 拒绝 | `cap.bad-type` / `cap.any` |
 | 模块级 `let` | 拒绝 | `cap.module-let`，模块体只接受 `const` |
 | 局部 `var` | 拒绝 | `cap.unsupported-syntax` |
 | 直接函数调用 | 支持 | 实参个数与类型必须匹配 |
@@ -46,12 +48,14 @@
 | 一元 `-` `+` | 支持 | 只接受数字字面量并折成位模式；变量取负报 `cap.bad-unary` |
 | `!` | 支持 | 操作数必须是 `boolean` |
 | `<` `<=` `>` `>=` | 支持 | 两个 `number` |
-| `===` `!==` | 支持 | 两侧同为 `number`、同为 `boolean` 或同为 `string` |
+| `===` `!==` | 支持 | 两侧同为 `number`、`boolean`、`string` 或同一对象形状；对象按引用身份 |
 | `==` `!=` | 拒绝 | `cap.bad-operator`，不做隐式转换 |
 | `&&` `\|\|` | 支持 | 两侧 `boolean`，短路求值，结果绑定到临时值 |
-| `? :` | 支持 | 条件 `boolean`，两臂同为 `number`、`boolean` 或 `string` |
+| `? :` | 支持 | 条件 `boolean`，两臂同为 `number`、`boolean`、`string` 或同一对象形状 |
 | 字符串拼接 | 支持 | 两个 `string` 的 `+`；`"a" + 1` 按 `cap.bad-type` 拒绝 |
 | `s.length` | 支持 | 结果按 UTF-16 code unit 计数 |
+| 对象字面量与字段读取 | 支持 | 静态形状、必填属性；嵌套对象可以读取 |
+| 可选属性、字段写入 | 拒绝 | 可选属性等待 `undefined`；字段写入属于第二个对象切片 |
 | 模板字符串插值、字符串方法 | 拒绝 | `cap.unsupported-syntax` / `cap.unknown-callee` |
 | 赋值表达式 | 拒绝 | `cap.assignment-value`，赋值只能作为独立语句 |
 

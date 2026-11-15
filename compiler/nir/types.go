@@ -70,6 +70,26 @@ func validTypeKind(kind string) bool {
 	return false
 }
 
+// isObjectType 报告类型 ID 是否指向一个 object 类型。
+func isObjectType(index map[int]*TypeDef, id int) bool {
+	def, ok := index[id]
+	return ok && def.Kind == TypeKindObject
+}
+
+// objectProperty 在 object 类型里按名字找属性。
+func objectProperty(index map[int]*TypeDef, id int, name string) (*TypeProperty, bool) {
+	def, ok := index[id]
+	if !ok || def.Kind != TypeKindObject {
+		return nil, false
+	}
+	for i := range def.Properties {
+		if def.Properties[i].Name == name {
+			return &def.Properties[i], true
+		}
+	}
+	return nil, false
+}
+
 // typeIndex 把类型表收成 ID → 定义的表。调用前应确认 ID 唯一。
 func typeIndex(defs []TypeDef) map[int]*TypeDef {
 	index := make(map[int]*TypeDef, len(defs))

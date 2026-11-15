@@ -140,8 +140,8 @@ func (c *checker) stmts(stmts []Stmt, sc *scope, f *Function) error {
 			if err != nil {
 				return err
 			}
-			if got != TypeNumber && got != TypeBool && got != TypeString {
-				return failAt("nir.local-type", s.Pos, "let %q 的值必须是 number、bool 或 string，实际为 %s", s.Name, typeName(got))
+			if !c.valueType(got) {
+				return failAt("nir.local-type", s.Pos, "let %q 的值必须是值类型，实际为 %s", s.Name, typeName(got))
 			}
 			if _, exists := sc.names[s.Name]; exists {
 				return failAt("nir.duplicate-name", s.Pos, "函数 %q 里 %q 重复定义", f.Name, s.Name)
@@ -151,6 +151,45 @@ func (c *checker) stmts(stmts []Stmt, sc *scope, f *Function) error {
 			}
 			sc.names[s.Name] = got
 			sc.mutable[s.Name] = s.Mutable
+		case OpObject:
+			def, ok := c.types[s.Type]
+			if !ok || def.Kind != TypeKindObject {
+				return failAt("nir.type-kind", s.Pos, "object 的 type 不是 object 类型：%s", typeName(s.Type))
+			}
+			for i := range def.Properties {
+				if def.Properties[i].Optional {
+					return failAt("nir.object-field", s.Pos, "类型 %s 的可选属性 %q 需要 undefined 表示", typeName(s.Type), def.Properties[i].Name)
+				}
+			}
+			if len(s.Fields) != len(def.Properties) {
+				return failAt("nir.missing", s.Pos, "对象字面量有 %d 个字段，类型 %s 需要 %d 个", len(s.Fields), typeName(s.Type), len(def.Properties))
+			}
+			seenField := make(map[string]bool, len(s.Fields))
+			for i := range s.Fields {
+				field := &s.Fields[i]
+				prop, ok := objectProperty(c.types, s.Type, field.Name)
+				if !ok {
+					return failAt("nir.unknown-field", s.Pos, "类型 %s 没有属性 %q", typeName(s.Type), field.Name)
+				}
+				if seenField[field.Name] {
+					return failAt("nir.duplicate-name", s.Pos, "对象字面量的字段 %q 重复", field.Name)
+				}
+				seenField[field.Name] = true
+				got, err := c.exprType(&field.Value, sc)
+				if err != nil {
+					return err
+				}
+				if got != prop.Type {
+					return failAt("nir.object-field", s.Pos, "字段 %q 需要 %s，实际为 %s", field.Name, typeName(prop.Type), typeName(got))
+				}
+			}
+			if _, exists := sc.names[s.Name]; exists {
+				return failAt("nir.duplicate-name", s.Pos, "函数 %q 里 %q 重复定义", f.Name, s.Name)
+			}
+			if _, exists := sc.params[s.Name]; exists {
+				return failAt("nir.duplicate-name", s.Pos, "函数 %q 里 %q 与参数重复", f.Name, s.Name)
+			}
+			sc.names[s.Name] = s.Type
 		case OpSet:
 			got, err := c.exprType(s.Value, sc)
 			if err != nil {
@@ -267,7 +306,7 @@ func (c *checker) stmts(stmts []Stmt, sc *scope, f *Function) error {
 			if thenType != s.Type {
 				return failAt("nir.result-type", s.Pos, "select 声明结果 %s，两条分支是 %s", typeName(s.Type), typeName(thenType))
 			}
-			if thenType != TypeNumber && thenType != TypeBool && thenType != TypeString {
+			if !c.valueType(thenType) {
 				return failAt("nir.result-type", s.Pos, "select 的结果不能是 %s", typeName(thenType))
 			}
 			if _, exists := sc.names[s.Name]; exists {
@@ -280,6 +319,15 @@ func (c *checker) stmts(stmts []Stmt, sc *scope, f *Function) error {
 		}
 	}
 	return nil
+}
+
+// valueType 报告类型 ID 是否是当前可执行的局部值类型：标量或对象引用。
+func (c *checker) valueType(id int) bool {
+	switch id {
+	case TypeNumber, TypeBool, TypeString:
+		return true
+	}
+	return isObjectType(c.types, id)
 }
 
 // scope 是语句块内的可见名字。params 只在函数根作用域非空；names 是当前块
@@ -387,6 +435,22 @@ func (c *checker) exprType(e *Expr, sc *scope) (int, error) {
 			}
 		}
 		return target.Result, nil
+	case OpField:
+		if e.Name == "" || e.Operand == nil {
+			return 0, failAt("nir.missing", e.Pos, "field 缺少 name 或 operand")
+		}
+		base, err := c.exprType(e.Operand, sc)
+		if err != nil {
+			return 0, err
+		}
+		prop, ok := objectProperty(c.types, base, e.Name)
+		if !ok {
+			return 0, failAt("nir.unknown-field", e.Pos, "类型 %s 没有属性 %q", typeName(base), e.Name)
+		}
+		if prop.Optional {
+			return 0, failAt("nir.object-field", e.Pos, "可选属性 %q 需要 undefined 表示", e.Name)
+		}
+		return prop.Type, nil
 	case OpConcat:
 		if e.Left == nil || e.Right == nil {
 			return 0, failAt("nir.missing", e.Pos, "concat 缺少左或右操作数")
@@ -454,9 +518,9 @@ func (c *checker) exprType(e *Expr, sc *scope) (int, error) {
 			return 0, failAt("nir.operand-type", e.Pos,
 				"严格相等 %q 需要两侧同类型，实际为 %s 与 %s", e.Operator, typeName(left), typeName(right))
 		}
-		if left != TypeNumber && left != TypeBool && left != TypeString {
+		if left != TypeNumber && left != TypeBool && left != TypeString && !isObjectType(c.types, left) {
 			return 0, failAt("nir.operand-type", e.Pos,
-				"严格相等 %q 只接受 number、bool 或 string，实际为 %s", e.Operator, typeName(left))
+				"严格相等 %q 只接受标量或对象引用，实际为 %s", e.Operator, typeName(left))
 		}
 		return TypeBool, nil
 	default:

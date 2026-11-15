@@ -46,7 +46,7 @@ NIR 用 `select` 语句把结果绑定到临时值：
   "elseValue": {"op": "call", "function": "pick", "args": [...]} }
 ```
 
-`select` 先求值条件；条件为真时执行 `then` 列表，在同一个子作用域里求值 `thenValue`，再赋给 `name`；为假时走 `else`。`name` 在语句之后可见，类型由 `type` 声明，必须是可执行的值类型（当前为 `number`、`bool` 或 `string`）。
+`select` 先求值条件；条件为真时执行 `then` 列表，在同一个子作用域里求值 `thenValue`，再赋给 `name`；为假时走 `else`。`name` 在语句之后可见，类型由 `type` 声明，必须是可执行的值类型（当前为 `number`、`bool`、`string` 或对象引用）。
 
 ## 分支内部的准备
 
@@ -56,18 +56,18 @@ NIR 用 `select` 语句把结果绑定到临时值：
 console.log(mark(3, true) ? (mark(4, true) ? 40 : 50) : mark(5, true) ? 60 : 70);
 ```
 
-外层只执行 `mark(3)` 与内层三元式，`mark(5)` 不会被调用。`select` 的 `then` / `else` 只接受 `let`、`short` 与 `select`，里面的局部值只对对应的 `thenValue` / `elseValue` 可见。
+外层只执行 `mark(3)` 与内层三元式，`mark(5)` 不会被调用。`select` 的 `then` / `else` 只接受 `let`、`short`、`select` 与 `object`，里面的局部值只对对应的 `thenValue` / `elseValue` 可见。
 
 ## 类型规则
 
 - 条件必须是 `boolean`。
-- 两条分支必须是同一个标量类型：都为 `number`、都为 `boolean` 或都为 `string`。
+- 两条分支必须是同一个类型：都为 `number`、都为 `boolean`、都为 `string` 或同一个对象形状。
 - TypeScript 允许 `true ? 1 : false` 得到联合类型 `number | false`；本阶段不把联合类型带进原生后端，按 `cap.bad-type` 拒绝。
 - 未选中的分支同样过能力检查：`false ? (1 % 2) : 3` 仍报 `cap.bad-operator`。
 
 ## 与短路的区别
 
-`&&` / `||` 的结果是布尔值，操作数也必须是布尔值；三元式的两条分支可以是 `number`、`boolean` 或 `string`。两者都用临时值绑定结果，但 `short` 只绑定 `bool`，`select` 的 `type` 由分支决定。
+`&&` / `||` 的结果是布尔值，操作数也必须是布尔值；三元式的两条分支可以是 `number`、`boolean`、`string` 或对象引用。两者都用临时值绑定结果，但 `short` 只绑定 `bool`，`select` 的 `type` 由分支决定。
 
 ## 相关实现
 

@@ -142,11 +142,16 @@ func TestTypeAssertionIsRejected(t *testing.T) {
 	wantCode(t, check(t, facts), "cap.type-escape")
 }
 
-func TestObjectIsRejectedButStringIsAccepted(t *testing.T) {
+func TestObjectAndStringLiteralsAreAccepted(t *testing.T) {
+	object := frontend.Type{Kind: frontend.KindObject}
+	literal := node("ObjectLiteralExpression")
+	literal.Type = &object
 	facts := base()
-	body := node("Block", node("ExpressionStatement", node("ObjectLiteralExpression")))
+	body := node("Block", node("ExpressionStatement", literal))
 	facts.Declarations[0].Body = &body
-	wantCode(t, check(t, facts), "cap.unsupported-syntax")
+	if findings := check(t, facts); len(findings) != 0 {
+		t.Fatalf("空对象字面量应通过能力检查，实际 %v", codes(findings))
+	}
 
 	facts = base()
 	body = node("Block", node("ExpressionStatement", typed("StringLiteral", frontend.KindString)))
@@ -226,19 +231,19 @@ func TestVoidValueIsRejected(t *testing.T) {
 }
 
 func TestDeclaredTypesAreChecked(t *testing.T) {
-	objectType := frontend.Type{Kind: frontend.KindObject}
+	unsupportedType := frontend.Type{Kind: frontend.KindNull}
 	facts := base()
-	facts.Declarations[1].Type = &objectType
+	facts.Declarations[1].Type = &unsupportedType
 	wantCode(t, check(t, facts), "cap.bad-type")
 
 	facts = base()
-	facts.Declarations[0].Result = &objectType
+	facts.Declarations[0].Result = &unsupportedType
 	wantCode(t, check(t, facts), "cap.bad-type")
 
 	facts = base()
 	labelInit := typed("NumericLiteral", frontend.KindNumber)
 	facts.Declarations = append(facts.Declarations,
-		frontend.Declaration{ID: 4, Kind: frontend.DeclConst, Name: "label", Start: 30, Length: 5, Type: &objectType, Body: &labelInit},
+		frontend.Declaration{ID: 4, Kind: frontend.DeclConst, Name: "label", Start: 30, Length: 5, Type: &unsupportedType, Body: &labelInit},
 	)
 	wantCode(t, check(t, facts), "cap.bad-type")
 }

@@ -934,6 +934,21 @@ func (b *factBuilder) bodyNode(node *ast.Node) *factNode {
 			}
 		}
 		return out
+	case ast.IsPropertyAssignment(node):
+		// 属性名是语法，不是值引用；只保留初始化表达式，顺序就是求值顺序。
+		// 计算属性名（[expr]: value）不是静态字段，留空让能力检查拒绝；
+		// 直接调 Text() 会在 ComputedPropertyName 上 panic。
+		out.Name = propertyName(node.Name())
+		if init := node.AsPropertyAssignment().Initializer; init != nil {
+			if child := b.bodyNode(init); child != nil {
+				out.Children = append(out.Children, *child)
+			}
+		}
+		return out
+	case ast.IsShorthandPropertyAssignment(node):
+		out.Name = node.Name().Text()
+		out.Op = "shorthand"
+		return out
 	case ast.IsNumericLiteral(node):
 		bits, err := numericBits(node.Text())
 		if err != nil {
@@ -977,10 +992,25 @@ func isStructure(node *ast.Node) bool {
 		return true
 	}
 	switch node.Kind {
-	case ast.KindVariableDeclaration, ast.KindVariableDeclarationList:
+	case ast.KindVariableDeclaration, ast.KindVariableDeclarationList,
+		ast.KindPropertyAssignment, ast.KindShorthandPropertyAssignment:
 		return true
 	}
 	return false
+}
+
+// propertyName 只接受能直接当作静态字段名的属性名节点。标识符、字符串、
+// 数字和无插值模板都有文本；计算属性名没有，返回空串交给能力检查拒绝。
+func propertyName(node *ast.Node) string {
+	if node == nil {
+		return ""
+	}
+	switch node.Kind {
+	case ast.KindIdentifier, ast.KindStringLiteral, ast.KindNumericLiteral,
+		ast.KindNoSubstitutionTemplateLiteral:
+		return node.Text()
+	}
+	return ""
 }
 
 // kindName 去掉 stringer 生成的 Kind 前缀：KindBlock 变成 Block。

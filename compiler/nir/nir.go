@@ -52,6 +52,7 @@ const (
 	OpBinary  = "binary"
 	OpConcat  = "concat"
 	OpStrlen  = "strlen"
+	OpField   = "field"
 	OpCompare = "compare"
 	OpNot     = "not"
 )
@@ -74,6 +75,7 @@ const (
 	OpShort    = "short"
 	OpSelect   = "select"
 	OpSet      = "set"
+	OpObject   = "object"
 	OpWhile    = "while"
 	OpBreak    = "break"
 	OpContinue = "continue"
@@ -134,24 +136,32 @@ type Pos struct {
 // 是右侧的准备工作，Value 是准备完之后的右值）；ThenValue 与 ElseValue 只属于
 // select，是两条分支准备完之后各自的结果。
 type Stmt struct {
-	Op        string `json:"op"`
-	Name      string `json:"name,omitempty"` // let、short 或 select 的结果名
-	Value     *Expr  `json:"value,omitempty"`
-	Cond      *Expr  `json:"cond,omitempty"` // if 或 select 使用
-	Then      []Stmt `json:"then,omitempty"`
-	Else      []Stmt `json:"else,omitempty"`
-	Operator  string `json:"operator,omitempty"`  // 仅 short 使用
-	Left      *Expr  `json:"left,omitempty"`      // 仅 short 使用
-	Right     []Stmt `json:"right,omitempty"`     // 仅 short 使用
-	ThenValue *Expr  `json:"thenValue,omitempty"` // 仅 select 使用
-	ElseValue *Expr  `json:"elseValue,omitempty"` // 仅 select 使用
-	Type      int    `json:"type,omitempty"`      // 仅 select 使用：结果类型 ID
-	Mutable   bool   `json:"mutable,omitempty"`   // 仅 let 使用：是否为可变的 let
-	CondPre   []Stmt `json:"condPre,omitempty"`   // 仅 while 使用：每轮条件准备
-	Body      []Stmt `json:"body,omitempty"`      // 仅 while 使用：循环体
-	ID        int    `json:"id,omitempty"`        // 仅 while 使用：循环身份
-	Target    int    `json:"target,omitempty"`    // 仅 break / continue 使用
-	Pos       *Pos   `json:"pos,omitempty"`
+	Op        string        `json:"op"`
+	Name      string        `json:"name,omitempty"` // let、short 或 select 的结果名
+	Value     *Expr         `json:"value,omitempty"`
+	Cond      *Expr         `json:"cond,omitempty"` // if 或 select 使用
+	Then      []Stmt        `json:"then,omitempty"`
+	Else      []Stmt        `json:"else,omitempty"`
+	Operator  string        `json:"operator,omitempty"`  // 仅 short 使用
+	Left      *Expr         `json:"left,omitempty"`      // 仅 short 使用
+	Right     []Stmt        `json:"right,omitempty"`     // 仅 short 使用
+	ThenValue *Expr         `json:"thenValue,omitempty"` // 仅 select 使用
+	ElseValue *Expr         `json:"elseValue,omitempty"` // 仅 select 使用
+	Type      int           `json:"type,omitempty"`      // select 或 object 使用：结果类型 ID
+	Fields    []ObjectField `json:"fields,omitempty"`    // 仅 object 使用，按源码顺序求值
+	Mutable   bool          `json:"mutable,omitempty"`   // 仅 let 使用：是否为可变的 let
+	CondPre   []Stmt        `json:"condPre,omitempty"`   // 仅 while 使用：每轮条件准备
+	Body      []Stmt        `json:"body,omitempty"`      // 仅 while 使用：循环体
+	ID        int           `json:"id,omitempty"`        // 仅 while 使用：循环身份
+	Target    int           `json:"target,omitempty"`    // 仅 break / continue 使用
+	Pos       *Pos          `json:"pos,omitempty"`
+}
+
+// ObjectField 是 object 语句里的一个字段初始化。name 必须在目标对象类型里
+// 存在，value 按字段在源码里的顺序求值。
+type ObjectField struct {
+	Name  string `json:"name"`
+	Value Expr   `json:"value"`
 }
 
 // Expr 是一个表达式节点。字段按 Op 取用，其余字段必须为空。

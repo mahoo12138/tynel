@@ -207,4 +207,118 @@ func TestStringLiteralKeepsEmptyValue(t *testing.T) {
 	}
 }
 
+func objectPoint() TypeDef {
+	return TypeDef{
+		ID: 8, Kind: TypeKindObject, Name: "Point",
+		Properties: []TypeProperty{{Name: "x", Type: TypeNumber}, {Name: "y", Type: TypeNumber}},
+	}
+}
+
+func objectModule(fields ...ObjectField) *Module {
+	m := typedModule(objectPoint())
+	m.Functions[0].Body = []Stmt{
+		{Op: OpObject, Name: "p", Type: 8, Fields: fields},
+		{Op: OpPrint, Value: &Expr{Op: OpField, Name: "x", Operand: &Expr{Op: OpLocal, Name: "p"}}},
+		{Op: OpReturn},
+	}
+	return m
+}
+
+func TestObjectStatementAndField(t *testing.T) {
+	m := objectModule(
+		ObjectField{Name: "x", Value: num(1)},
+		ObjectField{Name: "y", Value: num(2)},
+	)
+	if err := Verify(m); err != nil {
+		t.Fatalf("对象模块应通过验证：%v", err)
+	}
+	data, err := EncodeBytes(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := DecodeBytes(data, DefaultLimits())
+	if err != nil {
+		t.Fatalf("对象模块应能解码：%v", err)
+	}
+	if back.Functions[0].Body[0].Type != 8 || len(back.Functions[0].Body[0].Fields) != 2 {
+		t.Fatalf("对象语句回读不完整：%+v", back.Functions[0].Body[0])
+	}
+	if back.Functions[0].Body[1].Value.Op != OpField || back.Functions[0].Body[1].Value.Name != "x" {
+		t.Fatalf("字段读取回读不完整：%+v", back.Functions[0].Body[1].Value)
+	}
+}
+
+func TestObjectStatementRejectsBadFields(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Module)
+		code   string
+	}{
+		{"缺字段", func(m *Module) {
+			m.Functions[0].Body[0].Fields = []ObjectField{{Name: "x", Value: num(1)}}
+		}, "nir.missing"},
+		{"未知字段", func(m *Module) {
+			m.Functions[0].Body[0].Fields[0].Name = "z"
+		}, "nir.unknown-field"},
+		{"字段类型不符", func(m *Module) {
+			m.Functions[0].Body[0].Fields[0].Value = String("a")
+		}, "nir.object-field"},
+		{"字段重复", func(m *Module) {
+			m.Functions[0].Body[0].Fields[1].Name = "x"
+		}, "nir.duplicate-name"},
+		{"读取未知字段", func(m *Module) {
+			m.Functions[0].Body[1].Value.Name = "z"
+		}, "nir.unknown-field"},
+		{"对象不能打印", func(m *Module) {
+			m.Functions[0].Body[1].Value = &Expr{Op: OpLocal, Name: "p"}
+		}, "nir.print-type"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := objectModule(
+				ObjectField{Name: "x", Value: num(1)},
+				ObjectField{Name: "y", Value: num(2)},
+			)
+			c.mutate(m)
+			err := Verify(m)
+			if err == nil {
+				t.Fatal("坏对象语句应被拒绝")
+			}
+			if got := diagnosticCode(err); got != c.code {
+				t.Fatalf("错误码应为 %s，实际 %s（%v）", c.code, got, err)
+			}
+		})
+	}
+}
+
+func TestObjectOptionalPropertyDeferred(t *testing.T) {
+	m := typedModule(TypeDef{
+		ID: 8, Kind: TypeKindObject, Name: "Option",
+		Properties: []TypeProperty{{Name: "x", Type: TypeNumber}, {Name: "y", Type: TypeNumber, Optional: true}},
+	})
+	m.Functions[0].Body = []Stmt{
+		{Op: OpObject, Name: "value", Type: 8, Fields: []ObjectField{{Name: "x", Value: num(1)}}},
+	}
+	err := Verify(m)
+	if got := diagnosticCode(err); got != "nir.object-field" {
+		t.Fatalf("可选属性应按 nir.object-field 拒绝，实际 %s（%v）", got, err)
+	}
+}
+
+func TestObjectIdentityEquality(t *testing.T) {
+	m := objectModule(
+		ObjectField{Name: "x", Value: num(1)},
+		ObjectField{Name: "y", Value: num(2)},
+	)
+	m.Functions[0].Body = append(m.Functions[0].Body[:2],
+		Stmt{Op: OpPrint, Value: &Expr{Op: OpCompare, Operator: "===",
+			Left:  &Expr{Op: OpLocal, Name: "p"},
+			Right: &Expr{Op: OpLocal, Name: "p"}}},
+		Stmt{Op: OpReturn},
+	)
+	if err := Verify(m); err != nil {
+		t.Fatalf("对象引用比较应通过验证：%v", err)
+	}
+}
+
 func ptrExpr(e Expr) *Expr { return &e }

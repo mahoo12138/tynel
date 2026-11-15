@@ -48,7 +48,7 @@ func TestCapabilityFixtures(t *testing.T) {
 		{"ok.ts", ""},
 		{"any.ts", "cap.any"},
 		{"assert.ts", "cap.type-escape"},
-		{"object.ts", "cap.unsupported-syntax"},
+		{"object.ts", "cap.bad-console-call"},
 		{"eval.ts", "cap.forbidden-global"},
 		{"dynamic-function.ts", "cap.unsupported-syntax"},
 		{"library.ts", "cap.unknown-callee"},

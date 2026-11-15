@@ -69,7 +69,7 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 | 6 | `undefined` |
 | 7 | `never` |
 
-复合类型从 8 开始，由 `types` 表定义。ID 必须唯一；编码器按 ID 升序输出。当前降低器只使用内置类型 ID，将来降低复合类型时按首次使用顺序分配。手写 NIR 可以使用任意合法 ID，但引用必须自洽。
+复合类型从 8 开始，由 `types` 表定义。ID 必须唯一；编码器按 ID 升序输出。当前降低器会为静态对象按首次使用顺序分配 ID，结构相同的形状（忽略类型名）复用同一个条目；其他复合类型仍只支持手写 NIR。手写 NIR 可以使用任意合法 ID，但引用必须自洽。
 
 ```json
 {
@@ -111,7 +111,7 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 }
 ```
 
-`result` 是类型 ID，可以是内置类型或 `types` 表里的复合类型；`params[].type` 是类型 ID，但不能是 `void`。当前后端能执行 `number`、`bool`、`string` 和 `void` 结果。`pos` 可以省略，手写 NIR 时通常不写；前端产出时填写，用于把后端的错误指回源码。参数表为空时，Go 的编码会写成 `null`；读入时 `null` 与 `[]` 等价，都表示没有参数。
+`result` 是类型 ID，可以是内置类型或 `types` 表里的复合类型；`params[].type` 是类型 ID，但不能是 `void`。当前后端能执行 `number`、`bool`、`string`、对象引用和 `void` 结果。`pos` 可以省略，手写 NIR 时通常不写；前端产出时填写，用于把后端的错误指回源码。参数表为空时，Go 的编码会写成 `null`；读入时 `null` 与 `[]` 等价，都表示没有参数。
 
 ## 语句
 
@@ -128,6 +128,7 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 | `if` | `cond` 必填，`then` / `else` 可选 | 条件为 `bool`；两个分支各自是一个语句块 |
 | `short` | `name`、`operator`、`left`、`value` 必填，`right` 可选 | `&&` / `\|\|` 的短路求值，结果绑定到 `name`；`right` 是只在需要时执行的准备块 |
 | `select` | `name`、`cond`、`thenValue`、`elseValue`、`type` 必填，`then` / `else` 可选 | 条件表达式的结果绑定；`type` 是结果类型 ID，两条分支必须与它一致 |
+| `object` | `name`、`type` 必填，`fields` 可选 | 构造静态形状对象；`type` 指向 `object` 类型，字段按 `fields` 顺序求值并绑定到 `name` |
 
 `let` 不是语言层面的变量，它解决的是求值次数：前端把模块级 `const`、分支里的 `const` 和需要复用的中间结果落成局部值，避免在表达式里重复求值——`const x = f(); g(x, x)` 只应该调用一次 `f`。
 
@@ -208,7 +209,19 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
   "elseValue": {"op": "number", "bits": "0x4000000000000000"} }
 ```
 
-条件为真时执行 `then` 列表，在同一个子作用域里求值 `thenValue`；为假时走 `else`。`then` / `else` 只接受 `let`、`short` 与 `select`。`name` 在语句之后可见，类型由 `type` 声明，两条分支的类型必须与它一致。当前可执行结果是 `number`、`bool` 或 `string`。完整语义见[三元式](ternary.md)。
+条件为真时执行 `then` 列表，在同一个子作用域里求值 `thenValue`；为假时走 `else`。`then` / `else` 只接受 `let`、`short`、`select` 与 `object`。`name` 在语句之后可见，类型由 `type` 声明，两条分支的类型必须与它一致。当前可执行结果是 `number`、`bool`、`string` 或对象引用。完整语义见[三元式](ternary.md)。
+
+`object` 语句构造一个对象并把结果绑定到 `name`：
+
+```json
+{ "op": "object", "name": "p", "type": 8,
+  "fields": [
+    {"name": "x", "value": {"op": "number", "bits": "0x4044000000000000"}},
+    {"name": "y", "value": {"op": "number", "bits": "0x4000000000000000"}}
+  ] }
+```
+
+`fields` 按数组顺序求值；目标类型必须把所有属性都列为必填，字段名必须存在且不能重复。字段值是表达式，可以带准备语句。对象字面量在降低时通常先物化每个字段，再生成这条语句，因此副作用顺序与源码一致。对象值用引用身份，`===` / `!==` 比较指针而不是内容。
 
 ## 表达式
 
@@ -223,6 +236,7 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 | `binary` | `operator`、`left`、`right` | 算术运算，运算符限 `+`、`-`、`*`、`/`，结果是 `number` |
 | `concat` | `left`、`right` | 两个 `string` 按 UTF-16 code unit 拼接，结果是 `string` |
 | `strlen` | `operand` | `string` 的 UTF-16 code unit 数，结果是 `number` |
+| `field` | `name`、`operand` | 读取对象属性的值；`operand` 必须是 `object` 类型，属性必须存在且为必填 |
 | `compare` | `operator`、`left`、`right` | 比较运算，运算符限 `<`、`<=`、`>`、`>=`、`===`、`!==`，结果是 `bool` |
 | `not` | `operand` | 布尔取反，操作数必须是 `bool` |
 
@@ -230,7 +244,7 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 
 `bool` 的 `value` 用指针保存，所以 `false` 与「字段缺失」是两种不同的输入：前者是合法值，后者按 `nir.missing` 拒绝。JSON 里写成 `{"op":"bool","value":false}`。
 
-`compare` 的输入类型按运算符分两组：`<`、`<=`、`>`、`>=` 要求两个 `number`；`===`、`!==` 要求两侧同为 `number`、`bool` 或 `string`。字符串相等按 UTF-16 code unit 序列比较，不受存储地址影响。宽松相等 `==`、`!=` 不是 NIR 运算符，混入文件按 `nir.bad-op` 拒绝。浮点比较的具体结果见[比较语义](comparison.md)。
+`compare` 的输入类型按运算符分两组：`<`、`<=`、`>`、`>=` 要求两个 `number`；`===`、`!==` 要求两侧同为 `number`、`bool`、`string` 或同一个对象类型。字符串相等按 UTF-16 code unit 序列比较，不受存储地址影响；对象相等按引用身份，不比较字段内容。宽松相等 `==`、`!=` 不是 NIR 运算符，混入文件按 `nir.bad-op` 拒绝。浮点比较的具体结果见[比较语义](comparison.md)。
 
 `string` 的 `value` 用 JSON 字符串保存，空字符串是合法值而不是缺字段。`strlen` 和 `concat` 的操作数必须是 `string`；字符串的 `length` 在降低时变成 `strlen`，`+` 在两个操作数都是字符串时变成 `concat`。索引、切片、模板插值和字符串方法还没有对应的 NIR 操作。
 
@@ -329,13 +343,14 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 | 调用 | 目标函数必须存在；实参个数等于形参个数；每个实参类型等于对应形参类型 |
 | 类型 | 字面量是 `number`、`bool` 或 `string`；参数取它声明的类型；四则运算的结果是 `number`；`concat` 的结果是 `string`，`strlen` 的结果是 `number`；`compare` 的结果是 `bool`，输入按运算符分组；`not` 的操作数与结果都是 `bool`；调用表达式的类型是被调函数的返回类型 |
 | 类型表 | 内置 ID 1–7 不能被覆盖；复合 ID >= 8 且唯一；引用必须存在；`void` 只能作为函数结果 |
+| 对象 | `object` 语句的字段必须覆盖目标类型的所有必填属性；字段名存在且不重复；`field` 只能读取已存在的必填属性；当前切片拒绝可选属性 |
 | 分支 | `if` 的 `cond` 必须是 `bool`；`then` 与 `else` 各自在子作用域里检查 |
 | 短路 | `short` 的 `left` 与 `value` 必须是 `bool`；`name` 在当前块里唯一，类型为 `bool`；`right` 只在需要时执行 |
 | 三元式 | `select` 的 `cond` 必须是 `bool`；两条分支必须同类型，且与 `type` 一致；`name` 在当前块里唯一 |
 | 赋值 | `set` 的目标必须由前面的 `mutable` `let` 定义；右值与目标同类型 |
 | 循环 | `while` 的 `cond` 必须是 `bool`；`condPre` 只含表达式准备；`body` 在独立子作用域里检查；`id` 在函数内唯一 |
 | 跳转 | `break` / `continue` 的 `target` 必须等于当前最内层循环的 `id` |
-| 返回值 | 返回 `number`、`bool` 或 `string` 的函数必须在每条路径上以带值的 `return` 结束，值类型与声明一致；`void` 函数的 `return` 不带值。`if` 只有两臂都存在且都结束时才算覆盖路径 |
+| 返回值 | 返回 `number`、`bool`、`string` 或对象引用的函数必须在每条路径上以带值的 `return` 结束，值类型与声明一致；`void` 函数的 `return` 不带值。`if` 只有两臂都存在且都结束时才算覆盖路径 |
 | 输出 | `print` 只接受 `number`、`bool` 或 `string`，`void` 调用不能作为值使用 |
 | 丢弃 | `discard` 的表达式必须成立，结果类型不限 |
 
@@ -382,6 +397,8 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 | `nir.type-shape` | 格式 | 属性缺名、数组缺 `element`、元组为空、联合成员不足、函数缺 `result` |
 | `nir.type-ref` | 格式 | 类型字段引用了不存在的类型 ID |
 | `nir.type-void` | 格式 | `void` 出现在参数、属性、元素、成员、局部变量或 `select` 结果位置 |
+| `nir.unknown-field` | 语义 | `object` 或 `field` 引用了目标对象类型里不存在的属性 |
+| `nir.object-field` | 语义 | 对象字段类型不符、缺少必填字段，或读取了可选属性 |
 | `nir.unknown-local` | 语义 | 引用了尚未定义的局部值，或局部值不在当前块及祖先块里；也包括 `set` 的目标 |
 | `nir.immutable-local` | 语义 | `set` 的目标不是可变的 `let` |
 | `nir.assign-type` | 语义 | `set` 的右值与目标类型不同 |
@@ -434,6 +451,23 @@ boolean 的形状同样直接：
 ```
 
 这段输出 `hello, 世界`。`strlen` 对同一个结果返回 UTF-16 code unit 数，而不是 UTF-8 字节数或 Unicode 码点数；emoji 占两个 code unit。
+
+对象形状由类型表描述：
+
+```json
+{ "types": [
+    {"id": 8, "kind": "object", "name": "Point",
+     "properties": [{"name": "x", "type": 1}, {"name": "y", "type": 1}]}
+  ] }
+```
+
+```json
+{ "op": "object", "name": "p", "type": 8,
+  "fields": [{"name": "x", "value": {"op": "number", "bits": "0x4044000000000000"}},
+             {"name": "y", "value": {"op": "number", "bits": "0x4000000000000000"}}] }
+```
+
+后面的 `{"op":"field","name":"x","operand":{"op":"local","name":"p"}}` 读出 40。`{"op":"compare","operator":"===","left":{"op":"local","name":"p"},"right":{"op":"local","name":"p"}}` 是 true；内容相同但分别构造的两个对象是 false。
 
 校验示例、格式规则与语义规则：
 

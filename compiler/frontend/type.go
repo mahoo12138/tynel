@@ -151,6 +151,100 @@ func joinFields(items []Field, depth int) string {
 	return strings.Join(parts, ", ")
 }
 
+// ResolveType 沿命名类型找到结构化摘要。接口和类型别名只活在类型空间，
+// 属性访问、结构比较和 NIR 类型表都需要看到它们背后的对象、数组或函数形状。
+// 解析有深度预算；环或缺失别名时返回原类型，由调用方按不支持处理。
+func (f *Facts) ResolveType(t *Type) *Type {
+	return f.resolveType(t, 0)
+}
+
+func (f *Facts) resolveType(t *Type, depth int) *Type {
+	if t == nil || t.Kind != KindNamed || t.Name == "" || depth >= maxTypeDepth {
+		return t
+	}
+	for i := range f.Aliases {
+		alias := &f.Aliases[i]
+		if alias.Name != t.Name || alias.Type == nil {
+			continue
+		}
+		return f.resolveType(alias.Type, depth+1)
+	}
+	return t
+}
+
+// SameType 按结构比较两个类型摘要，忽略命名类型的名字。它只回答「这两个
+// 摘要描述的形状是否相同」，不重复 TypeScript 的赋值兼容规则；调用方应先
+// 用 Facts.ResolveType 把命名类型展开。
+func SameType(a, b *Type) bool {
+	return sameType(a, b, 0)
+}
+
+func sameType(a, b *Type, depth int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if depth > maxTypeDepth {
+		return a.Kind == b.Kind
+	}
+	if a.Kind != b.Kind {
+		return false
+	}
+	switch a.Kind {
+	case KindObject:
+		if len(a.Properties) != len(b.Properties) {
+			return false
+		}
+		for i := range a.Properties {
+			prop := &a.Properties[i]
+			other, ok := propertyOf(b, prop.Name)
+			if !ok || prop.Optional != other.Optional || !sameType(&prop.Type, &other.Type, depth+1) {
+				return false
+			}
+		}
+		return true
+	case KindArray:
+		return sameType(a.Element, b.Element, depth+1)
+	case KindTuple:
+		return sameTypeList(a.Elements, b.Elements, depth)
+	case KindUnion, KindIntersection:
+		return sameTypeList(a.Members, b.Members, depth)
+	case KindFunction:
+		if !sameType(a.Result, b.Result, depth+1) || len(a.Params) != len(b.Params) {
+			return false
+		}
+		for i := range a.Params {
+			if a.Params[i].Optional != b.Params[i].Optional || !sameType(&a.Params[i].Type, &b.Params[i].Type, depth+1) {
+				return false
+			}
+		}
+		return true
+	case KindNamed:
+		return a.Name == b.Name
+	}
+	return true
+}
+
+func sameTypeList(a, b []Type, depth int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !sameType(&a[i], &b[i], depth+1) {
+			return false
+		}
+	}
+	return true
+}
+
+func propertyOf(t *Type, name string) (*Property, bool) {
+	for i := range t.Properties {
+		if t.Properties[i].Name == name {
+			return &t.Properties[i], true
+		}
+	}
+	return nil, false
+}
+
 // 类型摘要的递归预算。事实来自前端，深度和节点数必须由调用方兜底，避免一段
 // 异常深的类型让校验或诊断爆栈。
 const (
