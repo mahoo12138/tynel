@@ -2,6 +2,7 @@ package nir
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
 )
@@ -190,6 +191,81 @@ func (c *checker) stmts(stmts []Stmt, sc *scope, f *Function) error {
 				return failAt("nir.duplicate-name", s.Pos, "函数 %q 里 %q 与参数重复", f.Name, s.Name)
 			}
 			sc.names[s.Name] = s.Type
+		case OpArray:
+			def, ok := c.types[s.Type]
+			if !ok || def.Kind != TypeKindArray {
+				return failAt("nir.type-kind", s.Pos, "array 的 type 不是 array 类型：%s", typeName(s.Type))
+			}
+			for i := range s.Items {
+				got, err := c.exprType(&s.Items[i], sc)
+				if err != nil {
+					return err
+				}
+				if got != def.Element {
+					return failAt("nir.array-item", s.Pos, "数组第 %d 个元素需要 %s，实际为 %s", i+1, typeName(def.Element), typeName(got))
+				}
+			}
+			if err := c.bindAggregate(s, sc, f); err != nil {
+				return err
+			}
+		case OpTuple:
+			def, ok := c.types[s.Type]
+			if !ok || def.Kind != TypeKindTuple {
+				return failAt("nir.type-kind", s.Pos, "tuple 的 type 不是 tuple 类型：%s", typeName(s.Type))
+			}
+			if len(s.Items) != len(def.Elements) {
+				return failAt("nir.tuple-item", s.Pos, "元组有 %d 个元素，类型需要 %d 个", len(s.Items), len(def.Elements))
+			}
+			for i := range s.Items {
+				got, err := c.exprType(&s.Items[i], sc)
+				if err != nil {
+					return err
+				}
+				if got != def.Elements[i] {
+					return failAt("nir.tuple-item", s.Pos, "元组第 %d 个元素需要 %s，实际为 %s", i+1, typeName(def.Elements[i]), typeName(got))
+				}
+			}
+			if err := c.bindAggregate(s, sc, f); err != nil {
+				return err
+			}
+		case OpIndex:
+			base, err := c.exprType(s.Value, sc)
+			if err != nil {
+				return err
+			}
+			def, ok := c.types[base]
+			if !ok {
+				return failAt("nir.type-kind", s.Pos, "index 的 value 不是复合类型：%s", typeName(base))
+			}
+			switch def.Kind {
+			case TypeKindArray:
+				index, err := c.exprType(s.Index, sc)
+				if err != nil {
+					return err
+				}
+				if index != TypeNumber {
+					return failAt("nir.index-type", s.Pos, "数组索引必须是 number，实际为 %s", typeName(index))
+				}
+				if s.Type != def.Element {
+					return failAt("nir.index-type", s.Pos, "索引结果声明为 %s，数组元素是 %s", typeName(s.Type), typeName(def.Element))
+				}
+			case TypeKindTuple:
+				index, ok := literalIndex(s.Index)
+				if !ok {
+					return failAt("nir.index-type", s.Pos, "元组索引必须是非负整数数字字面量")
+				}
+				if index >= len(def.Elements) {
+					return failAt("nir.index-bounds", s.Pos, "元组索引 %d 越界；长度是 %d", index, len(def.Elements))
+				}
+				if s.Type != def.Elements[index] {
+					return failAt("nir.index-type", s.Pos, "元组第 %d 个元素是 %s，index 声明为 %s", index, typeName(def.Elements[index]), typeName(s.Type))
+				}
+			default:
+				return failAt("nir.index-type", s.Pos, "index 的 value 必须是 array 或 tuple，实际为 %s", def.Kind)
+			}
+			if err := c.bindAggregate(s, sc, f); err != nil {
+				return err
+			}
 		case OpSet:
 			got, err := c.exprType(s.Value, sc)
 			if err != nil {
@@ -321,13 +397,47 @@ func (c *checker) stmts(stmts []Stmt, sc *scope, f *Function) error {
 	return nil
 }
 
-// valueType 报告类型 ID 是否是当前可执行的局部值类型：标量或对象引用。
+// valueType 报告类型 ID 是否是当前可执行的局部值类型：标量、对象引用、数组
+// 或元组。数组和元组在 bridge 里分别映射为切片和指针，但 NIR 只记录类型 ID。
 func (c *checker) valueType(id int) bool {
 	switch id {
 	case TypeNumber, TypeBool, TypeString:
 		return true
 	}
-	return isObjectType(c.types, id)
+	def, ok := c.types[id]
+	if !ok {
+		return false
+	}
+	switch def.Kind {
+	case TypeKindObject, TypeKindArray, TypeKindTuple:
+		return true
+	}
+	return false
+}
+
+// bindAggregate 为一个新绑定检查重名并登记结果类型。array、tuple 与 index 都
+// 把结果写进局部值，规则和 let 一致。
+func (c *checker) bindAggregate(s *Stmt, sc *scope, f *Function) error {
+	if _, exists := sc.names[s.Name]; exists {
+		return failAt("nir.duplicate-name", s.Pos, "函数 %q 里 %q 重复定义", f.Name, s.Name)
+	}
+	if _, exists := sc.params[s.Name]; exists {
+		return failAt("nir.duplicate-name", s.Pos, "函数 %q 里 %q 与参数重复", f.Name, s.Name)
+	}
+	sc.names[s.Name] = s.Type
+	return nil
+}
+
+// literalIndex 取出元组索引要求的非负整数数字字面量。
+func literalIndex(e *Expr) (int, bool) {
+	if e == nil || e.Op != OpNumber || e.Bits == "" {
+		return 0, false
+	}
+	v, err := Float64(e.Bits)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v != math.Trunc(v) || v < 0 || v > 1<<31-1 {
+		return 0, false
+	}
+	return int(v), true
 }
 
 // scope 是语句块内的可见名字。params 只在函数根作用域非空；names 是当前块
@@ -475,6 +585,19 @@ func (c *checker) exprType(e *Expr, sc *scope) (int, error) {
 		}
 		if got != TypeString {
 			return 0, failAt("nir.operand-type", e.Operand.Pos, "strlen 的操作数必须是 string，实际为 %s", typeName(got))
+		}
+		return TypeNumber, nil
+	case OpLen:
+		if e.Operand == nil {
+			return 0, failAt("nir.missing", e.Pos, "len 缺少操作数")
+		}
+		got, err := c.exprType(e.Operand, sc)
+		if err != nil {
+			return 0, err
+		}
+		def, ok := c.types[got]
+		if !ok || def.Kind != TypeKindArray {
+			return 0, failAt("nir.operand-type", e.Operand.Pos, "len 的操作数必须是 array，实际为 %s", typeName(got))
 		}
 		return TypeNumber, nil
 	case OpBinary:

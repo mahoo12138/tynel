@@ -10,6 +10,7 @@
     "add": {"comparison": "shared"},
     "string": {"comparison": "shared"},
     "object": {"comparison": "shared"},
+    "array": {"comparison": "shared"},
     "let-string": {"comparison": "shared"},
     "order": {"comparison": "shared"},
     "nested": {"comparison": "shared"},

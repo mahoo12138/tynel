@@ -30,13 +30,14 @@
 | 比较与严格相等 | `<` `<=` `>` `>=` 只接受 `number`；`===` `!==` 要求两侧同为 `number`、`boolean`、`string` 或同一对象形状；对象比较引用身份；NaN 比较遵循 IEEE 754 | [比较语义](../../reference/comparison.md)、[03.02 验收](../../validation/03-02-compare.md) |
 | `string`（部分定义） | UTF-16 code unit 存储；字面量、`+` 拼接、`length`、`===` / `!==` 和 `console.log` 可用；索引、`slice`、模板插值和字符串方法未定义 | [字符串 RFC](strings.md)、[S2.1 验收](../../validation/s2-01-nir-schema-3-string.md) |
 | 静态对象（部分定义） | 静态形状、必填属性、对象字面量、字段读取和引用身份；对象 `===` 不比较内容 | [对象与数组 RFC](objects-arrays.md)、[S2.2 验收](../../validation/s2-02-objects.md) |
+| 数组与元组（部分定义） | 同质数组与定长元组；字面量按源码顺序求值，索引先求值数组再求值下标；`length` 返回当前元素个数；数组越界按数据错误退出 6，元组越界在编译期拒绝 | [对象与数组 RFC](objects-arrays.md)、[S2.3 验收](../../validation/s2-03-arrays.md) |
 | `boolean` | `true` / `false` 是独立标量；不做数字真假转换；`!` 只接受 `boolean` | [03.01 验收](../../validation/03-01-boolean.md) |
 | `void` | 只表示「没有值」；只能作为函数返回类型和调用语句的结果 | [输出格式](../../reference/output.md)、[02.06 验收](../../validation/02-06-void.md) |
 | 求值顺序 | 调用实参、二元操作数、条件与分支准备语句按源码顺序执行；右侧准备语句不能提前到左侧之前 | [降低器](../../reference/lowering.md)、[03.07 验收](../../validation/03-07-combine.md) |
 | 条件求值 | `if` 和 `while` 的条件必须是 `boolean`；条件只求值一次；未选中的分支不执行但照样检查 | [分支](../../reference/branches.md)、[03.03 验收](../../validation/03-03-branch.md) |
 | 返回路径 | 有值函数的每条路径都必须结束；`if` 只有两臂都结束才算覆盖 | [返回路径](../../reference/returns.md)、[03.04 验收](../../validation/03-04-returns.md) |
 | 布尔短路 | `&&` / `||` 左侧求值一次；未选中的右侧不执行；结果绑定到临时值 | [短路求值](../../reference/short-circuit.md)、[03.05 验收](../../validation/03-05-short.md) |
-| 三元式 | 条件求值一次；只有选中的分支执行；两臂必须同为 `number`、`boolean`、`string` 或同一对象形状 | [三元式](../../reference/ternary.md)、[03.06 验收](../../validation/03-06-ternary.md) |
+| 三元式 | 条件求值一次；只有选中的分支执行；两臂必须同为标量、同一对象形状、同一数组或同一元组 | [三元式](../../reference/ternary.md)、[03.06 验收](../../validation/03-06-ternary.md) |
 | 声明与可变性 | `const` 不可赋值；`let` 必须带初值；赋值右值先求值再写入；赋值只作为独立语句 | [声明与可变存储](../../reference/mutability.md)、[04.01 验收](../../validation/04-01-mutability.md) |
 | 循环与跳转 | `while` 每轮重新检查条件，可能零次执行；`break` / `continue` 只作用于最近循环；循环体有独立作用域 | [循环跳转](../../reference/jumps.md)、[04.03 验收](../../validation/04-03-while.md) |
 | 递归与调用层 | 直接递归和相互递归共用签名预登记规则；每层调用持有独立参数和局部值 | [递归与调用层](../../reference/recursion.md)、[04.05 验收](../../validation/04-05-recursion.md) |
@@ -45,18 +46,18 @@
 | 模块合并 | 全部模块合并成一个 NIR；模块函数加前缀，模块体变成 `__init$N`；入口按顺序调度 | [合并模块](../../reference/merged-program.md)、[05.06 验收](../../validation/05-06-merge.md) |
 | 输出 | `console.log` 只接受一个 `number`、`boolean` 或 `string`；有限值最短可回读，负零、NaN、正负无穷有固定拼写；字符串在输出边界转成 UTF-8 | [输出格式](../../reference/output.md)、[02.06 验收](../../validation/02-06-void.md) |
 | 错误分类 | 源码错误、能力限制、数据错误和内部故障分开报告；没有语言级异常 | [诊断协议](../../reference/diagnostics.md)、[06.02 验收](../../validation/06-02-diagnostics.md) |
-| 内存与对象身份（部分定义） | 静态对象有用户可见的引用身份：`===` 比较指针，不比较字段。对象布局和 GC 可见指针格式仍是当前后端选择，不是长期语言契约 | [Go 桥接与运行时](../../../site/internals/go-bridge.md)、[S2.2 验收](../../validation/s2-02-objects.md) |
+| 内存与对象身份（部分定义） | 静态对象有用户可见的引用身份：`===` 比较指针，不比较字段；数组和元组暂时没有身份比较。布局和 GC 可见指针格式仍是当前后端选择，不是长期语言契约 | [Go 桥接与运行时](../../../site/internals/go-bridge.md)、[S2.2 验收](../../validation/s2-02-objects.md)、[S2.3 验收](../../validation/s2-03-arrays.md) |
 
-标为「部分定义」的行只覆盖已经实现并通过验证的子集：字符串有最小闭环，对象有静态形状第一个切片；未覆盖部分不能从当前实现类推。
+标为「部分定义」的行只覆盖已经实现并通过验证的子集：字符串有最小闭环，对象有静态形状第一个切片，数组和元组有字面量、索引与长度；未覆盖部分不能从当前实现类推。
 
 ## 3. 未定义的语义
 
-以下领域尚未形成完整的 Tynel 规范。实现中出现的任何布局、指针或运行时行为都只是当前后端选择，不能作为语言语义引用。Stage 2 的五份 RFC 已经确认；字符串最小闭环和对象第一个切片已经实现，其他领域仍是待实现设计，不改变兼容性矩阵里的 `rejected` 状态。
+以下领域尚未形成完整的 Tynel 规范。实现中出现的任何布局、指针或运行时行为都只是当前后端选择，不能作为语言语义引用。Stage 2 的五份 RFC 已经确认；字符串最小闭环、对象第一个切片和数组/元组第一个切片已经实现，其他领域仍是待实现设计，不改变兼容性矩阵里的 `rejected` 状态。
 
 | 领域 | 状态 | 必须先决定的问题 | 决策入口 |
 | --- | --- | --- | --- |
 | 对象模型（扩展） | 已确认 | 可选属性与显式 `undefined`；字段写入；结构性放宽和对象复制规则 | [对象与数组 RFC](objects-arrays.md) |
-| 数组模型 | 已确认 | 长度、索引、越界、稀疏数组、扩容、切片、遍历；与对象和泛型的关系 | [对象与数组 RFC](objects-arrays.md) |
+| 数组模型（扩展） | 已确认 | 数组方法、扩容、切片共享与身份比较；首版只做同质字面量、索引和长度 | [对象与数组 RFC](objects-arrays.md) |
 | 联合、`null` 与 `undefined` | 已确认 | 是否为独立类型和值；判别联合；控制流缩窄；可空表示 | [联合与空值 RFC](unions-null.md) |
 | 函数值与闭包 | 已确认 | 调用约定；闭包捕获与生命周期；函数类型兼容；回调与高阶函数 | [函数与闭包 RFC](functions.md) |
 | 泛型表示 | 已确认 | 类型擦除、单态化还是字典传递；约束与默认类型参数；与 Runtime ABI 的关系 | [泛型 RFC](generics.md) |

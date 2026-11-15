@@ -52,6 +52,7 @@ const (
 	OpBinary  = "binary"
 	OpConcat  = "concat"
 	OpStrlen  = "strlen"
+	OpLen     = "len"
 	OpField   = "field"
 	OpCompare = "compare"
 	OpNot     = "not"
@@ -76,6 +77,9 @@ const (
 	OpSelect   = "select"
 	OpSet      = "set"
 	OpObject   = "object"
+	OpArray    = "array"
+	OpTuple    = "tuple"
+	OpIndex    = "index"
 	OpWhile    = "while"
 	OpBreak    = "break"
 	OpContinue = "continue"
@@ -134,10 +138,11 @@ type Pos struct {
 // Stmt 是一条语句。Value 为 nil 只对无返回值的 return 合法；Cond、Then 与
 // Else 属于 if 和 select；Operator、Left、Right 与 Value 只属于 short（Right
 // 是右侧的准备工作，Value 是准备完之后的右值）；ThenValue 与 ElseValue 只属于
-// select，是两条分支准备完之后各自的结果。
+// select，是两条分支准备完之后各自的结果。Items 属于 array/tuple 字面量，
+// Index 与 Value 属于 index 语句。
 type Stmt struct {
 	Op        string        `json:"op"`
-	Name      string        `json:"name,omitempty"` // let、short 或 select 的结果名
+	Name      string        `json:"name,omitempty"` // let、short、select、object、array、tuple 或 index 的结果名
 	Value     *Expr         `json:"value,omitempty"`
 	Cond      *Expr         `json:"cond,omitempty"` // if 或 select 使用
 	Then      []Stmt        `json:"then,omitempty"`
@@ -147,8 +152,10 @@ type Stmt struct {
 	Right     []Stmt        `json:"right,omitempty"`     // 仅 short 使用
 	ThenValue *Expr         `json:"thenValue,omitempty"` // 仅 select 使用
 	ElseValue *Expr         `json:"elseValue,omitempty"` // 仅 select 使用
-	Type      int           `json:"type,omitempty"`      // select 或 object 使用：结果类型 ID
+	Type      int           `json:"type,omitempty"`      // select、object、array、tuple 或 index 使用：结果类型 ID
 	Fields    []ObjectField `json:"fields,omitempty"`    // 仅 object 使用，按源码顺序求值
+	Items     []Expr        `json:"items,omitempty"`     // 仅 array/tuple 使用，按源码顺序求值
+	Index     *Expr         `json:"index,omitempty"`     // 仅 index 使用
 	Mutable   bool          `json:"mutable,omitempty"`   // 仅 let 使用：是否为可变的 let
 	CondPre   []Stmt        `json:"condPre,omitempty"`   // 仅 while 使用：每轮条件准备
 	Body      []Stmt        `json:"body,omitempty"`      // 仅 while 使用：循环体

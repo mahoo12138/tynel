@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 3,
+  "types": [
+    {"id": 8, "kind": "array", "element": 1}
+  ],
+  "entry": "main",
+  "functions": [
+    {
+      "name": "main",
+      "params": [],
+      "result": 3,
+      "body": [
+        {
+          "op": "array",
+          "name": "xs",
+          "type": 8,
+          "items": [
+            {"op": "number", "bits": "0x3ff0000000000000"},
+            {"op": "number", "bits": "0x4000000000000000"}
+          ]
+        },
+        {"op": "index", "name": "bad", "type": 1, "value": {"op": "local", "name": "xs"}, "index": {"op": "number", "bits": "0x4000000000000000"}},
+        {"op": "print", "value": {"op": "local", "name": "bad"}},
+        {"op": "return"}
+      ]
+    }
+  ]
+}

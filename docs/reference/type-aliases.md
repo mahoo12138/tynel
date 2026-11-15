@@ -39,14 +39,15 @@ console.log(value + 1);
 | `type Label = string` | 允许 |
 | `type Point = { x: number; y: number }` | 允许；静态对象形状 |
 | `interface Point { x: number; y: number }` | 允许；接口展开成对象形状 |
+| `type Nums = number[]` | 允许；同质数组 |
+| `type Pair = [number, string]` | 允许；定长元组 |
 | `type Amount = number \| boolean` | `cap.bad-type`，联合拒绝 |
 | `type Amount = any` | `cap.any` |
-| `interface Amount { value: number }` | `cap.interface` |
 | `type A = B; type B = A` | TypeScript `TS2456`，循环别名拒绝 |
 | `Amount` 当值 | TypeScript `TS2693` |
 | `Amount(1)`（纯类型导入） | TypeScript `TS2693` |
 
-别名链只允许最终落到 `number`、`boolean`、`string` 或静态对象。`type A = B` 且 `B = number` 可以通过；链里出现联合、数组或 `any` 就拒绝。接口只有能展开成必填属性的静态对象时才允许。
+别名链只允许最终落到 `number`、`boolean`、`string`、静态对象、同质数组或定长元组。`type A = B` 且 `B = number` 可以通过；链里出现联合、`any` 或不受支持的元素类型就拒绝。接口只有能展开成必填属性的静态对象时才允许。
 
 ## 修改别名后的错误
 
@@ -70,8 +71,8 @@ main.ts:3:7: error TS2322: Type 'number' is not assignable to type 'string'.
 
 ## 本轮边界
 
-- 只支持非递归、无类型参数、最终为 `number`、`boolean`、`string` 或静态对象的别名。
-- 不支持联合、字面量联合、数组、泛型别名；接口只在能展开成静态对象时允许。
+- 只支持非递归、无类型参数、最终为 `number`、`boolean`、`string`、静态对象、同质数组或定长元组的别名。
+- 不支持联合、字面量联合、函数、泛型别名；空元组也没有可执行布局。
 - 不支持值导入和跨模块函数/常量绑定；这些留到 05.04。
 - 别名不产生运行时值，也不改变数值宽度或初始化顺序。
 

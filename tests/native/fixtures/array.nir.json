@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 3,
+  "types": [
+    {"id": 8, "kind": "array", "element": 1},
+    {"id": 9, "kind": "array", "element": 8},
+    {"id": 10, "kind": "tuple", "elements": [1, 2]}
+  ],
+  "entry": "main",
+  "functions": [
+    {
+      "name": "sum",
+      "params": [{"name": "xs", "type": 8}],
+      "result": 1,
+      "body": [
+        {"op": "let", "name": "total", "value": {"op": "number", "bits": "0x0000000000000000"}, "mutable": true},
+        {"op": "let", "name": "i", "value": {"op": "number", "bits": "0x0000000000000000"}, "mutable": true},
+        {
+          "op": "while",
+          "id": 1,
+          "cond": {
+            "op": "compare",
+            "operator": "<",
+            "left": {"op": "local", "name": "i"},
+            "right": {"op": "len", "operand": {"op": "param", "name": "xs"}}
+          },
+          "body": [
+            {"op": "index", "name": "item", "type": 1, "value": {"op": "param", "name": "xs"}, "index": {"op": "local", "name": "i"}},
+            {
+              "op": "set",
+              "name": "total",
+              "value": {
+                "op": "binary",
+                "operator": "+",
+                "left": {"op": "local", "name": "total"},
+                "right": {"op": "local", "name": "item"}
+              }
+            },
+            {
+              "op": "set",
+              "name": "i",
+              "value": {
+                "op": "binary",
+                "operator": "+",
+                "left": {"op": "local", "name": "i"},
+                "right": {"op": "number", "bits": "0x3ff0000000000000"}
+              }
+            }
+          ]
+        },
+        {"op": "return", "value": {"op": "local", "name": "total"}}
+      ]
+    },
+    {
+      "name": "main",
+      "params": [],
+      "result": 3,
+      "body": [
+        {
+          "op": "array",
+          "name": "xs",
+          "type": 8,
+          "items": [
+            {"op": "number", "bits": "0x3ff0000000000000"},
+            {"op": "number", "bits": "0x4000000000000000"},
+            {"op": "number", "bits": "0x4008000000000000"}
+          ]
+        },
+        {"op": "print", "value": {"op": "call", "function": "sum", "args": [{"op": "local", "name": "xs"}]}},
+        {"op": "print", "value": {"op": "len", "operand": {"op": "local", "name": "xs"}}},
+        {"op": "index", "name": "second", "type": 1, "value": {"op": "local", "name": "xs"}, "index": {"op": "number", "bits": "0x3ff0000000000000"}},
+        {"op": "print", "value": {"op": "local", "name": "second"}},
+        {
+          "op": "array",
+          "name": "grid",
+          "type": 9,
+          "items": [{"op": "local", "name": "xs"}, {"op": "local", "name": "xs"}]
+        },
+        {"op": "index", "name": "row", "type": 8, "value": {"op": "local", "name": "grid"}, "index": {"op": "number", "bits": "0x3ff0000000000000"}},
+        {"op": "index", "name": "cell", "type": 1, "value": {"op": "local", "name": "row"}, "index": {"op": "number", "bits": "0x0000000000000000"}},
+        {"op": "print", "value": {"op": "local", "name": "cell"}},
+        {
+          "op": "tuple",
+          "name": "pair",
+          "type": 10,
+          "items": [{"op": "number", "bits": "0x401c000000000000"}, {"op": "bool", "value": true}]
+        },
+        {"op": "index", "name": "seven", "type": 1, "value": {"op": "local", "name": "pair"}, "index": {"op": "number", "bits": "0x0000000000000000"}},
+        {"op": "print", "value": {"op": "local", "name": "seven"}},
+        {"op": "index", "name": "flag", "type": 2, "value": {"op": "local", "name": "pair"}, "index": {"op": "number", "bits": "0x3ff0000000000000"}},
+        {"op": "print", "value": {"op": "local", "name": "flag"}},
+        {"op": "return"}
+      ]
+    }
+  ]
+}

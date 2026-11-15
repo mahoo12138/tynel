@@ -78,9 +78,19 @@ bridge 把类型 ID 4 映射到支持文件声明的 `tynelString` 结构体，�
 
 ### 对象的 Runtime 表示
 
-schema 3 的 `object` 类型在 bridge 里变成 Go 的 `*struct{...}`：字段按类型表里的属性顺序排列，字段类型可以是 `float64`、`bool`、`tynelString` 或另一个对象指针。对象值因此是一个 GC 可见的指针，`===` 直接比较指针，引用身份成立。
+schema 3 的 `object` 类型在 bridge 里变成 Go 的 `*struct{...}`：字段按类型表里的属性顺序排列，字段类型可以是 `float64`、`bool`、`tynelString`、另一个对象/元组指针或数组切片。对象值因此是一个 GC 可见的指针，`===` 直接比较指针，引用身份成立。
 
 `object` 语句生成一个 `ir.BlockStmt`：先用 `ONEW` 分配结构体并赋给局部值，再按 `fields` 顺序把每个字段值赋给选择器。`field` 表达式生成 `ODOT` 选择器。嵌套对象在类型表里是另一个类型 ID，bridge 先递归构造它的结构体，再把字段类型设成它的指针。当前切片拒绝可选属性和递归对象类型；可选属性需要 `undefined` 表示，递归对象需要先建立命名占位类型。
+
+### 数组与元组的 Runtime 表示
+
+`array` 类型映射为 Go 切片 `[]T`：切片头对 GC 可见，元素中的指针保持可见。`array` 语句生成 `OCOMPLIT`/`OSLICELIT`，元素按 `items` 顺序求值；`len` 生成 `OLEN` 再转成 `float64`。NIR 不暴露 Go 切片头的字段，长期 ABI 仍按 Tynel 值模型收敛。
+
+`tuple` 类型映射为 `*struct{f0 T0; f1 T1; ...}`，布局按位置固定。`tuple` 语句用 `ONEW` 分配结构体并按位置赋值；`index` 在元组上解析成 `ODOT` 选择器。元组索引在 NIR 里已经限定为编译期整数，bridge 不生成运行时边界检查。
+
+数组索引先调用 `tynelIndexToInt` 把 `number` 转成整数，再用 `tynelCheckBounds` 检查边界；这两步都在生成的 `ir.BlockStmt` 里。非整数、NaN、无穷和越界都写到标准错误并以状态 6 退出，不是 Go panic。检查通过后才生成 Go 的 `OINDEX`。
+
+数据错误的退出状态 6 与编译失败的 1–5 分开。`tynel run` 原样传出程序状态；没有编译诊断信封，只有程序自己的标准错误。
 
 它**不**提供 `main` 函数。NIR 的入口叫 `main` 时，入口函数本身就是 `main.main`；入口叫别的名字时，bridge 额外生成一个 `main` 包装函数——没有参数、没有返回，函数体只有对入口的一次调用——Go 可执行程序要求的 `main.main` 由此成立，`entry` 字段真正决定程序从哪里开始。包装函数和用户函数一样直接建成 `ir.Func`，不生成 Go 源码。如果包里已经有 `main` 声明（比如 NIR 里有个叫 `main` 的函数而入口另有其名），bridge 会因为无法生成包装而拒绝；支持文件自己写 `main` 也会因符号冲突被拒绝。
 
@@ -128,7 +138,11 @@ deadlocals / escape / walk / SSA / obj / link
 | `string` | `ir.NewBasicLit` 造 UTF-8 字符串常量，再调用 `tynelStringFromUTF8` 转成 UTF-16 结构 |
 | `concat` / `strlen` | 调用支持函数 `tynelStringConcat` / `tynelStringLen` |
 | `object` | `ir.BlockStmt`：`ONEW` 分配结构体，再按字段顺序生成 `ODOT` 赋值 |
+| `array` | `ir.CompLitExpr`（`OCOMPLIT`/`OSLICELIT`），元素按 `items` 顺序求值 |
+| `tuple` | `ir.BlockStmt`：`ONEW` 分配结构体，再按位置生成 `ODOT` 赋值 |
+| `index` | 数组：边界检查后 `OINDEX`；元组：常量位置对应的 `ODOT` |
 | `field` | `ir.NewSelectorExpr(pos, ir.ODOT, base, fieldSym)` |
+| `len` | `ir.NewUnaryExpr(pos, ir.OLEN, array)` 再转成 `float64` |
 | `param` | 直接用参数的 `*ir.Name` |
 | `binary` | `ir.NewBinaryExpr`，`+ - * /` 对应 `OADD OSUB OMUL ODIV` |
 | `not` | `ir.NewUnaryExpr`，对应 `ONOT`，操作数与结果都是 `bool` |

@@ -77,6 +77,7 @@ func TestFixtureOutputs(t *testing.T) {
 		{"字符串最小闭环", filepath.Join("tests", "native", "fixtures", "string.nir.json"), "hello, 世界\n2\ntrue\ntrue\n\n"},
 		{"v2 迁移后构建", filepath.Join("tests", "native", "fixtures", "v2-migrate.nir.json"), "42\n"},
 		{"对象字段与身份", filepath.Join("tests", "native", "fixtures", "object.nir.json"), "42\ntrue\nfalse\n"},
+		{"数组、嵌套数组与元组", filepath.Join("tests", "native", "fixtures", "array.nir.json"), "6\n3\n2\n1\n7\ntrue\n"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -85,6 +86,33 @@ func TestFixtureOutputs(t *testing.T) {
 				t.Fatalf("输出为 %q，期望 %q", got, c.want)
 			}
 		})
+	}
+}
+
+// TestArrayBoundsExitsWithDataError 验证数组越界是 Tynel 运行时数据错误，
+// 不是 Go panic，也不是 JavaScript 的 undefined。退出状态单独使用 6。
+func TestArrayBoundsExitsWithDataError(t *testing.T) {
+	root := repoRoot(t)
+	output := filepath.Join(t.TempDir(), "array-bounds")
+	if _, err := build.Run(build.Options{
+		Root:   root,
+		Input:  filepath.Join(root, "tests", "native", "fixtures", "array-bounds.nir.json"),
+		Output: output,
+	}, toolchain.Exec{}); err != nil {
+		t.Fatalf("构建越界夹具失败：%v", err)
+	}
+	result, err := (toolchain.Exec{}).Run(output)
+	if err != nil {
+		t.Fatalf("运行越界夹具失败：%v", err)
+	}
+	if result.ExitCode != 6 {
+		t.Fatalf("越界应退出 6，实际 %d：%s", result.ExitCode, result.Stderr)
+	}
+	if result.Stdout != "" {
+		t.Fatalf("越界前不应有输出，实际 %q", result.Stdout)
+	}
+	if !strings.Contains(result.Stderr, "数组索引 2 越界") {
+		t.Fatalf("越界错误信息不符：%q", result.Stderr)
 	}
 }
 

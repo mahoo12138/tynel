@@ -9,6 +9,9 @@
 package capability
 
 import (
+	"fmt"
+	"math"
+	"strconv"
 	"strings"
 
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
@@ -35,6 +38,14 @@ func Check(snapshot *source.Snapshot, facts *frontend.Facts) ([]*diagnostic.Diag
 		case frontend.KindObject:
 			if reason := c.objectProblem(c.facts.ResolveType(alias.Type), 0); reason != "" {
 				c.report(alias.Start, "cap.bad-type", "对象类型 %q 的%s", alias.Name, reason)
+			}
+		case frontend.KindArray:
+			if reason := c.arrayProblem(c.facts.ResolveType(alias.Type), 0); reason != "" {
+				c.report(alias.Start, "cap.bad-type", "数组类型 %q 的%s", alias.Name, reason)
+			}
+		case frontend.KindTuple:
+			if reason := c.tupleProblem(c.facts.ResolveType(alias.Type), 0); reason != "" {
+				c.report(alias.Start, "cap.bad-type", "元组类型 %q 的%s", alias.Name, reason)
 			}
 		case "interface":
 			if alias.Type == nil {
@@ -134,7 +145,7 @@ func (c *checker) declaration(d *frontend.Declaration) {
 			c.report(d.Start, "cap.unsupported-declaration", "函数 %q 只有声明没有实现（ambient 或重载签名），本阶段不支持", d.Name)
 			return
 		}
-		c.declaredType(d.Result, d.Start, "函数 %q 的返回类型", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindVoid)
+		c.declaredType(d.Result, d.Start, "函数 %q 的返回类型", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple, frontend.KindVoid)
 	case frontend.DeclParameter:
 		// 默认参数与可选参数都需要后端合成缺省值，本阶段还没实现。先在这里
 		// 明确拒绝，别让合法的 add(5) 一路走到降低阶段才报内部故障；事实层
@@ -147,19 +158,19 @@ func (c *checker) declaration(d *frontend.Declaration) {
 			c.report(d.Start, "cap.unsupported-parameter", "参数 %q 是可选参数，本阶段只支持必填参数", d.Name)
 			return
 		}
-		c.declaredType(d.Type, d.Start, "参数 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject)
+		c.declaredType(d.Type, d.Start, "参数 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple)
 	case frontend.DeclConst:
 		if d.Body == nil {
 			// declare const 只有类型声明，没有初始化表达式；入口降低需要值。
 			c.report(d.Start, "cap.unsupported-declaration", "常量 %q 没有初始化表达式（ambient 声明），本阶段不支持", d.Name)
 			return
 		}
-		c.declaredType(d.Type, d.Start, "常量 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject)
+		c.declaredType(d.Type, d.Start, "常量 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple)
 		if d.Body.Type != nil && d.Body.Type.Kind == frontend.KindVoid {
 			c.report(d.Body.Start, "cap.void-value", "常量 %q 的初始值是 void 调用，没有可用的值", d.Name)
 		}
 	case frontend.DeclLocal, frontend.DeclLet:
-		c.declaredType(d.Type, d.Start, "局部值 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject)
+		c.declaredType(d.Type, d.Start, "局部值 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple)
 	case frontend.DeclModuleLet:
 		c.report(d.Start, "cap.module-let", "模块级 let %q 不在本阶段子集内；模块体只接受 const", d.Name)
 	case frontend.DeclVar:
@@ -178,22 +189,19 @@ func (c *checker) declaredType(t *frontend.Type, offset int, format, name string
 		return
 	}
 	if t.Kind == frontend.KindAny {
-		c.report(offset, "cap.any", format+"是 any 或 unknown；本阶段只支持标量、对象和 void", name)
+		c.report(offset, "cap.any", format+"是 any 或 unknown；本阶段只支持标量、对象、数组、元组和 void", name)
 		return
 	}
 	resolved := c.facts.ResolveType(t)
-	if resolved.Kind == frontend.KindObject {
-		for _, k := range allowed {
-			if k == frontend.KindObject {
-				if reason := c.objectProblem(resolved, 0); reason != "" {
-					c.report(offset, "cap.bad-type", format+"的%s", name, reason)
-				}
-				return
-			}
-		}
-	}
 	for _, k := range allowed {
 		if resolved.Kind == k {
+			// void 只表示「没有值」，不参与值类型的递归检查。
+			if resolved.Kind == frontend.KindVoid {
+				return
+			}
+			if reason := c.valueProblem(resolved, 0); reason != "" {
+				c.report(offset, "cap.bad-type", format+"的%s", name, reason)
+			}
 			return
 		}
 	}
@@ -349,15 +357,9 @@ func (c *checker) node(n *frontend.Node) {
 			c.report(n.Start, "cap.bad-type", "三元式两条分支类型不同：%s 与 %s", describeType(thenType), describeType(elseType))
 			return
 		}
-		if !isValueKind(thenType.Kind) && thenType.Kind != frontend.KindObject {
-			c.report(n.Start, "cap.bad-type", "三元式的结果不能是 %s", describeType(thenType))
+		if reason := c.valueProblem(thenType, 0); reason != "" {
+			c.report(n.Start, "cap.bad-type", "三元式结果的%s", reason)
 			return
-		}
-		if thenType.Kind == frontend.KindObject {
-			if reason := c.objectProblem(thenType, 0); reason != "" {
-				c.report(n.Start, "cap.bad-type", "三元式的对象结果%s", reason)
-				return
-			}
 		}
 		for i := range n.Children {
 			c.node(&n.Children[i])
@@ -406,7 +408,7 @@ func (c *checker) node(n *frontend.Node) {
 				return
 			}
 			if !isValueKind(leftType.Kind) && leftType.Kind != frontend.KindObject {
-				c.report(n.Start, "cap.bad-type", "严格相等 %q 只支持标量或对象引用，实际为 %s", n.Op, describeType(leftType))
+				c.report(n.Start, "cap.bad-type", "严格相等 %q 只支持标量或对象引用；数组和元组尚未实现身份比较，实际为 %s", n.Op, describeType(leftType))
 				return
 			}
 			if leftType.Kind == frontend.KindObject {
@@ -459,9 +461,16 @@ func (c *checker) node(n *frontend.Node) {
 	case "CallExpression":
 		c.call(n)
 	case "PropertyAccessExpression":
-		if n.Name == "length" && isStringOperand(baseNode(n)) {
-			c.stringLength(n)
-			return
+		base := baseNode(n)
+		if n.Name == "length" && base != nil && base.Type != nil {
+			switch c.facts.ResolveType(base.Type).Kind {
+			case frontend.KindString:
+				c.stringLength(n)
+				return
+			case frontend.KindArray:
+				c.arrayLength(n)
+				return
+			}
 		}
 		c.objectField(n)
 	case "AsExpression", "TypeAssertionExpression", "NonNullExpression", "SatisfiesExpression":
@@ -469,7 +478,9 @@ func (c *checker) node(n *frontend.Node) {
 	case "ObjectLiteralExpression":
 		c.objectLiteral(n)
 	case "ArrayLiteralExpression":
-		c.report(n.Start, "cap.unsupported-syntax", "数组字面量不在本阶段子集内")
+		c.arrayLiteral(n)
+	case "ElementAccessExpression":
+		c.indexAccess(n)
 	case "StringLiteral", "NoSubstitutionTemplateLiteral":
 		return
 	case "TemplateExpression":
@@ -739,20 +750,35 @@ func (c *checker) builtinConsole(base *frontend.Node) bool {
 	return true
 }
 
-// checkSameShape 拒绝对象形状不同但 TypeScript 允许的结构性放宽。当前切片
-// 只支持相同形状，避免生成需要字段复制或截断的隐式转换。
+// checkSameShape 拒绝形状不同但 TypeScript 允许的结构性放宽。当前切片只
+// 支持相同形状，避免生成需要字段复制、截断或元素转换的隐式转换。
 func (c *checker) checkSameShape(value *frontend.Node, want *frontend.Type, what string) {
 	if value == nil || value.Type == nil || want == nil {
 		return
 	}
 	gotType := c.facts.ResolveType(value.Type)
 	wantType := c.facts.ResolveType(want)
-	if gotType.Kind != frontend.KindObject || wantType.Kind != frontend.KindObject {
+	if expectComposite(gotType.Kind) == "" && expectComposite(wantType.Kind) == "" {
 		return
 	}
-	if !frontend.SameType(gotType, wantType) {
-		c.report(value.Start, "cap.object-shape", "%s需要 %s，实际为 %s；结构性放宽需要对象转换，本阶段只支持相同形状", what, describeType(wantType), describeType(gotType))
+	if frontend.SameType(gotType, wantType) {
+		return
 	}
+	if gotType.Kind == frontend.KindObject || wantType.Kind == frontend.KindObject {
+		c.report(value.Start, "cap.object-shape", "%s需要 %s，实际为 %s；结构性放宽需要对象转换，本阶段只支持相同形状", what, describeType(wantType), describeType(gotType))
+		return
+	}
+	c.report(value.Start, "cap.bad-type", "%s需要 %s，实际为 %s；数组和元组当前只支持相同形状", what, describeType(wantType), describeType(gotType))
+}
+
+// expectComposite 报告哪些类别需要走形状检查。标量由 TypeScript 和降低器
+// 的类别核对负责，这里不重复。
+func expectComposite(k frontend.Kind) frontend.Kind {
+	switch k {
+	case frontend.KindObject, frontend.KindArray, frontend.KindTuple:
+		return k
+	}
+	return ""
 }
 
 // objectLiteral 检查静态形状对象字面量。字段必须是 name: value，顺序保留；
@@ -787,8 +813,26 @@ func (c *checker) objectLiteral(n *frontend.Node) {
 			continue
 		}
 		seen[field.Name] = true
-		c.node(&field.Children[0])
+		value := &field.Children[0]
+		if prop := propertyNamed(typ, field.Name); prop != nil {
+			c.checkSameShape(value, &prop.Type, "对象字段 "+field.Name)
+		}
+		c.valueNode(value, "对象字段 "+field.Name)
 	}
+}
+
+// propertyNamed 按名字找对象属性；找不到返回 nil，由 TypeScript 或降低器
+// 报告未知字段。
+func propertyNamed(t *frontend.Type, name string) *frontend.Property {
+	if t == nil {
+		return nil
+	}
+	for i := range t.Properties {
+		if t.Properties[i].Name == name {
+			return &t.Properties[i]
+		}
+	}
+	return nil
 }
 
 // objectField 检查对象属性读取。只接受静态形状里存在的必填属性；字符串
@@ -858,18 +902,208 @@ func (c *checker) objectProblem(t *frontend.Type, depth int) string {
 		if prop.Optional {
 			return "可选属性 " + prop.Name + " 需要 undefined 表示"
 		}
-		resolved := c.facts.ResolveType(&prop.Type)
-		if resolved.Kind == frontend.KindObject {
-			if reason := c.objectProblem(resolved, depth+1); reason != "" {
-				return "属性 " + prop.Name + " 的" + reason
-			}
-			continue
-		}
-		if !isValueKind(resolved.Kind) {
-			return "属性 " + prop.Name + " 的类型 " + string(resolved.Kind) + " 不在本阶段子集内"
+		if reason := c.valueProblem(&prop.Type, depth+1); reason != "" {
+			return "属性 " + prop.Name + " 的" + reason
 		}
 	}
 	return ""
+}
+
+// valueProblem 返回一个类型不能进入当前执行子集的原因；空串表示可以。
+// 标量、静态对象、同质数组和定长元组递归检查，其余类型仍然拒绝。
+func (c *checker) valueProblem(t *frontend.Type, depth int) string {
+	if t == nil {
+		return "缺少类型摘要"
+	}
+	if depth > 16 {
+		return "超过类型嵌套预算"
+	}
+	resolved := c.facts.ResolveType(t)
+	switch resolved.Kind {
+	case frontend.KindNumber, frontend.KindBoolean, frontend.KindString:
+		return ""
+	case frontend.KindObject:
+		return c.objectProblem(resolved, depth)
+	case frontend.KindArray:
+		return c.arrayProblem(resolved, depth)
+	case frontend.KindTuple:
+		return c.tupleProblem(resolved, depth)
+	case frontend.KindAny:
+		return "是 any 或 unknown 类型"
+	}
+	return "类型 " + string(resolved.Kind) + " 不在本阶段子集内"
+}
+
+// arrayProblem 检查同质数组。元素必须是能执行的值类型；数组本身在 bridge
+// 里是 GC 可见的切片，元素中的指针保持可见。
+func (c *checker) arrayProblem(t *frontend.Type, depth int) string {
+	if t.Kind != frontend.KindArray {
+		return "不是 array 类型"
+	}
+	if t.Element == nil {
+		return "缺少元素类型"
+	}
+	if reason := c.valueProblem(t.Element, depth+1); reason != "" {
+		return "元素" + reason
+	}
+	return ""
+}
+
+// tupleProblem 检查定长元组。每个位置都要有可执行的元素类型；空元组没有
+// 布局，当前子集明确拒绝。
+func (c *checker) tupleProblem(t *frontend.Type, depth int) string {
+	if t.Kind != frontend.KindTuple {
+		return "不是 tuple 类型"
+	}
+	if len(t.Elements) == 0 {
+		return "是空元组，没有可执行布局"
+	}
+	for i := range t.Elements {
+		if reason := c.valueProblem(&t.Elements[i], depth+1); reason != "" {
+			return fmt.Sprintf("第 %d 个元素%s", i+1, reason)
+		}
+	}
+	return ""
+}
+
+// arrayLiteral 检查同质数组和定长元组的字面量。数组允许任意个数，元组必须
+// 与类型位置一一对应；展开、空槽和异质元素仍拒绝。
+func (c *checker) arrayLiteral(n *frontend.Node) {
+	if n.Type == nil {
+		c.report(n.Start, "cap.bad-type", "数组字面量缺少类型摘要")
+		return
+	}
+	typ := c.facts.ResolveType(n.Type)
+	switch typ.Kind {
+	case frontend.KindArray:
+		if reason := c.arrayProblem(typ, 0); reason != "" {
+			c.report(n.Start, "cap.bad-type", "数组字面量的%s", reason)
+			return
+		}
+		for i := range n.Children {
+			child := &n.Children[i]
+			if child.Kind == "SpreadElement" || child.Kind == "OmittedExpression" {
+				c.report(child.Start, "cap.unsupported-syntax", "数组字面量只接受逐个列出的元素；展开与空槽不在本阶段子集内")
+				continue
+			}
+			c.checkSameShape(child, typ.Element, "数组元素")
+			c.valueNode(child, "数组元素")
+		}
+	case frontend.KindTuple:
+		if reason := c.tupleProblem(typ, 0); reason != "" {
+			c.report(n.Start, "cap.bad-type", "元组字面量的%s", reason)
+			return
+		}
+		if len(n.Children) != len(typ.Elements) {
+			c.report(n.Start, "cap.bad-type", "元组字面量有 %d 个元素，类型需要 %d 个", len(n.Children), len(typ.Elements))
+			return
+		}
+		for i := range n.Children {
+			child := &n.Children[i]
+			if child.Kind == "SpreadElement" || child.Kind == "OmittedExpression" {
+				c.report(child.Start, "cap.unsupported-syntax", "元组字面量只接受逐个列出的元素")
+				continue
+			}
+			c.checkSameShape(child, &typ.Elements[i], "元组元素")
+			c.valueNode(child, "元组元素")
+		}
+	default:
+		c.report(n.Start, "cap.bad-type", "数组字面量的类型是 %s，不是数组或元组", describeType(typ))
+	}
+}
+
+// arrayLength 检查数组的 length。结果必须是 number。
+func (c *checker) arrayLength(n *frontend.Node) {
+	if n.Name != "length" || len(n.Children) != 1 {
+		c.report(n.Start, "cap.unsupported-syntax", "属性访问 %q 不在本阶段子集内；只支持 string 或数组的 length", n.Name)
+		return
+	}
+	base := &n.Children[0]
+	if base.Type == nil {
+		c.report(n.Start, "cap.bad-type", "数组 length 缺少对象类型")
+		return
+	}
+	baseType := c.facts.ResolveType(base.Type)
+	if baseType.Kind != frontend.KindArray {
+		c.report(n.Start, "cap.bad-type", "length 只支持 string 或数组，实际为 %s", describeType(baseType))
+		return
+	}
+	if reason := c.arrayProblem(baseType, 0); reason != "" {
+		c.report(n.Start, "cap.bad-type", "数组 length 的%s", reason)
+		return
+	}
+	if n.Type == nil || n.Type.Kind != frontend.KindNumber {
+		c.report(n.Start, "cap.bad-type", "数组 length 的结果应为 number")
+		return
+	}
+	c.node(base)
+}
+
+// indexAccess 检查数组和元组的索引。数组下标必须是 number，运行时做边界
+// 检查；元组下标必须是编译期整数，越界在能力检查阶段拒绝。
+func (c *checker) indexAccess(n *frontend.Node) {
+	if len(n.Children) != 2 || n.Type == nil {
+		c.report(n.Start, "cap.unsupported-syntax", "索引访问缺少对象、下标或结果类型")
+		return
+	}
+	base, index := &n.Children[0], &n.Children[1]
+	if base.Type == nil {
+		c.report(n.Start, "cap.bad-type", "索引访问的对象缺少类型摘要")
+		return
+	}
+	baseType := c.facts.ResolveType(base.Type)
+	switch baseType.Kind {
+	case frontend.KindArray:
+		if reason := c.arrayProblem(baseType, 0); reason != "" {
+			c.report(n.Start, "cap.bad-type", "数组索引的%s", reason)
+			return
+		}
+		c.numberOperand(index, "数组索引")
+		if !frontend.SameType(c.facts.ResolveType(n.Type), c.facts.ResolveType(baseType.Element)) {
+			c.report(n.Start, "cap.bad-type", "数组索引结果是 %s，元素类型是 %s", describeType(n.Type), describeType(baseType.Element))
+			return
+		}
+		c.node(base)
+		c.node(index)
+	case frontend.KindTuple:
+		if reason := c.tupleProblem(baseType, 0); reason != "" {
+			c.report(n.Start, "cap.bad-type", "元组索引的%s", reason)
+			return
+		}
+		slot, ok := literalIndex(index)
+		if !ok {
+			c.report(index.Start, "cap.unsupported-syntax", "元组索引必须是非负整数数字字面量")
+			return
+		}
+		if slot >= len(baseType.Elements) {
+			c.report(index.Start, "cap.index-bounds", "元组索引 %d 越界；长度是 %d", slot, len(baseType.Elements))
+			return
+		}
+		if !frontend.SameType(c.facts.ResolveType(n.Type), c.facts.ResolveType(&baseType.Elements[slot])) {
+			c.report(n.Start, "cap.bad-type", "元组索引结果是 %s，第 %d 个元素是 %s", describeType(n.Type), slot, describeType(&baseType.Elements[slot]))
+			return
+		}
+		c.node(base)
+	default:
+		c.report(n.Start, "cap.unsupported-syntax", "索引访问只支持数组和元组；字符串索引等待 S2.4 的空值表示")
+	}
+}
+
+// literalIndex 取出元组索引要求的非负整数数字字面量。
+func literalIndex(n *frontend.Node) (int, bool) {
+	if n == nil || n.Kind != "NumericLiteral" || n.Bits == "" {
+		return 0, false
+	}
+	text := strings.TrimPrefix(strings.TrimPrefix(n.Bits, "0x"), "0X")
+	bits, err := strconv.ParseUint(text, 16, 64)
+	if err != nil {
+		return 0, false
+	}
+	v := math.Float64frombits(bits)
+	if math.IsNaN(v) || math.IsInf(v, 0) || v != math.Trunc(v) || v < 0 || v > 1<<31-1 {
+		return 0, false
+	}
+	return int(v), true
 }
 
 // baseNode 返回属性访问的对象侧。

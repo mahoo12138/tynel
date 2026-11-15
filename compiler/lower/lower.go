@@ -11,6 +11,7 @@ package lower
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
@@ -871,9 +872,18 @@ func (l *lowerer) expr(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir
 		return l.call(n, sc, depth)
 	case "ObjectLiteralExpression":
 		return l.objectLiteral(n, sc, depth)
+	case "ArrayLiteralExpression":
+		return l.arrayLiteral(n, sc, depth)
+	case "ElementAccessExpression":
+		return l.indexAccess(n, sc, depth)
 	case "PropertyAccessExpression":
-		if n.Name == "length" && isStringKind(baseNode(n)) {
-			return l.stringLength(n, sc, depth)
+		if n.Name == "length" && baseNode(n) != nil && baseNode(n).Type != nil {
+			switch l.facts.ResolveType(baseNode(n).Type).Kind {
+			case frontend.KindString:
+				return l.stringLength(n, sc, depth)
+			case frontend.KindArray:
+				return l.arrayLength(n, sc, depth)
+			}
 		}
 		return l.objectField(n, sc, depth)
 	default:
@@ -996,6 +1006,185 @@ func (l *lowerer) objectField(n *frontend.Node, sc *scope, depth int) (*nir.Expr
 		return nil, nil, err
 	}
 	return &nir.Expr{Op: nir.OpField, Name: n.Name, Operand: value, Pos: l.pos(n.Start)}, pre, nil
+}
+
+// arrayLiteral 降低数组或元组字面量。每个元素先按源码顺序求值并物化成临时
+// 值，再生成一条 array/tuple 语句；这样后面的元素不会因为准备语句提前而跑到
+// 前面元素之前。
+func (l *lowerer) arrayLiteral(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir.Stmt, error) {
+	if n.Type == nil {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "数组字面量缺少类型摘要")
+	}
+	typ := l.facts.ResolveType(n.Type)
+	id, err := l.types.id(typ)
+	if err != nil {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "数组字面量：%v", err)
+	}
+	var wants []int
+	op := nir.OpArray
+	switch typ.Kind {
+	case frontend.KindArray:
+		def := l.types.arrayDef(id)
+		if def == nil {
+			return nil, nil, l.fail(n.Start, "lower.bad-type", "数组字面量的类型不是 array")
+		}
+		for range n.Children {
+			wants = append(wants, def.Element)
+		}
+	case frontend.KindTuple:
+		def := l.types.tupleDef(id)
+		if def == nil {
+			return nil, nil, l.fail(n.Start, "lower.bad-type", "元组字面量的类型不是 tuple")
+		}
+		if len(n.Children) != len(def.Elements) {
+			return nil, nil, l.fail(n.Start, "lower.bad-type", "元组字面量有 %d 个元素，类型需要 %d 个", len(n.Children), len(def.Elements))
+		}
+		wants = def.Elements
+		op = nir.OpTuple
+	default:
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "数组字面量的类型是 %s", typ.Kind)
+	}
+	var pre []nir.Stmt
+	items := make([]nir.Expr, 0, len(n.Children))
+	for i := range n.Children {
+		child := &n.Children[i]
+		if child.Kind == "SpreadElement" || child.Kind == "OmittedExpression" {
+			return nil, nil, l.fail(child.Start, "lower.unsupported-array", "数组字面量只接受逐个列出的元素")
+		}
+		if err := l.typedValue(child, wants[i], "数组元素"); err != nil {
+			return nil, nil, err
+		}
+		value, valuePre, err := l.expr(child, sc, depth+1)
+		if err != nil {
+			return nil, nil, err
+		}
+		pre = append(pre, valuePre...)
+		name := l.tempName()
+		pre = append(pre, l.emitTemp(sc, name, value, l.pos(child.Start), wants[i]))
+		items = append(items, *localExpr(name, l.pos(child.Start)))
+	}
+	name := l.tempName()
+	l.addTempBinding(sc, name, id, l.pos(n.Start))
+	pre = append(pre, nir.Stmt{Op: op, Name: name, Type: id, Items: items, Pos: l.pos(n.Start)})
+	return localExpr(name, l.pos(n.Start)), pre, nil
+}
+
+// arrayLength 降低数组的 length。结果按当前元素个数计数，类型是 number。
+func (l *lowerer) arrayLength(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir.Stmt, error) {
+	base := baseNode(n)
+	if base == nil || base.Type == nil {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "数组 length 缺少对象")
+	}
+	baseType := l.facts.ResolveType(base.Type)
+	if baseType.Kind != frontend.KindArray {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "length 只支持 string 或数组，实际为 %s", baseType.Kind)
+	}
+	value, pre, err := l.expr(base, sc, depth+1)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &nir.Expr{Op: nir.OpLen, Operand: value, Pos: l.pos(n.Start)}, pre, nil
+}
+
+// indexAccess 降低数组和元组的索引读取。数组索引先求值对象再求值下标，随后
+// 由 index 语句做运行时边界检查；元组索引必须是编译期整数，越界在降低前拒绝。
+func (l *lowerer) indexAccess(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir.Stmt, error) {
+	if len(n.Children) != 2 {
+		return nil, nil, l.fail(n.Start, "lower.unsupported-array", "索引访问有 %d 个子节点", len(n.Children))
+	}
+	base, index := &n.Children[0], &n.Children[1]
+	if base.Type == nil {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "索引访问的对象缺少类型摘要")
+	}
+	baseType := l.facts.ResolveType(base.Type)
+	baseID, err := l.types.id(baseType)
+	if err != nil {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "索引访问的对象：%v", err)
+	}
+	var resultID int
+	var indexNode nir.Expr
+	isArray := false
+	switch baseType.Kind {
+	case frontend.KindArray:
+		def := l.types.arrayDef(baseID)
+		if def == nil {
+			return nil, nil, l.fail(n.Start, "lower.bad-type", "索引访问的对象不是数组")
+		}
+		if err := l.typedValue(index, nir.TypeNumber, "数组索引"); err != nil {
+			return nil, nil, err
+		}
+		if err := l.typedValue(n, def.Element, "数组索引结果"); err != nil {
+			return nil, nil, err
+		}
+		isArray = true
+		resultID = def.Element
+	case frontend.KindTuple:
+		def := l.types.tupleDef(baseID)
+		if def == nil {
+			return nil, nil, l.fail(n.Start, "lower.bad-type", "索引访问的对象不是元组")
+		}
+		slot, ok := integerLiteral(index)
+		if !ok {
+			return nil, nil, l.fail(index.Start, "lower.unsupported-array", "元组索引必须是非负整数数字字面量")
+		}
+		if slot >= len(def.Elements) {
+			return nil, nil, l.fail(index.Start, "lower.index-bounds", "元组索引 %d 越界；长度是 %d", slot, len(def.Elements))
+		}
+		if err := l.typedValue(n, def.Elements[slot], "元组索引结果"); err != nil {
+			return nil, nil, err
+		}
+		indexNode = nir.Number(float64(slot))
+		resultID = def.Elements[slot]
+	default:
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "索引访问只支持数组和元组，实际为 %s", baseType.Kind)
+	}
+
+	baseValue, pre, err := l.expr(base, sc, depth+1)
+	if err != nil {
+		return nil, nil, err
+	}
+	if isArray {
+		// 数组下标可能带准备语句；先把对象物化，保证对象在源码里先于下标求值。
+		baseName := l.tempName()
+		pre = append(pre, l.emitTemp(sc, baseName, baseValue, l.pos(base.Start), baseID))
+		baseValue = localExpr(baseName, l.pos(base.Start))
+
+		indexValue, indexPre, err := l.expr(index, sc, depth+1)
+		if err != nil {
+			return nil, nil, err
+		}
+		pre = append(pre, indexPre...)
+		indexName := l.tempName()
+		pre = append(pre, l.emitTemp(sc, indexName, indexValue, l.pos(index.Start), nir.TypeNumber))
+		indexNode = *localExpr(indexName, l.pos(index.Start))
+	}
+	name := l.tempName()
+	l.addTempBinding(sc, name, resultID, l.pos(n.Start))
+	pre = append(pre, nir.Stmt{
+		Op:    nir.OpIndex,
+		Name:  name,
+		Type:  resultID,
+		Value: baseValue,
+		Index: &indexNode,
+		Pos:   l.pos(n.Start),
+	})
+	return localExpr(name, l.pos(n.Start)), pre, nil
+}
+
+// integerLiteral 取出元组索引要求的非负整数数字字面量。
+func integerLiteral(n *frontend.Node) (int, bool) {
+	if n == nil || n.Kind != "NumericLiteral" || n.Bits == "" {
+		return 0, false
+	}
+	bits, err := parseBits(n.Bits)
+	if err != nil {
+		return 0, false
+	}
+	v := math.Float64frombits(bits)
+	if math.IsNaN(v) || math.IsInf(v, 0) || v != math.Trunc(v) || v < 0 || v > 1<<31-1 {
+		return 0, false
+	}
+	return int(v), true
 }
 
 // baseNode 返回属性访问的对象侧；手写事实可能缺子节点。
@@ -1364,6 +1553,12 @@ func (l *lowerer) typeLabel(id int) string {
 	for i := range l.types.defs {
 		def := &l.types.defs[i]
 		if def.ID == id {
+			switch def.Kind {
+			case nir.TypeKindArray:
+				return fmt.Sprintf("array#%d", id)
+			case nir.TypeKindTuple:
+				return fmt.Sprintf("tuple#%d", id)
+			}
 			if def.Name != "" {
 				return def.Name
 			}

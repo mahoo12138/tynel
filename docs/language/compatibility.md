@@ -39,7 +39,7 @@
 
 一个能力可以同时「当前 `rejected`」和「长期 `planned`」。`planned` 和 `deferred` 行如果当前不在子集内，编译器仍会拒绝；这两个状态描述长期方向，不表示今天可以编译。`rejected` 行表示当前有明确拒绝路径，长期方向可能是 `planned`、`deferred` 或 `not-targeted`。本表不使用「部分支持」；必须说明卡在哪一层、哪些写法不支持。
 
-Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semantics/objects-arrays.md)、[联合与空值 RFC](semantics/unions-null.md)、[函数 RFC](semantics/functions.md)、[泛型 RFC](semantics/generics.md)以及 [NIR schema 3 类型表设计](../design/nir-schema-3-types.md)已经确认。字符串最小闭环（字面量、拼接、`length`、严格相等和输出）已实现并有原生回归；索引、`slice`、模板插值和字符串方法仍未实现。对象第一个切片（必填属性、字面量、字段读取和引用身份）也已实现，可选属性、字段写入和结构性放宽仍拒绝。其他 RFC 不改变本表当前的 `rejected` 状态；只有实现并通过运行时验收后，状态才会变化。
+Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semantics/objects-arrays.md)、[联合与空值 RFC](semantics/unions-null.md)、[函数 RFC](semantics/functions.md)、[泛型 RFC](semantics/generics.md)以及 [NIR schema 3 类型表设计](../design/nir-schema-3-types.md)已经确认。字符串最小闭环（字面量、拼接、`length`、严格相等和输出）已实现并有原生回归；索引、`slice`、模板插值和字符串方法仍未实现。对象第一个切片（必填属性、字面量、字段读取和引用身份）也已实现，可选属性、字段写入和结构性放宽仍拒绝。数组与元组第一个切片（字面量、索引、`length`、常量元组索引）已实现，数组方法、展开、赋值和身份比较仍拒绝。其他 RFC 不改变本表当前的 `rejected` 状态；只有实现并通过运行时验收后，状态才会变化。
 
 ## 2. 基线
 
@@ -66,7 +66,8 @@ Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semanti
 | 静态对象：必填属性、字面量、字段读取、引用相等 | `tsgo` | `Tynel` | `已验证` | `supported` | 静态形状布局；对象 `===` 比较引用身份；嵌套对象可用。见[对象与数组 RFC](semantics/objects-arrays.md) |
 | 对象：可选属性、字段写入、结构性放宽 | `tsgo` | `Tynel` | `拒绝` | `rejected` | 可选属性等待 S2.4 的 `undefined`；字段写入属于第二个对象切片；`cap.object-shape` |
 | `interface`（对象形状） | `tsgo` | `Tynel` | `已验证` | `supported` | 接口展开成静态对象形状；非对象接口仍按 `cap.interface` 拒绝 |
-| 数组与元组 | `tsgo` | `tsgo` | `拒绝` | `rejected` | 数组字面量报 `cap.unsupported-syntax`，数组类型别名报 `cap.bad-type`；数组语义待 RFC，阶段 2 |
+| 数组与元组：字面量、索引、`length`、常量索引 | `tsgo` | `Tynel` | `已验证` | `supported` | 同质数组与定长元组；索引越界按数据错误退出 6，元组越界在编译期拒绝。见[对象与数组 RFC](semantics/objects-arrays.md) |
+| 数组：方法、展开、赋值、扩容、身份比较 | `tsgo` | `Tynel` | `拒绝` | `rejected` | `push` / `slice` 留到标准库阶段；`[...xs]`、`xs === xs` 暂时拒绝 |
 | 联合类型与可空类型 | `tsgo` | `拒绝` | `拒绝` | `rejected` | `cap.bad-type`；需要判别联合与缩窄规则，阶段 2 |
 | 字面量类型 | `tsgo` | `未定义` | `未实现` | `planned` | 阶段 3；需要与类型收窄一起设计 |
 | `any` / `unknown` | `tsgo` | `拒绝` | `拒绝` | `rejected` | `cap.any`；不作为原生表示目标，是否提供受控动态类型需另行 RFC |
@@ -81,7 +82,7 @@ Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semanti
 | 能力 | 语法 | 类型 | 运行时 | 状态 | 说明与后续 |
 | --- | --- | --- | --- | --- | --- |
 | 顶层具名函数声明 | `tsgo` | `Tynel` | `已验证` | `supported` | 不能占用固定入口名 `main`。见[能力白名单](../reference/capability.md) |
-| 必填参数与返回值 | `tsgo` | `Tynel` | `已验证` | `supported` | 参数限 `number` / `boolean` / `string` / 静态对象，返回再加 `void` |
+| 必填参数与返回值 | `tsgo` | `Tynel` | `已验证` | `supported` | 参数限 `number` / `boolean` / `string` / 静态对象 / 数组 / 元组，返回再加 `void` |
 | 直接递归与相互递归 | `tsgo` | `Tynel` | `已验证` | `supported` | 见[递归与调用层](../reference/recursion.md) |
 | 顶层 `const` | `tsgo` | `Tynel` | `已验证` | `supported` | 初始化表达式按源码顺序求值 |
 | 块内 `const` / 带初值 `let` | `tsgo` | `Tynel` | `已验证` | `supported` | 块级作用域，同名遮蔽。见[声明与可变存储](../reference/mutability.md) |
@@ -110,15 +111,15 @@ Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semanti
 | 取余 `%`、位运算 | `tsgo` | `拒绝` | `拒绝` | `rejected` | `cap.bad-operator`；未纳入 Preview 0 |
 | `!` | `tsgo` | `Tynel` | `已验证` | `supported` | 操作数必须是 `boolean`；`!1` 拒绝 |
 | `<` `<=` `>` `>=` | `tsgo` | `Tynel` | `已验证` | `supported` | 只接受两个 `number`；布尔没有原生顺序 |
-| `===` `!==` | `tsgo` | `Tynel` | `已验证` | `supported` | 两侧同为 `number`、`boolean`、`string` 或同一对象形状；对象比较引用身份 |
+| `===` `!==` | `tsgo` | `Tynel` | `已验证` | `supported` | 两侧同为 `number`、`boolean`、`string` 或同一对象形状；对象比较引用身份；数组和元组暂不支持 |
 | `==` `!=` | `tsgo` | `拒绝` | `拒绝` | `rejected` | `cap.bad-operator`；有意不做隐式转换 |
 | `&&` / `\|\|` | `tsgo` | `Tynel` | `已验证` | `supported` | 两侧 `boolean`，短路求值。见[短路求值](../reference/short-circuit.md) |
 | `??` 与可选链 `?.` | `tsgo` | `未定义` | `未实现` | `planned` | 阶段 3A；依赖 `null` / `undefined` 语义 |
-| 三元式 `? :` | `tsgo` | `Tynel` | `已验证` | `supported` | 条件 `boolean`，两臂同为标量或同一对象形状。见[三元式](../reference/ternary.md) |
+| 三元式 `? :` | `tsgo` | `Tynel` | `已验证` | `supported` | 条件 `boolean`，两臂同为标量、同一对象形状、同一数组或同一元组。见[三元式](../reference/ternary.md) |
 | 字符串字面量与无插值模板 | `tsgo` | `Tynel` | `已验证` | `supported` | UTF-16 code unit 存储；插值、索引、切片和方法仍拒绝 |
 | 对象字面量（静态形状） | `tsgo` | `Tynel` | `已验证` | `supported` | 必填属性、字段读取与引用身份；可选属性、字段写入和结构性放宽拒绝 |
-| 数组字面量 | `tsgo` | `tsgo` | `拒绝` | `rejected` | `cap.unsupported-syntax`；阶段 2 |
-| 属性访问与索引访问 | `tsgo` | `Tynel` | `已验证` | `supported` | 对象字段与 `string.length` 可用；数组索引和其他属性仍拒绝 |
+| 数组与元组字面量 | `tsgo` | `Tynel` | `已验证` | `supported` | 同质数组、定长元组；数组展开与空槽拒绝 |
+| 属性访问与索引访问 | `tsgo` | `Tynel` | `已验证` | `supported` | 对象字段、`string.length`、数组 `length` 与数组/元组索引可用；字符串索引和其他属性仍拒绝 |
 | 直接函数调用 | `tsgo` | `Tynel` | `已验证` | `supported` | 实参个数与类型必须匹配 |
 | `new` 表达式 | `tsgo` | `未定义` | `拒绝` | `rejected` | `cap.unsupported-syntax`；与类一起设计 |
 | JSX / TSX | `未验证` | `未定义` | `未实现` | `deferred` | 视未来应用方向决定，不作为语法兼容的默认优先项 |

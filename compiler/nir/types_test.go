@@ -321,4 +321,93 @@ func TestObjectIdentityEquality(t *testing.T) {
 	}
 }
 
+func TestArrayAndTupleStatements(t *testing.T) {
+	m := typedModule(
+		TypeDef{ID: 8, Kind: TypeKindArray, Element: TypeNumber},
+		TypeDef{ID: 9, Kind: TypeKindTuple, Elements: []int{TypeNumber, TypeBool}},
+	)
+	m.Functions[0].Body = []Stmt{
+		{Op: OpArray, Name: "xs", Type: 8, Items: []Expr{num(1), num(2)}},
+		{Op: OpIndex, Name: "first", Type: TypeNumber, Value: ptrExpr(local("xs")), Index: ptrExpr(num(0))},
+		{Op: OpPrint, Value: ptrExpr(Expr{Op: OpLen, Operand: ptrExpr(local("xs"))})},
+		{Op: OpTuple, Name: "pair", Type: 9, Items: []Expr{num(7), Bool(true)}},
+		{Op: OpIndex, Name: "flag", Type: TypeBool, Value: ptrExpr(local("pair")), Index: ptrExpr(num(1))},
+		{Op: OpPrint, Value: ptrExpr(local("flag"))},
+		{Op: OpPrint, Value: ptrExpr(local("first"))},
+		{Op: OpReturn},
+	}
+	if err := Verify(m); err != nil {
+		t.Fatalf("数组与元组模块应通过验证：%v", err)
+	}
+	data, err := EncodeBytes(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := DecodeBytes(data, DefaultLimits())
+	if err != nil {
+		t.Fatalf("数组与元组模块应能解码：%v", err)
+	}
+	body := back.Functions[0].Body
+	if body[0].Op != OpArray || len(body[0].Items) != 2 {
+		t.Fatalf("array 语句回读不完整：%+v", body[0])
+	}
+	if body[1].Op != OpIndex || body[1].Index == nil {
+		t.Fatalf("index 语句回读不完整：%+v", body[1])
+	}
+	if body[3].Op != OpTuple || len(body[3].Items) != 2 {
+		t.Fatalf("tuple 语句回读不完整：%+v", body[3])
+	}
+}
+
+func TestArrayAndTupleStatementsRejectBadItems(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Module)
+		code   string
+	}{
+		{"数组元素类型不符", func(m *Module) {
+			m.Functions[0].Body[0].Items[0] = String("a")
+		}, "nir.array-item"},
+		{"元组元素类型不符", func(m *Module) {
+			m.Functions[0].Body[3].Items[1] = num(1)
+		}, "nir.tuple-item"},
+		{"元组索引不是字面量", func(m *Module) {
+			m.Functions[0].Body[4].Index = ptrExpr(local("first"))
+		}, "nir.index-type"},
+		{"元组索引越界", func(m *Module) {
+			m.Functions[0].Body[4].Index = ptrExpr(num(2))
+		}, "nir.index-bounds"},
+		{"len 操作数不是数组", func(m *Module) {
+			m.Functions[0].Body[2].Value = ptrExpr(Expr{Op: OpLen, Operand: ptrExpr(String("a"))})
+		}, "nir.operand-type"},
+		{"索引结果类型不符", func(m *Module) {
+			m.Functions[0].Body[1].Type = TypeBool
+		}, "nir.index-type"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := typedModule(
+				TypeDef{ID: 8, Kind: TypeKindArray, Element: TypeNumber},
+				TypeDef{ID: 9, Kind: TypeKindTuple, Elements: []int{TypeNumber, TypeBool}},
+			)
+			m.Functions[0].Body = []Stmt{
+				{Op: OpArray, Name: "xs", Type: 8, Items: []Expr{num(1), num(2)}},
+				{Op: OpIndex, Name: "first", Type: TypeNumber, Value: ptrExpr(local("xs")), Index: ptrExpr(num(0))},
+				{Op: OpPrint, Value: ptrExpr(Expr{Op: OpLen, Operand: ptrExpr(local("xs"))})},
+				{Op: OpTuple, Name: "pair", Type: 9, Items: []Expr{num(7), Bool(true)}},
+				{Op: OpIndex, Name: "flag", Type: TypeBool, Value: ptrExpr(local("pair")), Index: ptrExpr(num(1))},
+				{Op: OpReturn},
+			}
+			c.mutate(m)
+			err := Verify(m)
+			if err == nil {
+				t.Fatal("坏数组或元组语句应被拒绝")
+			}
+			if got := diagnosticCode(err); got != c.code {
+				t.Fatalf("错误码应为 %s，实际 %s（%v）", c.code, got, err)
+			}
+		})
+	}
+}
+
 func ptrExpr(e Expr) *Expr { return &e }

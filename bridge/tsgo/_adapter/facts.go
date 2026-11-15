@@ -902,6 +902,17 @@ func (b *factBuilder) bodyNode(node *ast.Node) *factNode {
 	}
 	if ast.IsExpression(node) {
 		typ := b.typeOf(b.checker.GetTypeAtLocation(node))
+		// 空数组字面量的自身类型是 never[]，注解或参数位置的目标类型只存在于
+		// 上下文里。数组和元组进入静态布局需要目标形状，所以有上下文时优先
+		// 使用它；没有上下文时仍用检查器推断出的普通数组类型。
+		if ast.IsArrayLiteralExpression(node) {
+			if contextual := b.checker.GetContextualType(node, checker.ContextFlagsNone); contextual != nil {
+				candidate := b.typeOf(contextual)
+				if candidate.Kind == "array" || candidate.Kind == "tuple" {
+					typ = candidate
+				}
+			}
+		}
 		out.Type = &typ
 	}
 	switch {

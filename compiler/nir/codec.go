@@ -256,11 +256,18 @@ func checkStmts(stmts []Stmt, rootPath string, depth int, nodes *int, limits Lim
 		}
 		seen[s] = true
 		*nodes++
-		if prelude && s.Op != OpLet && s.Op != OpShort && s.Op != OpSelect && s.Op != OpObject {
-			return badf("nir.bad-op", "%s（表达式准备块）只接受 let、short、select 或 object", spath)
+		if prelude && s.Op != OpLet && s.Op != OpShort && s.Op != OpSelect && s.Op != OpObject &&
+			s.Op != OpArray && s.Op != OpTuple && s.Op != OpIndex {
+			return badf("nir.bad-op", "%s（表达式准备块）只接受 let、short、select、object、array、tuple 或 index", spath)
 		}
 		if s.Op != OpObject && len(s.Fields) > 0 {
 			return badf("nir.unexpected-field", "%s（op=%s）不接受字段 fields", spath, s.Op)
+		}
+		if s.Op != OpArray && s.Op != OpTuple && len(s.Items) > 0 {
+			return badf("nir.unexpected-field", "%s（op=%s）不接受字段 items", spath, s.Op)
+		}
+		if s.Op != OpIndex && s.Index != nil {
+			return badf("nir.unexpected-field", "%s（op=%s）不接受字段 index", spath, s.Op)
 		}
 		if s.Mutable && s.Op != OpLet {
 			return badf("nir.unexpected-field", "%s（op=%s）不接受字段 mutable", spath, s.Op)
@@ -450,6 +457,65 @@ func checkStmts(stmts []Stmt, rootPath string, depth int, nodes *int, limits Lim
 			if err := checkExpr(s.Value, spath+".value", 1, nodes, limits); err != nil {
 				return err
 			}
+		case OpArray, OpTuple:
+			if s.Name == "" {
+				return badf("nir.missing", "%s 的 %s 缺少 name", spath, s.Op)
+			}
+			if s.Type == 0 {
+				return badf("nir.missing", "%s 的 %s 缺少 type", spath, s.Op)
+			}
+			def, ok := types[s.Type]
+			wantKind := TypeKindArray
+			if s.Op == OpTuple {
+				wantKind = TypeKindTuple
+			}
+			if !ok || def.Kind != wantKind {
+				return badf("nir.type-kind", "%s 的 %s.type 必须指向 %s 类型，实际为 id %d", spath, s.Op, wantKind, s.Type)
+			}
+			if s.Value != nil || s.Cond != nil || len(s.Then) > 0 || len(s.Else) > 0 ||
+				s.ThenValue != nil || s.ElseValue != nil || s.Operator != "" || s.Left != nil || len(s.Right) > 0 ||
+				s.Mutable || len(s.CondPre) > 0 || len(s.Body) > 0 || s.ID != 0 || s.Target != 0 ||
+				s.Index != nil {
+				return badf("nir.unexpected-field", "%s（op=%s）只接受 name、type、items 与 pos", spath, s.Op)
+			}
+			if s.Op == OpTuple && len(s.Items) != len(def.Elements) {
+				return badf("nir.type-shape", "%s 的 tuple 有 %d 个元素，类型需要 %d 个", spath, len(s.Items), len(def.Elements))
+			}
+			for j := range s.Items {
+				if err := checkExpr(&s.Items[j], fmt.Sprintf("%s.items[%d]", spath, j), 1, nodes, limits); err != nil {
+					return err
+				}
+			}
+		case OpIndex:
+			if s.Name == "" {
+				return badf("nir.missing", "%s 的 index 缺少 name", spath)
+			}
+			if s.Type == 0 {
+				return badf("nir.missing", "%s 的 index 缺少 type", spath)
+			}
+			if s.Value == nil {
+				return badf("nir.missing", "%s 的 index 缺少 value", spath)
+			}
+			if s.Index == nil {
+				return badf("nir.missing", "%s 的 index 缺少 index", spath)
+			}
+			if s.Cond != nil || len(s.Then) > 0 || len(s.Else) > 0 || s.ThenValue != nil || s.ElseValue != nil ||
+				s.Operator != "" || s.Left != nil || len(s.Right) > 0 || s.Mutable ||
+				len(s.CondPre) > 0 || len(s.Body) > 0 || s.ID != 0 || s.Target != 0 {
+				return badf("nir.unexpected-field", "%s（op=index）只接受 name、type、value、index 与 pos", spath)
+			}
+			if s.Type == TypeVoid {
+				return badf("nir.type-void", "%s 的 index.type 是 void；结果必须是值类型", spath)
+			}
+			if !validTypeRef(types, s.Type, false) {
+				return badf("nir.type-ref", "%s 的 index.type 引用了不存在的类型 id %d", spath, s.Type)
+			}
+			if err := checkExpr(s.Value, spath+".value", 1, nodes, limits); err != nil {
+				return err
+			}
+			if err := checkExpr(s.Index, spath+".index", 1, nodes, limits); err != nil {
+				return err
+			}
 		case OpWhile:
 			if s.Cond == nil {
 				return badf("nir.missing", "%s 的 while 缺少 cond", spath)
@@ -483,7 +549,7 @@ func checkStmts(stmts []Stmt, rootPath string, depth int, nodes *int, limits Lim
 		case "":
 			return badf("nir.missing", "%s 缺少 op", spath)
 		default:
-			return badf("nir.bad-op", "%s.op 为 %q，只接受 return、print、let、discard、if、short、select、set、while、break 或 continue", spath, s.Op)
+			return badf("nir.bad-op", "%s.op 为 %q，只接受 return、print、let、discard、if、short、select、set、object、array、tuple、index、while、break 或 continue", spath, s.Op)
 		}
 	}
 	return nil
@@ -569,6 +635,14 @@ func checkExpr(root *Expr, rootPath string, depth int, nodes *int, limits Limits
 				return badf("nir.missing", "%s 的 field 缺少 operand", it.path)
 			}
 			stack = append(stack, item{e.Operand, it.path + ".operand", it.depth + 1})
+		case OpLen:
+			if err := onlyFields(e, it.path, "operand"); err != nil {
+				return err
+			}
+			if e.Operand == nil {
+				return badf("nir.missing", "%s 的 len 缺少 operand", it.path)
+			}
+			stack = append(stack, item{e.Operand, it.path + ".operand", it.depth + 1})
 		case OpNot:
 			if err := onlyFields(e, it.path, "operand"); err != nil {
 				return err
@@ -625,7 +699,7 @@ func checkExpr(root *Expr, rootPath string, depth int, nodes *int, limits Limits
 		case "":
 			return badf("nir.missing", "%s 缺少 op", it.path)
 		default:
-			return badf("nir.bad-op", "%s.op 为 %q，只接受 number、bool、string、param、local、call、binary、concat、strlen、field、compare 或 not", it.path, e.Op)
+			return badf("nir.bad-op", "%s.op 为 %q，只接受 number、bool、string、param、local、call、binary、concat、strlen、len、field、compare 或 not", it.path, e.Op)
 		}
 	}
 	return nil

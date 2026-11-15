@@ -47,6 +47,10 @@ func (t *typeTable) idDepth(typ *frontend.Type, depth int) (int, error) {
 		return nir.TypeVoid, nil
 	case frontend.KindObject:
 		return t.object(resolved, depth)
+	case frontend.KindArray:
+		return t.array(resolved, depth)
+	case frontend.KindTuple:
+		return t.tuple(resolved, depth)
 	}
 	return 0, fmt.Errorf("类型 %s 还没有 NIR 表示", resolved.Kind)
 }
@@ -66,8 +70,20 @@ func (t *typeTable) isObject(id int) bool {
 }
 
 func (t *typeTable) objectDef(id int) *nir.TypeDef {
+	return t.defOf(id, nir.TypeKindObject)
+}
+
+func (t *typeTable) arrayDef(id int) *nir.TypeDef {
+	return t.defOf(id, nir.TypeKindArray)
+}
+
+func (t *typeTable) tupleDef(id int) *nir.TypeDef {
+	return t.defOf(id, nir.TypeKindTuple)
+}
+
+func (t *typeTable) defOf(id int, kind string) *nir.TypeDef {
 	for i := range t.defs {
-		if t.defs[i].ID == id && t.defs[i].Kind == nir.TypeKindObject {
+		if t.defs[i].ID == id && t.defs[i].Kind == kind {
 			return &t.defs[i]
 		}
 	}
@@ -103,6 +119,63 @@ func (t *typeTable) object(typ *frontend.Type, depth int) (int, error) {
 		return id, nil
 	}
 	def.ID = t.next
+	t.next++
+	t.byKey[key.String()] = def.ID
+	t.defs = append(t.defs, def)
+	return def.ID, nil
+}
+
+// array 为一个同质数组分配类型 ID。元素类型递归进入类型表，结构相同的数组
+// 复用同一条目。
+func (t *typeTable) array(typ *frontend.Type, depth int) (int, error) {
+	if typ.Element == nil {
+		return 0, fmt.Errorf("数组缺少元素类型")
+	}
+	element, err := t.idDepth(typ.Element, depth+1)
+	if err != nil {
+		return 0, fmt.Errorf("数组元素：%w", err)
+	}
+	if element == nir.TypeVoid {
+		return 0, fmt.Errorf("数组元素不能是 void")
+	}
+	key := fmt.Sprintf("array{%d}", element)
+	if id, ok := t.byKey[key]; ok {
+		return id, nil
+	}
+	def := nir.TypeDef{ID: t.next, Kind: nir.TypeKindArray, Element: element}
+	t.next++
+	t.byKey[key] = def.ID
+	t.defs = append(t.defs, def)
+	return def.ID, nil
+}
+
+// tuple 为一个固定长度元组分配类型 ID。元素按位置保留类型，空元组没有
+// 可执行布局，明确拒绝。
+func (t *typeTable) tuple(typ *frontend.Type, depth int) (int, error) {
+	if len(typ.Elements) == 0 {
+		return 0, fmt.Errorf("空元组还没有 NIR 表示")
+	}
+	elements := make([]int, 0, len(typ.Elements))
+	for i := range typ.Elements {
+		id, err := t.idDepth(&typ.Elements[i], depth+1)
+		if err != nil {
+			return 0, fmt.Errorf("元组第 %d 个元素：%w", i+1, err)
+		}
+		if id == nir.TypeVoid {
+			return 0, fmt.Errorf("元组第 %d 个元素不能是 void", i+1)
+		}
+		elements = append(elements, id)
+	}
+	var key strings.Builder
+	key.WriteString("tuple{")
+	for _, id := range elements {
+		fmt.Fprintf(&key, "%d;", id)
+	}
+	key.WriteString("}")
+	if id, ok := t.byKey[key.String()]; ok {
+		return id, nil
+	}
+	def := nir.TypeDef{ID: t.next, Kind: nir.TypeKindTuple, Elements: elements}
 	t.next++
 	t.byKey[key.String()] = def.ID
 	t.defs = append(t.defs, def)

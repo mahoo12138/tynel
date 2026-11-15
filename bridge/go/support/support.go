@@ -128,3 +128,31 @@ func tynelPrintBool(v bool) {
 	}
 	fmt.Fprintln(os.Stdout, "false")
 }
+
+// tynelExitData 是运行时数据错误的退出状态。编译失败使用 1–5，数据错误单独
+// 占 6，避免把「程序运行到非法状态」和「源码/能力/环境/内部故障」混在一起。
+const tynelExitData = 6
+
+// tynelDataError 把运行时数据错误写到标准错误并退出。它不是 Go panic：
+// 用户程序不打印栈，也不经过 recover；错误边界是进程状态。
+func tynelDataError(message string) {
+	fmt.Fprintf(os.Stderr, "tynel: 数据错误：%s\n", message)
+	os.Exit(tynelExitData)
+}
+
+// tynelIndexToInt 把 number 下标转成整数。JSON/TypeScript 的数字是 binary64，
+// 非整数、NaN、无穷和超出 int32 范围的下标都不是数组元素访问。
+func tynelIndexToInt(v float64) int {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v != math.Trunc(v) || v < -2147483648 || v > 2147483647 {
+		tynelDataError("数组索引 " + tynelFormatNumber(v) + " 不是有效整数")
+	}
+	return int(v)
+}
+
+// tynelCheckBounds 检查数组下标。越界是运行时数据错误，不返回 undefined，
+// 也不沿用 Go 的 panic。
+func tynelCheckBounds(index, length int) {
+	if index < 0 || index >= length {
+		tynelDataError("数组索引 " + strconv.Itoa(index) + " 越界；长度 " + strconv.Itoa(length))
+	}
+}
