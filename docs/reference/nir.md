@@ -69,7 +69,7 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 | 6 | `undefined` |
 | 7 | `never` |
 
-复合类型从 8 开始，由 `types` 表定义。ID 必须唯一；编码器按 ID 升序输出。当前降低器会为静态对象、同质数组和定长元组按首次使用顺序分配 ID，结构相同的形状（忽略类型名）复用同一个条目；联合、函数等其余复合类型仍只支持手写 NIR。手写 NIR 可以使用任意合法 ID，但引用必须自洽。
+复合类型从 8 开始，由 `types` 表定义。ID 必须唯一；编码器按 ID 升序输出。当前降低器会为静态对象、同质数组、定长元组和两成员可空联合按首次使用顺序分配 ID，结构相同的形状（忽略类型名）复用同一个条目；函数等其余复合类型仍只支持手写 NIR。手写 NIR 可以使用任意合法 ID，但引用必须自洽。
 
 ```json
 {
@@ -111,7 +111,7 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 }
 ```
 
-`result` 是类型 ID，可以是内置类型或 `types` 表里的复合类型；`params[].type` 是类型 ID，但不能是 `void`。当前后端能执行 `number`、`bool`、`string`、对象引用、数组、元组和 `void` 结果。`pos` 可以省略，手写 NIR 时通常不写；前端产出时填写，用于把后端的错误指回源码。参数表为空时，Go 的编码会写成 `null`；读入时 `null` 与 `[]` 等价，都表示没有参数。
+`result` 是类型 ID，可以是内置类型或 `types` 表里的复合类型；`params[].type` 是类型 ID，但不能是 `void`。当前后端能执行 `number`、`bool`、`string`、对象引用、数组、元组、可空联合和 `void` 结果。`pos` 可以省略，手写 NIR 时通常不写；前端产出时填写，用于把后端的错误指回源码。参数表为空时，Go 的编码会写成 `null`；读入时 `null` 与 `[]` 等价，都表示没有参数。
 
 ## 语句
 
@@ -132,6 +132,8 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 | `array` | `name`、`type`、`items` 必填 | 构造同质数组；`type` 指向 `array` 类型，每个元素类型必须等于 `element` |
 | `tuple` | `name`、`type`、`items` 必填 | 构造定长元组；`items` 个数和逐位置类型必须与类型表一致 |
 | `index` | `name`、`type`、`value`、`index` 必填 | 读取数组或元组元素；数组下标运行时做边界检查，元组下标必须是整数数字字面量 |
+| `wrap` | `name`、`type`、`value` 必填 | 把成员值包成联合；`type` 指向 `union` 类型，`value` 必须是成员之一 |
+| `unwrap` | `name`、`type`、`value` 必填 | 按成员拆箱；运行时先检查标签，不一致按数据错误退出 6 |
 
 `let` 不是语言层面的变量，它解决的是求值次数：前端把模块级 `const`、分支里的 `const` 和需要复用的中间结果落成局部值，避免在表达式里重复求值——`const x = f(); g(x, x)` 只应该调用一次 `f`。
 
@@ -212,7 +214,7 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
   "elseValue": {"op": "number", "bits": "0x4000000000000000"} }
 ```
 
-条件为真时执行 `then` 列表，在同一个子作用域里求值 `thenValue`；为假时走 `else`。`then` / `else` 只接受 `let`、`short`、`select`、`object`、`array`、`tuple` 与 `index`。`name` 在语句之后可见，类型由 `type` 声明，两条分支的类型必须与它一致。当前可执行结果是 `number`、`bool`、`string`、对象引用、数组或元组。完整语义见[三元式](ternary.md)。
+条件为真时执行 `then` 列表，在同一个子作用域里求值 `thenValue`；为假时走 `else`。`then` / `else` 只接受 `let`、`short`、`select`、`object`、`array`、`tuple`、`index`、`wrap` 与 `unwrap`。`name` 在语句之后可见，类型由 `type` 声明，两条分支的类型必须与它一致。当前可执行结果是 `number`、`bool`、`string`、对象引用、数组、元组或可空联合。完整语义见[三元式](ternary.md)。
 
 `object` 语句构造一个对象并把结果绑定到 `name`：
 
@@ -259,6 +261,8 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 | `number` | `bits` | binary64 字面量，用位模式表示 |
 | `bool` | `value` | `true` 或 `false`；`false` 也必须有这个字段 |
 | `string` | `value` | JSON 字符串，按 UTF-8 保存；空字符串也必须有这个字段 |
+| `null` | 无 | 空值，结果是类型 ID 5 |
+| `undefined` | 无 | 未定义值，结果是类型 ID 6 |
 | `param` | `name` | 引用当前函数的参数 |
 | `local` | `name` | 引用前面 `let` 定义的局部值 |
 | `call` | `function`，`args` 可选 | 直接调用具名函数 |
@@ -267,6 +271,7 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 | `strlen` | `operand` | `string` 的 UTF-16 code unit 数，结果是 `number` |
 | `len` | `operand` | 数组的当前元素个数，结果是 `number`；操作数必须是 `array` 类型 |
 | `field` | `name`、`operand` | 读取对象属性的值；`operand` 必须是 `object` 类型，属性必须存在且为必填 |
+| `is` | `type`、`operand` | 判断联合值是否属于目标成员；结果是 `bool` |
 | `compare` | `operator`、`left`、`right` | 比较运算，运算符限 `<`、`<=`、`>`、`>=`、`===`、`!==`，结果是 `bool` |
 | `not` | `operand` | 布尔取反，操作数必须是 `bool` |
 
@@ -277,6 +282,20 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 `compare` 的输入类型按运算符分两组：`<`、`<=`、`>`、`>=` 要求两个 `number`；`===`、`!==` 要求两侧同为 `number`、`bool`、`string` 或同一个对象类型。字符串相等按 UTF-16 code unit 序列比较，不受存储地址影响；对象相等按引用身份，不比较字段内容；数组和元组暂不支持身份比较。宽松相等 `==`、`!=` 不是 NIR 运算符，混入文件按 `nir.bad-op` 拒绝。浮点比较的具体结果见[比较语义](comparison.md)。
 
 `string` 的 `value` 用 JSON 字符串保存，空字符串是合法值而不是缺字段。`strlen` 和 `concat` 的操作数必须是 `string`；字符串的 `length` 在降低时变成 `strlen`，`+` 在两个操作数都是字符串时变成 `concat`。数组的 `length` 变成 `len`。字符串索引、切片、模板插值和字符串方法还没有对应的 NIR 操作。
+
+联合值由 `wrap` 构造、`unwrap` 拆箱，空值比较由 `is` 生成：
+
+```json
+{ "op": "wrap", "name": "a", "type": 8,
+  "value": {"op": "number", "bits": "0x4014000000000000"} }
+```
+
+```json
+{ "op": "unwrap", "name": "n", "type": 1,
+  "value": {"op": "local", "name": "a"} }
+```
+
+`{"op":"is","type":5,"operand":{"op":"local","name":"a"}}` 判断联合值是否为 `null`。`null` / `undefined` 只作为 `wrap` 的成员值出现；单独作为局部值或输出参数会被类型规则拒绝。联合标签不一致时 bridge 按数据错误退出 6。
 
 ## 调试段
 
@@ -375,6 +394,7 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 | 类型表 | 内置 ID 1–7 不能被覆盖；复合 ID >= 8 且唯一；引用必须存在；`void` 只能作为函数结果 |
 | 对象 | `object` 语句的字段必须覆盖目标类型的所有必填属性；字段名存在且不重复；`field` 只能读取已存在的必填属性；当前切片拒绝可选属性 |
 | 数组与元组 | `array` 的每个元素与 `element` 同类型；`tuple` 的元素个数和逐位置类型与 `elements` 一致；`index` 的数组下标是 `number`，元组下标是范围内整数数字字面量；结果类型与元素类型一致 |
+| 联合 | `wrap` 的值必须是 `union` 的成员；`unwrap` 的目标必须是成员；`is` 的目标必须是成员；`null` / `undefined` 只能作为联合成员值使用 |
 | 分支 | `if` 的 `cond` 必须是 `bool`；`then` 与 `else` 各自在子作用域里检查 |
 | 短路 | `short` 的 `left` 与 `value` 必须是 `bool`；`name` 在当前块里唯一，类型为 `bool`；`right` 只在需要时执行 |
 | 三元式 | `select` 的 `cond` 必须是 `bool`；两条分支必须同类型，且与 `type` 一致；`name` 在当前块里唯一 |
@@ -434,6 +454,7 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
 | `nir.tuple-item` | 语义 | `tuple` 的元素个数或逐位置类型与 `elements` 不同 |
 | `nir.index-type` | 语义 | `index` 的数组下标不是 `number`、元组下标不是整数数字字面量，或结果类型与元素不同 |
 | `nir.index-bounds` | 语义 | 元组索引超出元素个数 |
+| `nir.union-member` | 语义 | `wrap`、`unwrap` 或 `is` 引用了联合类型里不存在的成员 |
 | `nir.unknown-local` | 语义 | 引用了尚未定义的局部值，或局部值不在当前块及祖先块里；也包括 `set` 的目标 |
 | `nir.immutable-local` | 语义 | `set` 的目标不是可变的 `let` |
 | `nir.assign-type` | 语义 | `set` 的右值与目标类型不同 |

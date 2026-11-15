@@ -52,7 +52,7 @@ function neverCalled(n: number): number {
 
 | 类别 | 支持 | 说明 |
 | --- | --- | --- |
-| 声明 | 顶层具名 `function`、必填参数、顶层 `const`、函数体内 `const` 与已初始化的 `let` | 参数、常量与局部值限 `number`、`boolean`、`string`、静态对象、同质数组或定长元组，返回值再加 `void`；默认参数、可选参数、模块级 `let` 与 `var` 拒绝；匿名、默认导出与嵌套函数声明按 `cap.unsupported-syntax` 拒绝；固定入口名 `main` 不能由用户占用 |
+| 声明 | 顶层具名 `function`、必填参数、顶层 `const`、函数体内 `const` 与已初始化的 `let` | 参数、常量与局部值限 `number`、`boolean`、`string`、静态对象、同质数组、定长元组或可空联合，返回值再加 `void`；默认参数、可选参数、模块级 `let` 与 `var` 拒绝；匿名、默认导出与嵌套函数声明按 `cap.unsupported-syntax` 拒绝；固定入口名 `main` 不能由用户占用 |
 | 运算 | `+` `-` `*` `/`，数字字面量上的一元 `-` `+`、`!`，比较 `<` `<=` `>` `>=` `===` `!==`，短路 `&&` `\|\|`，三元式 `? :` | 有序比较只接受 `number`；严格相等要求两侧同为 `number`、`boolean`、`string` 或同一个对象形状；`+` 只接受两个 `number` 或两个 `string`；`&&` / `\|\|` 两侧都必须是 `boolean`；三元式的条件必须是 `boolean`，两臂同类型；一元 `-` / `+` 不接受变量或一般表达式 |
 | 调用 | 本文件内声明的函数，或经值导入绑定到项目模块导出的函数；实参个数与形参一致 | 不支持函数值、方法调用，也不支持标准库全局函数 |
 | 语句 | `return`、表达式语句、语句块、`if` / `else` / `else if`、`while`、`break` / `continue`、分支内 `const` 与已初始化的 `let`、独立的简单赋值 | 表达式语句的结果被丢弃；`if` / `while` 的条件必须是 `boolean`；`break` / `continue` 只能作用于最近循环 |
@@ -60,16 +60,19 @@ function neverCalled(n: number): number {
 | 字符串 | 字面量、无插值模板、`+` 拼接、`===` / `!==`、`s.length` | 索引、`slice`、模板插值和字符串方法仍拒绝；`s.length` 的结果是 `number`，按 UTF-16 code unit 计数 |
 | 对象 | 静态形状的对象字面量、字段读取、对象引用相等、对象参数/返回值/常量/局部值 | 只支持必填属性；可选属性、字段写入、对象输出和结构性放宽仍拒绝；对象 `===` 比较引用身份 |
 | 数组与元组 | 同质数组字面量、索引读取、`length`、数组参数/返回值/局部值；元组字面量与常量索引 | 数组越界是运行时数据错误；数组方法、展开、赋值、扩容和身份比较仍拒绝；元组索引必须是编译期整数，空元组拒绝 |
+| 可空联合 | `T \| null`、`T \| undefined` 的赋值、参数、返回值和局部值；与空值的 `===` / `!==`；前端缩窄后的成员读取 | 多成员联合、判别联合、`??`、`?.` 和可选属性仍拒绝；联合本身不能输出 |
 
 `boolean` 现在是完整的标量：可以作为常量、参数、返回值和输出。`!` 只对 `boolean` 取反；TypeScript 允许 `!1`，但本阶段不把数字的真假转换带进原生后端，`!1` 按 `cap.bad-type` 拒绝。
 
-比较分两类：`<` `<=` `>` `>=` 只接受两个 `number`；`===` `!==` 要求两侧同为 `number`、同为 `boolean`、同为 `string` 或同一个对象形状。字符串相等比较内容，对象相等比较引用身份；数组和元组暂不支持身份比较。`==` 与 `!=` 是合法 TypeScript，但会做隐式类型转换，本阶段按 `cap.bad-operator` 拒绝。`true < false` 在 TypeScript 里能通过，能力检查按 `cap.bad-type` 拒绝——布尔值没有原生顺序。混合类型比较（`1 === true`）由 TypeScript 直接拒绝。
+比较分两类：`<` `<=` `>` `>=` 只接受两个 `number`；`===` `!==` 要求两侧同为 `number`、同为 `boolean`、同为 `string` 或同一个对象形状。字符串相等比较内容，对象相等比较引用身份；数组和元组暂不支持身份比较。可空联合可以与 `null` / `undefined` 做严格相等，结果来自标签检查；已经缩窄成具体类型的值也可以继续比较空值，结果折叠成常量。`==` 与 `!=` 是合法 TypeScript，但会做隐式类型转换，本阶段按 `cap.bad-operator` 拒绝。`true < false` 在 TypeScript 里能通过，能力检查按 `cap.bad-type` 拒绝——布尔值没有原生顺序。混合类型比较（`1 === true`）由 TypeScript 直接拒绝。
 
 `+` 在两个操作数都是 `string` 时降低为 `concat`；两个都是 `number` 时是浮点加法。`"a" + 1` 在 TypeScript 里合法（结果是 string，会隐式转换），本阶段按 `cap.bad-type` 拒绝，不生成 `toString` 调用。字符串的 `===` / `!==` 按 UTF-16 code unit 内容比较，不做隐式转换。
 
 对象第一个切片只支持静态形状和必填属性。`{ x: 1 }` 和 `{ x: 1, y: 2 }` 是不同形状；把一个更宽的对象变量传给只要求窄形状的参数时，TypeScript 允许，但本阶段按 `cap.object-shape` 拒绝，因为需要字段复制或截断。两个分别构造但内容相同的对象 `===` 是 false，`p === p` 是 true。`p.x = 3` 属于字段写入，按 `cap.assign-target` 拒绝；`console.log(p)` 按 `cap.bad-console-call` 拒绝。
 
 数组只支持同质元素和静态形状。数组字面量按源码顺序求值，`length` 返回当前元素个数；索引先求值数组再求值下标，运行时检查整数性和边界，越界按数据错误退出 6，而不是返回 `undefined`。`console.log(xs)`、`xs === xs`、`xs.push(3)`、`[...xs]` 和把数组当可变存储写回都不在子集内。元组索引必须是编译期非负整数；变量下标、越界和空元组都在能力检查阶段拒绝。
+
+可空联合只支持一个可执行成员加 `null` 或 `undefined`。`const x: number | null = 5` 和 `x = null` 都可以；`if (x !== null) { console.log(x + 1); }` 使用前端缩窄后的 `number`。`number | string`、`number | null | undefined` 和判别联合都会按 `cap.bad-type` 拒绝；`x ?? 0`、`x?.length` 仍不在子集内；`console.log(x)` 在未缩窄时按 `cap.bad-console-call` 拒绝。
 
 `&&` 与 `||` 的两个操作数都必须是 `boolean`。TypeScript 允许 `true && 1`，结果类型是 `1`；本阶段按 `cap.bad-type` 拒绝，不做数字真假转换。右侧即使被短路跳过也要检查：`false && (1 % 2 === 0)` 仍报 `cap.bad-operator`。
 
@@ -117,7 +120,7 @@ const x = announce(1);     // 拒绝：void 没有值可以绑
 | `cap.unknown-callee` | 调用目标不是本文件声明的函数、不是 `console.log`，也没有对上一条值导入绑定的项目模块导出 |
 | `cap.forbidden-global` | 调用 `eval` |
 | `cap.shadowed-console` | `console` 被本地声明或导入绑定遮蔽，不是内置全局对象 |
-| `cap.bad-console-call` | `console.log` 的参数不是恰好一个 `number`、`boolean` 或 `string`（对象、数组和元组没有输出格式） |
+| `cap.bad-console-call` | `console.log` 的参数不是恰好一个 `number`、`boolean` 或 `string`（对象、数组、元组和未缩窄联合没有输出格式） |
 | `cap.bad-operator` | 运算符不在算术、一元 `- +`、`!` 与比较之内，包括宽松 `==` / `!=` |
 | `cap.bad-unary` | 一元 `-` / `+` 作用于非数字字面量；变量取负需要额外的取负操作 |
 | `cap.entry-name` | 用户函数占用了固定入口名 `main` |

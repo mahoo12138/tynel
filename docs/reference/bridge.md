@@ -92,6 +92,12 @@ schema 3 的 `object` 类型在 bridge 里变成 Go 的 `*struct{...}`：字段�
 
 数据错误的退出状态 6 与编译失败的 1–5 分开。`tynel run` 原样传出程序状态；没有编译诊断信封，只有程序自己的标准错误。
 
+### 可空联合的 Runtime 表示
+
+`union` 类型映射为 `*struct{tag int32; v0 ...; v1 ...}`：标签是成员在类型表里的位置，空值成员只写标签，非空成员各有一个 payload 字段。`wrap` 用 `ONEW` 分配结构体，写入标签和成员值；`unwrap` 先调用 `tynelCheckUnionTag` 检查标签，再读对应字段；`is` 直接比较标签字段。
+
+标签不一致会按运行时数据错误退出 6。前端负责 TypeScript 的控制流缩窄，NIR 里只出现已经明确的 `wrap` / `unwrap`；bridge 不知道源码里的 `if` 条件。
+
 它**不**提供 `main` 函数。NIR 的入口叫 `main` 时，入口函数本身就是 `main.main`；入口叫别的名字时，bridge 额外生成一个 `main` 包装函数——没有参数、没有返回，函数体只有对入口的一次调用——Go 可执行程序要求的 `main.main` 由此成立，`entry` 字段真正决定程序从哪里开始。包装函数和用户函数一样直接建成 `ir.Func`，不生成 Go 源码。如果包里已经有 `main` 声明（比如 NIR 里有个叫 `main` 的函数而入口另有其名），bridge 会因为无法生成包装而拒绝；支持文件自己写 `main` 也会因符号冲突被拒绝。
 
 ## 特殊数值怎么生成
@@ -143,6 +149,9 @@ deadlocals / escape / walk / SSA / obj / link
 | `index` | 数组：边界检查后 `OINDEX`；元组：常量位置对应的 `ODOT` |
 | `field` | `ir.NewSelectorExpr(pos, ir.ODOT, base, fieldSym)` |
 | `len` | `ir.NewUnaryExpr(pos, ir.OLEN, array)` 再转成 `float64` |
+| `wrap` | `ir.BlockStmt`：`ONEW` 分配联合结构，写标签和成员 payload |
+| `unwrap` | 检查标签后读取成员字段 |
+| `is` | 比较联合标签与目标成员位置 |
 | `param` | 直接用参数的 `*ir.Name` |
 | `binary` | `ir.NewBinaryExpr`，`+ - * /` 对应 `OADD OSUB OMUL ODIV` |
 | `not` | `ir.NewUnaryExpr`，对应 `ONOT`，操作数与结果都是 `bool` |

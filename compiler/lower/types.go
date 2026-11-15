@@ -45,12 +45,18 @@ func (t *typeTable) idDepth(typ *frontend.Type, depth int) (int, error) {
 		return nir.TypeString, nil
 	case frontend.KindVoid:
 		return nir.TypeVoid, nil
+	case frontend.KindNull:
+		return nir.TypeNull, nil
+	case frontend.KindUndefined:
+		return nir.TypeUndefined, nil
 	case frontend.KindObject:
 		return t.object(resolved, depth)
 	case frontend.KindArray:
 		return t.array(resolved, depth)
 	case frontend.KindTuple:
 		return t.tuple(resolved, depth)
+	case frontend.KindUnion:
+		return t.union(resolved, depth)
 	}
 	return 0, fmt.Errorf("类型 %s 还没有 NIR 表示", resolved.Kind)
 }
@@ -79,6 +85,32 @@ func (t *typeTable) arrayDef(id int) *nir.TypeDef {
 
 func (t *typeTable) tupleDef(id int) *nir.TypeDef {
 	return t.defOf(id, nir.TypeKindTuple)
+}
+
+func (t *typeTable) unionDef(id int) *nir.TypeDef {
+	return t.defOf(id, nir.TypeKindUnion)
+}
+
+// isUnionMember 报告 member 是否是 union 的成员。
+func (t *typeTable) isUnionMember(union, member int) bool {
+	def := t.unionDef(union)
+	if def == nil {
+		return false
+	}
+	for _, id := range def.Members {
+		if id == member {
+			return true
+		}
+	}
+	return false
+}
+
+// unionMember 返回 union 里与 target 相同的成员类型；不是成员时 ok=false。
+func (t *typeTable) unionMember(union, target int) (int, bool) {
+	if !t.isUnionMember(union, target) {
+		return 0, false
+	}
+	return target, true
 }
 
 func (t *typeTable) defOf(id int, kind string) *nir.TypeDef {
@@ -176,6 +208,40 @@ func (t *typeTable) tuple(typ *frontend.Type, depth int) (int, error) {
 		return id, nil
 	}
 	def := nir.TypeDef{ID: t.next, Kind: nir.TypeKindTuple, Elements: elements}
+	t.next++
+	t.byKey[key.String()] = def.ID
+	t.defs = append(t.defs, def)
+	return def.ID, nil
+}
+
+// union 为一个联合类型分配类型 ID。成员排序后再去重，保证 `number | null`
+// 与 `null | number` 落到同一个条目；标签顺序由排序后的成员表决定。
+func (t *typeTable) union(typ *frontend.Type, depth int) (int, error) {
+	if len(typ.Members) < 2 {
+		return 0, fmt.Errorf("联合类型至少需要两个成员")
+	}
+	members := make([]int, 0, len(typ.Members))
+	for i := range typ.Members {
+		id, err := t.idDepth(&typ.Members[i], depth+1)
+		if err != nil {
+			return 0, fmt.Errorf("联合第 %d 个成员：%w", i+1, err)
+		}
+		if id == nir.TypeVoid {
+			return 0, fmt.Errorf("联合第 %d 个成员不能是 void", i+1)
+		}
+		members = append(members, id)
+	}
+	sort.Ints(members)
+	var key strings.Builder
+	key.WriteString("union{")
+	for _, id := range members {
+		fmt.Fprintf(&key, "%d;", id)
+	}
+	key.WriteString("}")
+	if id, ok := t.byKey[key.String()]; ok {
+		return id, nil
+	}
+	def := nir.TypeDef{ID: t.next, Kind: nir.TypeKindUnion, Members: members}
 	t.next++
 	t.byKey[key.String()] = def.ID
 	t.defs = append(t.defs, def)

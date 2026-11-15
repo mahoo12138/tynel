@@ -43,19 +43,22 @@ const (
 
 // 表达式操作。
 const (
-	OpNumber  = "number"
-	OpBool    = "bool"
-	OpString  = "string"
-	OpParam   = "param"
-	OpLocal   = "local"
-	OpCall    = "call"
-	OpBinary  = "binary"
-	OpConcat  = "concat"
-	OpStrlen  = "strlen"
-	OpLen     = "len"
-	OpField   = "field"
-	OpCompare = "compare"
-	OpNot     = "not"
+	OpNumber    = "number"
+	OpBool      = "bool"
+	OpString    = "string"
+	OpNull      = "null"
+	OpUndefined = "undefined"
+	OpParam     = "param"
+	OpLocal     = "local"
+	OpCall      = "call"
+	OpBinary    = "binary"
+	OpConcat    = "concat"
+	OpStrlen    = "strlen"
+	OpLen       = "len"
+	OpField     = "field"
+	OpIs        = "is"
+	OpCompare   = "compare"
+	OpNot       = "not"
 )
 
 // 语句操作。
@@ -80,6 +83,8 @@ const (
 	OpArray    = "array"
 	OpTuple    = "tuple"
 	OpIndex    = "index"
+	OpWrap     = "wrap"
+	OpUnwrap   = "unwrap"
 	OpWhile    = "while"
 	OpBreak    = "break"
 	OpContinue = "continue"
@@ -188,6 +193,7 @@ type Expr struct {
 	Left     *Expr           `json:"left,omitempty"`
 	Right    *Expr           `json:"right,omitempty"`
 	Operand  *Expr           `json:"operand,omitempty"`
+	Type     int             `json:"type,omitempty"` // 仅 is 使用：目标成员类型 ID
 	Pos      *Pos            `json:"pos,omitempty"`
 }
 

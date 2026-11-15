@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 3,
+  "types": [
+    {"id": 8, "kind": "union", "members": [1, 5]}
+  ],
+  "entry": "main",
+  "functions": [
+    {
+      "name": "show",
+      "params": [{"name": "value", "type": 8}],
+      "result": 1,
+      "body": [
+        {
+          "op": "if",
+          "cond": {
+            "op": "not",
+            "operand": {"op": "is", "type": 5, "operand": {"op": "param", "name": "value"}}
+          },
+          "then": [
+            {"op": "unwrap", "name": "unwrapped", "type": 1, "value": {"op": "param", "name": "value"}},
+            {"op": "return", "value": {"op": "local", "name": "unwrapped"}}
+          ]
+        },
+        {"op": "return", "value": {"op": "number", "bits": "0x0000000000000000"}}
+      ]
+    },
+    {
+      "name": "main",
+      "params": [],
+      "result": 3,
+      "body": [
+        {"op": "wrap", "name": "a", "type": 8, "value": {"op": "number", "bits": "0x4014000000000000"}},
+        {"op": "print", "value": {"op": "call", "function": "show", "args": [{"op": "local", "name": "a"}]}},
+        {"op": "wrap", "name": "b", "type": 8, "value": {"op": "null"}},
+        {"op": "print", "value": {"op": "call", "function": "show", "args": [{"op": "local", "name": "b"}]}},
+        {"op": "print", "value": {"op": "is", "type": 5, "operand": {"op": "local", "name": "b"}}},
+        {"op": "return"}
+      ]
+    }
+  ]
+}

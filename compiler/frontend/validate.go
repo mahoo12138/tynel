@@ -191,6 +191,10 @@ func (f *Facts) Validate() error {
 				if (got == KindUndefined || got == KindOther) && (param.Optional || param.HasDefault) {
 					continue
 				}
+				// 可空联合的成员可以直接作为实参；降低器会负责装箱。
+				if memberOfNullable(got, param.Type) {
+					continue
+				}
 				return diagnostic.New(diagnostic.Internal, "facts.arg-type", "调用 %q 的第 %d 个实参是 %s，形参是 %s", callee.Name, i+1, got, param.Type.Kind)
 			}
 		}
@@ -233,6 +237,34 @@ func (f *Facts) Validate() error {
 		}
 	}
 	return nil
+}
+
+// memberOfNullable 报告 got 是否是可空联合里的成员类型：非空成员本身，或
+// 联合携带的那个 null / undefined。
+func memberOfNullable(got Kind, want *Type) bool {
+	if want == nil || want.Kind != KindUnion || len(want.Members) != 2 {
+		return false
+	}
+	var payload *Type
+	nullish := 0
+	nullishKind := Kind("")
+	for i := range want.Members {
+		member := &want.Members[i]
+		switch member.Kind {
+		case KindNull, KindUndefined:
+			nullish++
+			nullishKind = member.Kind
+		default:
+			payload = member
+		}
+	}
+	if nullish != 1 || payload == nil {
+		return false
+	}
+	if got == KindNull || got == KindUndefined {
+		return got == nullishKind
+	}
+	return payload.Kind == got
 }
 
 // validateNode 检查语法骨架的形状：种类非空、位置合法、引用的声明存在，

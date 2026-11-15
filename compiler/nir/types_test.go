@@ -410,4 +410,75 @@ func TestArrayAndTupleStatementsRejectBadItems(t *testing.T) {
 	}
 }
 
+func TestUnionWrapUnwrapAndTag(t *testing.T) {
+	m := typedModule(TypeDef{ID: 8, Kind: TypeKindUnion, Members: []int{TypeNumber, TypeNull}})
+	m.Functions[0].Body = []Stmt{
+		{Op: OpWrap, Name: "a", Type: 8, Value: ptrExpr(num(5))},
+		{Op: OpUnwrap, Name: "n", Type: TypeNumber, Value: ptrExpr(local("a"))},
+		{Op: OpPrint, Value: ptrExpr(local("n"))},
+		{Op: OpWrap, Name: "b", Type: 8, Value: ptrExpr(Expr{Op: OpNull})},
+		{Op: OpPrint, Value: ptrExpr(Expr{Op: OpIs, Type: TypeNull, Operand: ptrExpr(local("b"))})},
+		{Op: OpReturn},
+	}
+	if err := Verify(m); err != nil {
+		t.Fatalf("联合模块应通过验证：%v", err)
+	}
+	data, err := EncodeBytes(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := DecodeBytes(data, DefaultLimits())
+	if err != nil {
+		t.Fatalf("联合模块应能解码：%v", err)
+	}
+	if back.Functions[0].Body[0].Op != OpWrap || back.Functions[0].Body[1].Op != OpUnwrap {
+		t.Fatalf("联合操作回读不完整：%+v", back.Functions[0].Body[:2])
+	}
+	if back.Functions[0].Body[4].Value.Type != TypeNull {
+		t.Fatalf("is 的目标类型丢失：%+v", back.Functions[0].Body[4].Value)
+	}
+}
+
+func TestUnionOperationsRejectBadMembers(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Module)
+		code   string
+	}{
+		{"wrap 值不是成员", func(m *Module) {
+			m.Functions[0].Body[0].Value = ptrExpr(String("a"))
+		}, "nir.union-member"},
+		{"unwrap 目标不是成员", func(m *Module) {
+			m.Functions[0].Body[1].Type = TypeBool
+		}, "nir.union-member"},
+		{"is 目标不是成员", func(m *Module) {
+			m.Functions[0].Body[4].Value.Type = TypeBool
+		}, "nir.union-member"},
+		{"unwrap 值不是联合", func(m *Module) {
+			m.Functions[0].Body[1].Value = ptrExpr(num(1))
+		}, "nir.type-kind"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := typedModule(TypeDef{ID: 8, Kind: TypeKindUnion, Members: []int{TypeNumber, TypeNull}})
+			m.Functions[0].Body = []Stmt{
+				{Op: OpWrap, Name: "a", Type: 8, Value: ptrExpr(num(5))},
+				{Op: OpUnwrap, Name: "n", Type: TypeNumber, Value: ptrExpr(local("a"))},
+				{Op: OpPrint, Value: ptrExpr(local("n"))},
+				{Op: OpWrap, Name: "b", Type: 8, Value: ptrExpr(Expr{Op: OpNull})},
+				{Op: OpPrint, Value: ptrExpr(Expr{Op: OpIs, Type: TypeNull, Operand: ptrExpr(local("b"))})},
+				{Op: OpReturn},
+			}
+			c.mutate(m)
+			err := Verify(m)
+			if err == nil {
+				t.Fatal("坏联合操作应被拒绝")
+			}
+			if got := diagnosticCode(err); got != c.code {
+				t.Fatalf("错误码应为 %s，实际 %s（%v）", c.code, got, err)
+			}
+		})
+	}
+}
+
 func ptrExpr(e Expr) *Expr { return &e }

@@ -1,6 +1,6 @@
 # 操作支持表
 
-这张表描述当前已实现的支持范围，起点是 `mvp/06-compiler-mvp`（Tynel Language Preview 0），并包含 Stage 2 已经落地的字符串最小闭环、静态对象和数组/元组第一个切片。长期方向与三层兼容状态见[语言宪章](../../LANGUAGE.md)和 [TypeScript 兼容性矩阵](../language/compatibility.md)。`支持` 表示有源码夹具和验证记录；`拒绝` 表示能力检查或 TypeScript 会明确报错；`计划` 表示尚未实现，不能靠推测当成可用。完整能力矩阵见[06.07 验收记录](../validation/06-07-mvp.md)，命令入口见[命令行参考](cli.md)。
+这张表描述当前已实现的支持范围，起点是 `mvp/06-compiler-mvp`（Tynel Language Preview 0），并包含 Stage 2 已经落地的字符串最小闭环、静态对象、数组/元组与可空联合第一个切片。长期方向与三层兼容状态见[语言宪章](../../LANGUAGE.md)和 [TypeScript 兼容性矩阵](../language/compatibility.md)。`支持` 表示有源码夹具和验证记录；`拒绝` 表示能力检查或 TypeScript 会明确报错；`计划` 表示尚未实现，不能靠推测当成可用。完整能力矩阵见[06.07 验收记录](../validation/06-07-mvp.md)，命令入口见[命令行参考](cli.md)。
 
 ## 值
 
@@ -13,15 +13,16 @@
 | 静态对象 | 部分支持 | 必填属性、对象字面量、字段读取和引用身份可用；可选属性、字段写入、对象输出和结构性放宽仍拒绝。见[对象与数组 RFC](../language/semantics/objects-arrays.md) |
 | 数组 | 部分支持 | 同质数组字面量、索引读取、`length`、参数/返回值/局部值可用；索引越界按数据错误退出 6；方法、展开、赋值、扩容和身份比较仍拒绝 |
 | 元组 | 部分支持 | 定长字面量与编译期整数索引可用；空元组、变量索引和越界拒绝。见[对象与数组 RFC](../language/semantics/objects-arrays.md) |
+| 可空联合 | 部分支持 | `T \| null` / `T \| undefined` 的赋值、参数、返回值和空值比较可用；多成员联合、判别联合、`??` / `?.` 仍拒绝。见[联合与空值 RFC](../language/semantics/unions-null.md) |
 | `any`、`unknown` | 拒绝 | `cap.any` |
-| 联合类型 | 拒绝 | 三元式两臂不同、声明为联合都会报 `cap.bad-type` |
+| 多成员联合 | 拒绝 | 可空联合之外；三元式两臂不同、`number \| string` 等声明都会报 `cap.bad-type` |
 
 ## 声明与调用
 
 | 操作 | 状态 | 说明 |
 | --- | --- | --- |
 | 顶层函数声明 | 支持 | 直接调用，按函数名绑定；不能占用固定入口名 `main` |
-| 参数 | 支持 | `number`、`boolean`、`string`、静态对象、同质数组或定长元组 |
+| 参数 | 支持 | `number`、`boolean`、`string`、静态对象、同质数组、定长元组或可空联合 |
 | 顶层 `const` | 支持 | 初始化表达式按源码顺序求值 |
 | 块内 `const` | 支持 | 只在当前块可见，同名遮蔽外层 |
 | 块内 `let` | 支持 | 必须带初始值；可读、可遮蔽，可变 `let` 可赋值 |
@@ -33,6 +34,7 @@
 | 函数读取模块级 `const` | 拒绝 | `module.captured-variable` |
 | 对象形状的 `interface` | 支持 | 展开成静态对象属性；非对象接口仍按 `cap.interface` 拒绝 |
 | 数组与元组别名 | 支持 | `type Nums = number[]`、`type Pair = [number, string]` |
+| 可空联合别名 | 部分支持 | `type Maybe = number \| null`；多成员联合仍拒绝 |
 | 联合、`any` 别名 | 拒绝 | `cap.bad-type` / `cap.any` |
 | 模块级 `let` | 拒绝 | `cap.module-let`，模块体只接受 `const` |
 | 局部 `var` | 拒绝 | `cap.unsupported-syntax` |
@@ -50,16 +52,18 @@
 | 一元 `-` `+` | 支持 | 只接受数字字面量并折成位模式；变量取负报 `cap.bad-unary` |
 | `!` | 支持 | 操作数必须是 `boolean` |
 | `<` `<=` `>` `>=` | 支持 | 两个 `number` |
-| `===` `!==` | 支持 | 两侧同为 `number`、`boolean`、`string` 或同一对象形状；对象按引用身份；数组和元组暂不支持 |
+| `===` `!==` | 支持 | 两侧同为 `number`、`boolean`、`string` 或同一对象形状；对象按引用身份；可空联合可与 `null` / `undefined` 比较；数组和元组暂不支持 |
 | `==` `!=` | 拒绝 | `cap.bad-operator`，不做隐式转换 |
 | `&&` `\|\|` | 支持 | 两侧 `boolean`，短路求值，结果绑定到临时值 |
-| `? :` | 支持 | 条件 `boolean`，两臂同为标量、同一对象形状、同一数组或同一元组 |
+| `? :` | 支持 | 条件 `boolean`，两臂同为标量、同一对象形状、同一数组或同一元组；联合两臂仍未支持 |
 | 字符串拼接 | 支持 | 两个 `string` 的 `+`；`"a" + 1` 按 `cap.bad-type` 拒绝 |
 | `s.length` | 支持 | 结果按 UTF-16 code unit 计数 |
 | 对象字面量与字段读取 | 支持 | 静态形状、必填属性；嵌套对象可以读取 |
 | 数组字面量、索引与 `length` | 支持 | 同质数组；索引运行时检查整数性和边界，越界退出 6 |
 | 元组字面量与常量索引 | 支持 | 位置类型固定；变量索引、空元组和越界拒绝 |
 | 数组方法、展开、赋值 | 拒绝 | `cap.unknown-callee` / `cap.unsupported-syntax`；`push`、`slice` 等留到标准库阶段 |
+| 空值比较与缩窄 | 支持 | `x !== null` / `x === undefined`；分支内成员读取按前端缩窄类型拆箱 |
+| `??` 与可选链 `?.` | 拒绝 | 依赖多成员联合与可选属性，留到后续切片 |
 | 可选属性、字段写入 | 拒绝 | 可选属性等待 `undefined`；字段写入属于第二个对象切片 |
 | 模板字符串插值、字符串方法 | 拒绝 | `cap.unsupported-syntax` / `cap.unknown-callee` |
 | 赋值表达式 | 拒绝 | `cap.assignment-value`，赋值只能作为独立语句 |

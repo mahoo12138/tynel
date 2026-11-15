@@ -266,6 +266,36 @@ func (c *checker) stmts(stmts []Stmt, sc *scope, f *Function) error {
 			if err := c.bindAggregate(s, sc, f); err != nil {
 				return err
 			}
+		case OpWrap:
+			def, ok := c.types[s.Type]
+			if !ok || def.Kind != TypeKindUnion {
+				return failAt("nir.type-kind", s.Pos, "wrap 的 type 不是 union 类型：%s", typeName(s.Type))
+			}
+			value, err := c.exprType(s.Value, sc)
+			if err != nil {
+				return err
+			}
+			if !containsType(def.Members, value) {
+				return failAt("nir.union-member", s.Pos, "wrap 的值类型 %s 不是 union %s 的成员", typeName(value), typeName(s.Type))
+			}
+			if err := c.bindAggregate(s, sc, f); err != nil {
+				return err
+			}
+		case OpUnwrap:
+			value, err := c.exprType(s.Value, sc)
+			if err != nil {
+				return err
+			}
+			def, ok := c.types[value]
+			if !ok || def.Kind != TypeKindUnion {
+				return failAt("nir.type-kind", s.Pos, "unwrap 的 value 不是 union 类型：%s", typeName(value))
+			}
+			if !containsType(def.Members, s.Type) {
+				return failAt("nir.union-member", s.Pos, "unwrap 的目标类型 %s 不是 union %s 的成员", typeName(s.Type), typeName(value))
+			}
+			if err := c.bindAggregate(s, sc, f); err != nil {
+				return err
+			}
 		case OpSet:
 			got, err := c.exprType(s.Value, sc)
 			if err != nil {
@@ -409,8 +439,18 @@ func (c *checker) valueType(id int) bool {
 		return false
 	}
 	switch def.Kind {
-	case TypeKindObject, TypeKindArray, TypeKindTuple:
+	case TypeKindObject, TypeKindArray, TypeKindTuple, TypeKindUnion:
 		return true
+	}
+	return false
+}
+
+// containsType 报告类型 ID 是否在成员列表里。
+func containsType(members []int, id int) bool {
+	for _, member := range members {
+		if member == id {
+			return true
+		}
 	}
 	return false
 }
@@ -501,6 +541,10 @@ func (c *checker) exprType(e *Expr, sc *scope) (int, error) {
 			return 0, badf("nir.missing", "string 缺少字符串 value")
 		}
 		return TypeString, nil
+	case OpNull:
+		return TypeNull, nil
+	case OpUndefined:
+		return TypeUndefined, nil
 	case OpParam:
 		t, ok := sc.lookupParam(e.Name)
 		if !ok {
@@ -561,6 +605,22 @@ func (c *checker) exprType(e *Expr, sc *scope) (int, error) {
 			return 0, failAt("nir.object-field", e.Pos, "可选属性 %q 需要 undefined 表示", e.Name)
 		}
 		return prop.Type, nil
+	case OpIs:
+		if e.Type == 0 || e.Operand == nil {
+			return 0, failAt("nir.missing", e.Pos, "is 缺少 type 或 operand")
+		}
+		base, err := c.exprType(e.Operand, sc)
+		if err != nil {
+			return 0, err
+		}
+		def, ok := c.types[base]
+		if !ok || def.Kind != TypeKindUnion {
+			return 0, failAt("nir.type-kind", e.Pos, "is 的 operand 不是 union 类型：%s", typeName(base))
+		}
+		if !containsType(def.Members, e.Type) {
+			return 0, failAt("nir.union-member", e.Pos, "is 的目标类型 %s 不是 union %s 的成员", typeName(e.Type), typeName(base))
+		}
+		return TypeBool, nil
 	case OpConcat:
 		if e.Left == nil || e.Right == nil {
 			return 0, failAt("nir.missing", e.Pos, "concat 缺少左或右操作数")

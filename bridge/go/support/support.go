@@ -156,3 +156,11 @@ func tynelCheckBounds(index, length int) {
 		tynelDataError("数组索引 " + strconv.Itoa(index) + " 越界；长度 " + strconv.Itoa(length))
 	}
 }
+
+// tynelCheckUnionTag 检查联合值在拆箱前确实属于目标成员。缩窄正确时不会
+// 触发；它防止坏 NIR 或编译器缺陷把错误的 payload 当成目标类型读取。
+func tynelCheckUnionTag(tag, expected int32) {
+	if tag != expected {
+		tynelDataError("联合标签 " + strconv.Itoa(int(tag)) + " 与期望的 " + strconv.Itoa(int(expected)) + " 不一致")
+	}
+}

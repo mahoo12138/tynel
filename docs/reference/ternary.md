@@ -62,7 +62,7 @@ console.log(mark(3, true) ? (mark(4, true) ? 40 : 50) : mark(5, true) ? 60 : 70)
 
 - 条件必须是 `boolean`。
 - 两条分支必须是同一个类型：都为 `number`、都为 `boolean`、都为 `string`、同一个对象形状、同一个数组类型或同一个元组类型。
-- TypeScript 允许 `true ? 1 : false` 得到联合类型 `number | false`；本阶段不把联合类型带进原生后端，按 `cap.bad-type` 拒绝。
+- TypeScript 允许 `true ? 1 : false` 得到多成员联合 `number | false`；本阶段的三元式不接受联合结果，按 `cap.bad-type` 拒绝。
 - 未选中的分支同样过能力检查：`false ? (1 % 2) : 3` 仍报 `cap.bad-operator`。
 
 ## 与短路的区别

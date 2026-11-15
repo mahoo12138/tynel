@@ -257,8 +257,8 @@ func checkStmts(stmts []Stmt, rootPath string, depth int, nodes *int, limits Lim
 		seen[s] = true
 		*nodes++
 		if prelude && s.Op != OpLet && s.Op != OpShort && s.Op != OpSelect && s.Op != OpObject &&
-			s.Op != OpArray && s.Op != OpTuple && s.Op != OpIndex {
-			return badf("nir.bad-op", "%s（表达式准备块）只接受 let、short、select、object、array、tuple 或 index", spath)
+			s.Op != OpArray && s.Op != OpTuple && s.Op != OpIndex && s.Op != OpWrap && s.Op != OpUnwrap {
+			return badf("nir.bad-op", "%s（表达式准备块）只接受 let、short、select、object、array、tuple、index、wrap 或 unwrap", spath)
 		}
 		if s.Op != OpObject && len(s.Fields) > 0 {
 			return badf("nir.unexpected-field", "%s（op=%s）不接受字段 fields", spath, s.Op)
@@ -516,6 +516,30 @@ func checkStmts(stmts []Stmt, rootPath string, depth int, nodes *int, limits Lim
 			if err := checkExpr(s.Index, spath+".index", 1, nodes, limits); err != nil {
 				return err
 			}
+		case OpWrap, OpUnwrap:
+			if s.Name == "" {
+				return badf("nir.missing", "%s 的 %s 缺少 name", spath, s.Op)
+			}
+			if s.Type == 0 {
+				return badf("nir.missing", "%s 的 %s 缺少 type", spath, s.Op)
+			}
+			if s.Value == nil {
+				return badf("nir.missing", "%s 的 %s 缺少 value", spath, s.Op)
+			}
+			if s.Cond != nil || len(s.Then) > 0 || len(s.Else) > 0 || s.ThenValue != nil || s.ElseValue != nil ||
+				s.Operator != "" || s.Left != nil || len(s.Right) > 0 || s.Mutable || s.Index != nil ||
+				len(s.CondPre) > 0 || len(s.Body) > 0 || s.ID != 0 || s.Target != 0 {
+				return badf("nir.unexpected-field", "%s（op=%s）只接受 name、type、value 与 pos", spath, s.Op)
+			}
+			if s.Type == TypeVoid {
+				return badf("nir.type-void", "%s 的 %s.type 是 void", spath, s.Op)
+			}
+			if !validTypeRef(types, s.Type, false) {
+				return badf("nir.type-ref", "%s 的 %s.type 引用了不存在的类型 id %d", spath, s.Op, s.Type)
+			}
+			if err := checkExpr(s.Value, spath+".value", 1, nodes, limits); err != nil {
+				return err
+			}
 		case OpWhile:
 			if s.Cond == nil {
 				return badf("nir.missing", "%s 的 while 缺少 cond", spath)
@@ -549,7 +573,7 @@ func checkStmts(stmts []Stmt, rootPath string, depth int, nodes *int, limits Lim
 		case "":
 			return badf("nir.missing", "%s 缺少 op", spath)
 		default:
-			return badf("nir.bad-op", "%s.op 为 %q，只接受 return、print、let、discard、if、short、select、set、object、array、tuple、index、while、break 或 continue", spath, s.Op)
+			return badf("nir.bad-op", "%s.op 为 %q，只接受 return、print、let、discard、if、short、select、set、object、array、tuple、index、wrap、unwrap、while、break 或 continue", spath, s.Op)
 		}
 	}
 	return nil
@@ -605,6 +629,10 @@ func checkExpr(root *Expr, rootPath string, depth int, nodes *int, limits Limits
 			if _, ok := e.StringValue(); !ok {
 				return badf("nir.missing", "%s 的 string 缺少字符串 value", it.path)
 			}
+		case OpNull, OpUndefined:
+			if err := onlyFields(e, it.path, ""); err != nil {
+				return err
+			}
 		case OpConcat:
 			if err := onlyFields(e, it.path, "left,right"); err != nil {
 				return err
@@ -633,6 +661,17 @@ func checkExpr(root *Expr, rootPath string, depth int, nodes *int, limits Limits
 			}
 			if e.Operand == nil {
 				return badf("nir.missing", "%s 的 field 缺少 operand", it.path)
+			}
+			stack = append(stack, item{e.Operand, it.path + ".operand", it.depth + 1})
+		case OpIs:
+			if err := onlyFields(e, it.path, "type,operand"); err != nil {
+				return err
+			}
+			if e.Type == 0 {
+				return badf("nir.missing", "%s 的 is 缺少 type", it.path)
+			}
+			if e.Operand == nil {
+				return badf("nir.missing", "%s 的 is 缺少 operand", it.path)
 			}
 			stack = append(stack, item{e.Operand, it.path + ".operand", it.depth + 1})
 		case OpLen:
@@ -699,7 +738,7 @@ func checkExpr(root *Expr, rootPath string, depth int, nodes *int, limits Limits
 		case "":
 			return badf("nir.missing", "%s 缺少 op", it.path)
 		default:
-			return badf("nir.bad-op", "%s.op 为 %q，只接受 number、bool、string、param、local、call、binary、concat、strlen、len、field、compare 或 not", it.path, e.Op)
+			return badf("nir.bad-op", "%s.op 为 %q，只接受 number、bool、string、null、undefined、param、local、call、binary、concat、strlen、len、field、is、compare 或 not", it.path, e.Op)
 		}
 	}
 	return nil
@@ -721,6 +760,7 @@ func onlyFields(e *Expr, path, allowed string) error {
 		"left":     e.Left != nil,
 		"right":    e.Right != nil,
 		"operand":  e.Operand != nil,
+		"type":     e.Type != 0,
 	}
 	for name, ok := range present {
 		if ok && !permitted[name] {

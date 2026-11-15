@@ -22,7 +22,7 @@
 | 操作 | 推荐规则 |
 | --- | --- |
 | 可观察单位 | UTF-16 code unit；`length` 返回 code unit 数 |
-| 索引 `s[i]` | 返回第 `i` 个 code unit 组成的单 code unit 字符串；越界返回 `undefined`（随 S2.4 落地） |
+| 索引 `s[i]` | 返回第 `i` 个 code unit 组成的单 code unit 字符串；越界返回 `undefined`（待字符串索引切片实现） |
 | 相等 | 按 UTF-16 code unit 序列比较；`===` 不做隐式转换 |
 | 拼接 | `+` 要求两侧都是 `string`；结果按 code unit 拼接 |
 | 遍历 | `for...of` 按 Unicode 码点遍历（与 JavaScript 一致），与索引单位区分 |
@@ -82,7 +82,7 @@ TynelString {
 
 1. **存储**：第一版使用 UTF-16 存储，ABI 为 `{data *uint16, len int32}`；UTF-8 只用于源码、I/O 和打印边界。
 2. **可观察单位**：`length`、索引、`slice` 和相等都按 UTF-16 code unit；遍历按 Unicode 码点。
-3. **索引越界**：对齐 JavaScript，返回 `undefined`。字符串索引访问在 S2.4 的空值和联合表示落地后启用；在此之前能力检查明确拒绝。
+3. **索引越界**：对齐 JavaScript，返回 `undefined`。`undefined` 表示已随 S2.4 可空联合落地；字符串索引访问本身尚未实现，当前能力检查明确拒绝。
 4. **模板插值**：首版只允许 `string` / `number` / `boolean` 插值，完整 `toString` 协议后续再定。
 5. **切片**：`slice` 采用复制语义，不共享底层存储。
 6. **孤立代理项**：允许作为运行时值存在；源码字面量仍必须是合法 UTF-8。

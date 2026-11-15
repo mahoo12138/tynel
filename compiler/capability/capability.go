@@ -47,6 +47,10 @@ func Check(snapshot *source.Snapshot, facts *frontend.Facts) ([]*diagnostic.Diag
 			if reason := c.tupleProblem(c.facts.ResolveType(alias.Type), 0); reason != "" {
 				c.report(alias.Start, "cap.bad-type", "元组类型 %q 的%s", alias.Name, reason)
 			}
+		case frontend.KindUnion:
+			if reason := c.unionProblem(c.facts.ResolveType(alias.Type), 0); reason != "" {
+				c.report(alias.Start, "cap.bad-type", "联合类型 %q 的%s", alias.Name, reason)
+			}
 		case "interface":
 			if alias.Type == nil {
 				c.report(alias.Start, "cap.interface", "接口 %q 没有可读取的结构摘要", alias.Name)
@@ -62,8 +66,6 @@ func Check(snapshot *source.Snapshot, facts *frontend.Facts) ([]*diagnostic.Diag
 			}
 		case frontend.KindAny:
 			c.report(alias.Start, "cap.any", "类型别名 %q 是 any 或 unknown", alias.Name)
-		case "union":
-			c.report(alias.Start, "cap.bad-type", "类型别名 %q 是联合类型，本阶段不支持", alias.Name)
 		default:
 			description := string(alias.Kind)
 			if alias.Type != nil {
@@ -145,7 +147,7 @@ func (c *checker) declaration(d *frontend.Declaration) {
 			c.report(d.Start, "cap.unsupported-declaration", "函数 %q 只有声明没有实现（ambient 或重载签名），本阶段不支持", d.Name)
 			return
 		}
-		c.declaredType(d.Result, d.Start, "函数 %q 的返回类型", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple, frontend.KindVoid)
+		c.declaredType(d.Result, d.Start, "函数 %q 的返回类型", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple, frontend.KindUnion, frontend.KindVoid)
 	case frontend.DeclParameter:
 		// 默认参数与可选参数都需要后端合成缺省值，本阶段还没实现。先在这里
 		// 明确拒绝，别让合法的 add(5) 一路走到降低阶段才报内部故障；事实层
@@ -158,19 +160,19 @@ func (c *checker) declaration(d *frontend.Declaration) {
 			c.report(d.Start, "cap.unsupported-parameter", "参数 %q 是可选参数，本阶段只支持必填参数", d.Name)
 			return
 		}
-		c.declaredType(d.Type, d.Start, "参数 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple)
+		c.declaredType(d.Type, d.Start, "参数 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple, frontend.KindUnion)
 	case frontend.DeclConst:
 		if d.Body == nil {
 			// declare const 只有类型声明，没有初始化表达式；入口降低需要值。
 			c.report(d.Start, "cap.unsupported-declaration", "常量 %q 没有初始化表达式（ambient 声明），本阶段不支持", d.Name)
 			return
 		}
-		c.declaredType(d.Type, d.Start, "常量 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple)
+		c.declaredType(d.Type, d.Start, "常量 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple, frontend.KindUnion)
 		if d.Body.Type != nil && d.Body.Type.Kind == frontend.KindVoid {
 			c.report(d.Body.Start, "cap.void-value", "常量 %q 的初始值是 void 调用，没有可用的值", d.Name)
 		}
 	case frontend.DeclLocal, frontend.DeclLet:
-		c.declaredType(d.Type, d.Start, "局部值 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple)
+		c.declaredType(d.Type, d.Start, "局部值 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple, frontend.KindUnion)
 	case frontend.DeclModuleLet:
 		c.report(d.Start, "cap.module-let", "模块级 let %q 不在本阶段子集内；模块体只接受 const", d.Name)
 	case frontend.DeclVar:
@@ -337,7 +339,7 @@ func (c *checker) node(n *frontend.Node) {
 			return
 		}
 		c.checkSameShape(&n.Children[0], decl.Type, "局部值 "+decl.Name)
-		c.typedOperand(&n.Children[0], decl.Type.Kind, "局部值 "+decl.Name)
+		c.typedValue(&n.Children[0], decl.Type, "局部值 "+decl.Name)
 	case "PostfixUnaryExpression":
 		c.report(n.Start, "cap.inc-dec", "自增自减 %q 不在本阶段子集内", n.Op)
 	case "ConditionalExpression":
@@ -397,6 +399,14 @@ func (c *checker) node(n *frontend.Node) {
 			}
 		case nir.IsEqualityOperator(n.Op):
 			left, right := &n.Children[0], &n.Children[1]
+			if _, ok := nullishKind(left); ok {
+				c.nullCompare(n, left, right)
+				return
+			}
+			if _, ok := nullishKind(right); ok {
+				c.nullCompare(n, left, right)
+				return
+			}
 			if left.Type == nil || right.Type == nil {
 				c.report(n.Start, "cap.bad-type", "严格相等 %q 需要两侧同类型", n.Op)
 				return
@@ -481,6 +491,9 @@ func (c *checker) node(n *frontend.Node) {
 		c.arrayLiteral(n)
 	case "ElementAccessExpression":
 		c.indexAccess(n)
+	case "NullKeyword", "UndefinedKeyword":
+		// 空值本身只有类型；它只能出现在联合赋值、返回和空值比较里。
+		return
 	case "StringLiteral", "NoSubstitutionTemplateLiteral":
 		return
 	case "TemplateExpression":
@@ -539,6 +552,132 @@ func (c *checker) typedOperand(n *frontend.Node, want frontend.Kind, what string
 	c.node(n)
 }
 
+// typedValue 检查一个值位置是否可以赋给目标类型。它比 typedOperand 多认识
+// 联合成员到联合的赋值；对象、数组和元组的形状仍由 checkSameShape 负责。
+func (c *checker) typedValue(n *frontend.Node, want *frontend.Type, what string) {
+	if n == nil || want == nil {
+		return
+	}
+	if n.Type != nil && n.Type.Kind == frontend.KindVoid {
+		c.report(n.Start, "cap.void-value", "%s需要一个值，但这里是 void 调用", what)
+		return
+	}
+	if n.Type == nil || !c.assignableTo(n.Type, want) {
+		c.report(n.Start, "cap.bad-type", "%s是 %s，需要 %s", what, describeType(n.Type), describeType(want))
+		return
+	}
+	c.node(n)
+}
+
+// assignableTo 判断当前子集是否允许把 got 放进 want。它只处理同一形状和
+// 「成员 -> 可空联合」两种情况；其他兼容规则留给 TypeScript。
+func (c *checker) assignableTo(got, want *frontend.Type) bool {
+	if got == nil || want == nil {
+		return false
+	}
+	g := c.facts.ResolveType(got)
+	w := c.facts.ResolveType(want)
+	if frontend.SameType(g, w) {
+		return true
+	}
+	payload, nullish, ok := nullableUnion(w)
+	if !ok {
+		return false
+	}
+	if g.Kind == nullish {
+		return true
+	}
+	return frontend.SameType(g, payload)
+}
+
+// nullableUnion 识别本阶段支持的两成员联合：一个可执行成员加 null 或
+// undefined。成员顺序不敏感。
+func nullableUnion(t *frontend.Type) (*frontend.Type, frontend.Kind, bool) {
+	if t == nil || t.Kind != frontend.KindUnion || len(t.Members) != 2 {
+		return nil, "", false
+	}
+	var payload *frontend.Type
+	var nullish frontend.Kind
+	for i := range t.Members {
+		member := &t.Members[i]
+		switch member.Kind {
+		case frontend.KindNull, frontend.KindUndefined:
+			if nullish != "" {
+				return nil, "", false
+			}
+			nullish = member.Kind
+		default:
+			if payload != nil {
+				return nil, "", false
+			}
+			payload = member
+		}
+	}
+	if payload == nil || nullish == "" {
+		return nil, "", false
+	}
+	return payload, nullish, true
+}
+
+// nullishKind 报告节点是不是 null / undefined 值。
+func nullishKind(n *frontend.Node) (frontend.Kind, bool) {
+	if n == nil {
+		return "", false
+	}
+	switch n.Kind {
+	case "NullKeyword":
+		return frontend.KindNull, true
+	case "UndefinedKeyword":
+		return frontend.KindUndefined, true
+	}
+	if n.Type != nil {
+		switch n.Type.Kind {
+		case frontend.KindNull, frontend.KindUndefined:
+			return n.Type.Kind, true
+		}
+	}
+	return "", false
+}
+
+// nullCompare 检查联合值与 null / undefined 的严格相等。两侧都是空值时由
+// TypeScript 自行判定；一侧是联合时，联合必须恰好包含对应的空值成员。
+func (c *checker) nullCompare(n, left, right *frontend.Node) {
+	leftKind, leftNull := nullishKind(left)
+	rightKind, rightNull := nullishKind(right)
+	if leftNull && rightNull {
+		c.node(left)
+		c.node(right)
+		return
+	}
+	unionNode := left
+	kind := rightKind
+	if rightNull {
+		unionNode, kind = left, rightKind
+	} else if leftNull {
+		unionNode, kind = right, leftKind
+	}
+	if unionNode == nil || unionNode.Type == nil {
+		c.report(n.Start, "cap.bad-type", "空值比较缺少联合值类型")
+		return
+	}
+	unionType := c.facts.ResolveType(unionNode.Type)
+	_, nullish, ok := nullableUnion(unionType)
+	if !ok {
+		if unionType.Kind == frontend.KindUnion {
+			c.report(n.Start, "cap.bad-type", "空值比较需要可空联合，实际为 %s", describeType(unionType))
+			return
+		}
+		// 已经缩窄成非联合类型时，比较结果是常量；TypeScript 已经允许。
+		c.node(unionNode)
+		return
+	}
+	if nullish != kind {
+		c.report(n.Start, "cap.bad-type", "联合类型 %s 不包含 %s", describeType(unionType), kind)
+		return
+	}
+	c.node(unionNode)
+}
+
 // describeType 把类型摘要转成诊断里的短描述。nil 不实现 String 的判空由这里
 // 兜住，避免格式化和诊断本身因为缺字段而崩溃。
 func describeType(t *frontend.Type) string {
@@ -579,7 +718,7 @@ func (c *checker) assignment(n *frontend.Node) {
 		c.report(target.Start, "cap.bad-type", "赋值目标 %q 缺少类型摘要", target.Name)
 		return
 	}
-	if rhs.Type == nil || !frontend.SameType(c.facts.ResolveType(decl.Type), c.facts.ResolveType(rhs.Type)) {
+	if rhs.Type == nil || !c.assignableTo(rhs.Type, decl.Type) {
 		c.report(rhs.Start, "cap.bad-type", "赋值目标 %q 是 %s，右值不是同一类型", target.Name, describeType(decl.Type))
 		return
 	}
@@ -588,6 +727,12 @@ func (c *checker) assignment(n *frontend.Node) {
 }
 
 func (c *checker) identifier(n *frontend.Node) {
+	if n.Name == "undefined" && n.Target == 0 && n.Type != nil && n.Type.Kind == frontend.KindUndefined {
+		return
+	}
+	if n.Name == "null" && n.Target == 0 && n.Type != nil && n.Type.Kind == frontend.KindNull {
+		return
+	}
 	decl, ok := c.facts.Declaration(n.Target)
 	// 跨模块值引用只允许在模块初始化阶段；函数捕获模块值仍由
 	// module.captured-variable 拒绝。跨模块函数调用不受这条限制，它会被
@@ -928,6 +1073,8 @@ func (c *checker) valueProblem(t *frontend.Type, depth int) string {
 		return c.arrayProblem(resolved, depth)
 	case frontend.KindTuple:
 		return c.tupleProblem(resolved, depth)
+	case frontend.KindUnion:
+		return c.unionProblem(resolved, depth)
 	case frontend.KindAny:
 		return "是 any 或 unknown 类型"
 	}
@@ -962,6 +1109,21 @@ func (c *checker) tupleProblem(t *frontend.Type, depth int) string {
 		if reason := c.valueProblem(&t.Elements[i], depth+1); reason != "" {
 			return fmt.Sprintf("第 %d 个元素%s", i+1, reason)
 		}
+	}
+	return ""
+}
+
+// unionProblem 检查首版联合：恰好一个可执行成员和一个 null/undefined。
+func (c *checker) unionProblem(t *frontend.Type, depth int) string {
+	payload, _, ok := nullableUnion(t)
+	if !ok {
+		return "不在本阶段子集内；只支持一个成员加 null 或 undefined 的两成员联合"
+	}
+	if payload.Kind == frontend.KindUnion {
+		return "的成员仍是联合类型，本阶段只支持一层联合"
+	}
+	if reason := c.valueProblem(payload, depth+1); reason != "" {
+		return "的可执行成员" + reason
 	}
 	return ""
 }

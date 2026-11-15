@@ -461,10 +461,7 @@ func (l *lowerer) initBody(body *frontend.Node, module string, sc *scope, prefix
 			if err != nil {
 				return nil, l.fail(stmt.Start, "lower.bad-type", "常量 %q：%v", decl.Name, err)
 			}
-			if err := l.typedValue(decl.Body, wantID, "常量 "+decl.Name+" "); err != nil {
-				return nil, err
-			}
-			value, pre, err := l.expr(decl.Body, sc, 1)
+			value, pre, err := l.valueAs(decl.Body, wantID, "常量 "+decl.Name+" ", sc, 1)
 			if err != nil {
 				return nil, err
 			}
@@ -537,10 +534,7 @@ func (l *lowerer) statement(stmt *frontend.Node, sc *scope) ([]nir.Stmt, error) 
 		if l.result == nir.TypeVoid {
 			return nil, l.fail(stmt.Start, "lower.void-value", "void 函数的 return 不能带返回值")
 		}
-		if err := l.typedValue(&stmt.Children[0], l.result, "返回值"); err != nil {
-			return nil, err
-		}
-		value, pre, err := l.expr(&stmt.Children[0], sc, 1)
+		value, pre, err := l.valueAs(&stmt.Children[0], l.result, "返回值", sc, 1)
 		if err != nil {
 			return nil, err
 		}
@@ -707,10 +701,7 @@ func (l *lowerer) assignment(n *frontend.Node, sc *scope) ([]nir.Stmt, error) {
 	if !sc.isMutable(decl.ID) {
 		return nil, l.fail(target.Start, "lower.assign-immutable", "赋值目标 %q 不是可变的 let", target.Name)
 	}
-	if err := l.typedValue(rhs, wantID, "赋值右侧"); err != nil {
-		return nil, err
-	}
-	value, pre, err := l.expr(rhs, sc, 1)
+	value, pre, err := l.valueAs(rhs, wantID, "赋值右侧", sc, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -744,10 +735,7 @@ func (l *lowerer) localDeclaration(stmt *frontend.Node, sc *scope) ([]nir.Stmt, 
 		return nil, l.fail(declNode.Start, "lower.missing-value", "局部值 %q 缺少初始值", decl.Name)
 	}
 	init := &declNode.Children[0]
-	if err := l.typedValue(init, wantID, "局部值 "+decl.Name); err != nil {
-		return nil, err
-	}
-	value, pre, err := l.expr(init, sc, 1)
+	value, pre, err := l.valueAs(init, wantID, "局部值 "+decl.Name, sc, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -815,6 +803,10 @@ func (l *lowerer) expr(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir
 			return nil, nil, l.fail(n.Start, "lower.bad-literal", "数字字面量缺少位模式")
 		}
 		return &nir.Expr{Op: nir.OpNumber, Bits: n.Bits, Pos: l.pos(n.Start)}, nil, nil
+	case "NullKeyword":
+		return &nir.Expr{Op: nir.OpNull, Pos: l.pos(n.Start)}, nil, nil
+	case "UndefinedKeyword":
+		return &nir.Expr{Op: nir.OpUndefined, Pos: l.pos(n.Start)}, nil, nil
 	case "StringLiteral", "NoSubstitutionTemplateLiteral":
 		if n.Type == nil || n.Type.Kind != frontend.KindString {
 			return nil, nil, l.fail(n.Start, "lower.bad-type", "字符串字面量缺少 string 类型摘要")
@@ -892,6 +884,18 @@ func (l *lowerer) expr(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir
 }
 
 func (l *lowerer) identifier(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir.Stmt, error) {
+	if n.Target == 0 && n.Type != nil {
+		switch n.Type.Kind {
+		case frontend.KindUndefined:
+			if n.Name == "undefined" {
+				return &nir.Expr{Op: nir.OpUndefined, Pos: l.pos(n.Start)}, nil, nil
+			}
+		case frontend.KindNull:
+			if n.Name == "null" {
+				return &nir.Expr{Op: nir.OpNull, Pos: l.pos(n.Start)}, nil, nil
+			}
+		}
+	}
 	decl, ok := l.facts.Declaration(n.Target)
 	if !ok || n.Target == 0 {
 		return nil, nil, l.fail(n.Start, "lower.unknown-name", "名称 %q 不是本文件里的声明", n.Name)
@@ -902,10 +906,10 @@ func (l *lowerer) identifier(n *frontend.Node, sc *scope, depth int) (*nir.Expr,
 		if !ok {
 			return nil, nil, l.fail(n.Start, "lower.unknown-name", "参数 %q 不属于当前函数", n.Name)
 		}
-		return &nir.Expr{Op: nir.OpParam, Name: name, Pos: l.pos(n.Start)}, nil, nil
+		return l.narrowedRead(n, decl, &nir.Expr{Op: nir.OpParam, Name: name, Pos: l.pos(n.Start)}, sc)
 	case frontend.DeclConst:
 		if name, ok := sc.lookup(decl.ID); ok {
-			return &nir.Expr{Op: nir.OpLocal, Name: name, Pos: l.pos(n.Start)}, nil, nil
+			return l.narrowedRead(n, decl, &nir.Expr{Op: nir.OpLocal, Name: name, Pos: l.pos(n.Start)}, sc)
 		}
 		if l.inInit {
 			// 初始化作用域共享所有模块的常量存储，跨模块读取按声明 ID 命中
@@ -919,10 +923,41 @@ func (l *lowerer) identifier(n *frontend.Node, sc *scope, depth int) (*nir.Expr,
 		if !ok {
 			return nil, nil, l.fail(n.Start, "lower.unknown-name", "局部值 %q 不在当前作用域内", n.Name)
 		}
-		return &nir.Expr{Op: nir.OpLocal, Name: name, Pos: l.pos(n.Start)}, nil, nil
+		return l.narrowedRead(n, decl, &nir.Expr{Op: nir.OpLocal, Name: name, Pos: l.pos(n.Start)}, sc)
 	default:
 		return nil, nil, l.fail(n.Start, "lower.function-value", "函数 %q 作为值使用", n.Name)
 	}
+}
+
+// narrowedRead 在读取联合类型存储时按当前表达式类型拆箱。前端已经完成控制
+// 流缩窄，`n.Type` 是缩窄后的类型；这里只把标签检查后的值取出来。
+func (l *lowerer) narrowedRead(n *frontend.Node, decl *frontend.Declaration, value *nir.Expr, sc *scope) (*nir.Expr, []nir.Stmt, error) {
+	if decl.Type == nil || n.Type == nil {
+		return value, nil, nil
+	}
+	storage, err := l.types.id(decl.Type)
+	if err != nil {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "读取 %q：%v", n.Name, err)
+	}
+	got, err := l.types.id(n.Type)
+	if err != nil {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "读取 %q：%v", n.Name, err)
+	}
+	if storage == got || got == nir.TypeNull || got == nir.TypeUndefined {
+		return value, nil, nil
+	}
+	if !l.types.isUnionMember(storage, got) {
+		return value, nil, nil
+	}
+	name := l.tempName()
+	l.addTempBinding(sc, name, got, l.pos(n.Start))
+	return localExpr(name, l.pos(n.Start)), []nir.Stmt{{
+		Op:    nir.OpUnwrap,
+		Name:  name,
+		Type:  got,
+		Value: value,
+		Pos:   l.pos(n.Start),
+	}}, nil
 }
 
 // objectLiteral 降低静态形状对象字面量。字段按源码顺序求值并各自物化成
@@ -1241,6 +1276,9 @@ func (l *lowerer) compare(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []
 			return nil, nil, err
 		}
 	} else {
+		if isNullishNode(leftNode) || isNullishNode(rightNode) {
+			return l.nullCompare(n, leftNode, rightNode, sc, depth)
+		}
 		if leftNode.Type == nil || rightNode.Type == nil {
 			return nil, nil, l.fail(n.Start, "lower.bad-type", "严格相等的操作数缺少类型摘要")
 		}
@@ -1264,6 +1302,87 @@ func (l *lowerer) compare(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []
 		return nil, nil, err
 	}
 	return &nir.Expr{Op: nir.OpCompare, Operator: n.Op, Left: left, Right: right, Pos: l.pos(n.Start)}, pre, nil
+}
+
+// isNullishNode 报告节点是不是 null / undefined 字面量。类型摘要也参与判断，
+// 手写事实可能缺 Kind 细节。
+func isNullishNode(n *frontend.Node) bool {
+	if n == nil {
+		return false
+	}
+	if n.Kind == "NullKeyword" || n.Kind == "UndefinedKeyword" {
+		return true
+	}
+	return n.Type != nil && (n.Type.Kind == frontend.KindNull || n.Type.Kind == frontend.KindUndefined)
+}
+
+// nullCompare 降低联合值与 null / undefined 的严格相等。联合值不拆箱，只读取
+// 标签；`!==` 在结果上取反。两侧同时是空值时折叠成常量。
+func (l *lowerer) nullCompare(n *frontend.Node, leftNode, rightNode *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir.Stmt, error) {
+	leftNull, rightNull := isNullishNode(leftNode), isNullishNode(rightNode)
+	if leftNull && rightNull {
+		value := nir.Bool(n.Op == "===")
+		value.Pos = l.pos(n.Start)
+		return &value, nil, nil
+	}
+	unionNode, nullNode := leftNode, rightNode
+	if rightNull {
+		unionNode, nullNode = leftNode, rightNode
+	} else if leftNull {
+		unionNode, nullNode = rightNode, leftNode
+	}
+	if unionNode.Type == nil {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "空值比较的联合值缺少类型摘要")
+	}
+	unionID, err := l.types.id(unionNode.Type)
+	if err != nil {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "空值比较的联合值：%v", err)
+	}
+	if l.types.unionDef(unionID) == nil {
+		// 前端已经把变量缩窄成非联合类型；比较结果固定，但仍然要求值。
+		_, pre, err := l.expr(unionNode, sc, depth+1)
+		if err != nil {
+			return nil, nil, err
+		}
+		result := nir.Bool(n.Op == "!==")
+		result.Pos = l.pos(n.Start)
+		return &result, pre, nil
+	}
+	member, ok := nullishID(nullNode)
+	if !ok || !l.types.isUnionMember(unionID, member) {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "联合类型 %s 不包含 %s", l.typeLabel(unionID), nullNode.Kind)
+	}
+	value, pre, err := l.expr(unionNode, sc, depth+1)
+	if err != nil {
+		return nil, nil, err
+	}
+	test := &nir.Expr{Op: nir.OpIs, Type: member, Operand: value, Pos: l.pos(n.Start)}
+	if n.Op == "!==" {
+		return &nir.Expr{Op: nir.OpNot, Operand: test, Pos: l.pos(n.Start)}, pre, nil
+	}
+	return test, pre, nil
+}
+
+// nullishID 返回空值节点对应的内置类型 ID。
+func nullishID(n *frontend.Node) (int, bool) {
+	if n == nil {
+		return 0, false
+	}
+	switch n.Kind {
+	case "NullKeyword":
+		return nir.TypeNull, true
+	case "UndefinedKeyword":
+		return nir.TypeUndefined, true
+	}
+	if n.Type != nil {
+		switch n.Type.Kind {
+		case frontend.KindNull:
+			return nir.TypeNull, true
+		case frontend.KindUndefined:
+			return nir.TypeUndefined, true
+		}
+	}
+	return 0, false
 }
 
 // unary 处理一元运算。`!` 直接降成 not；一元正负号只接受数字字面量，并在
@@ -1334,10 +1453,7 @@ func (l *lowerer) call(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir
 		if err != nil {
 			return nil, nil, l.fail(n.Start, "lower.bad-type", "函数 %q 的参数：%v", decl.Name, err)
 		}
-		if err := l.typedValue(&args[i], paramID, "调用的实参"); err != nil {
-			return nil, nil, err
-		}
-		arg, argPre, err := l.expr(&args[i], sc, depth+1)
+		arg, argPre, err := l.valueAs(&args[i], paramID, "调用的实参", sc, depth+1)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1529,6 +1645,57 @@ func (l *lowerer) valueTypeID(t *frontend.Type) (int, error) {
 	return id, nil
 }
 
+// valueAs 降低一个值位置，并在目标类型是联合时把成员值包成联合。它替代
+// 「先 typedValue 再 expr」的组合，因为联合成员到联合需要一个显式的 wrap
+// 语句，不能只做类型核对。
+func (l *lowerer) valueAs(n *frontend.Node, want int, what string, sc *scope, depth int) (*nir.Expr, []nir.Stmt, error) {
+	if n == nil || n.Type == nil {
+		return nil, nil, l.fail(nodeStart(n), "lower.bad-type", "%s 缺少类型摘要", what)
+	}
+	got, err := l.valueReadType(n)
+	if err != nil {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "%s：%v", what, err)
+	}
+	if got == want {
+		return l.expr(n, sc, depth)
+	}
+	if !l.types.isUnionMember(want, got) {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "%s是 %s，需要 %s", what, l.typeLabel(got), l.typeLabel(want))
+	}
+	value, pre, err := l.expr(n, sc, depth)
+	if err != nil {
+		return nil, nil, err
+	}
+	name := l.tempName()
+	l.addTempBinding(sc, name, want, l.pos(n.Start))
+	pre = append(pre, nir.Stmt{Op: nir.OpWrap, Name: name, Type: want, Value: value, Pos: l.pos(n.Start)})
+	return localExpr(name, l.pos(n.Start)), pre, nil
+}
+
+// valueReadType 返回一个值位置实际会产生的类型 ID。标识符可能被前端缩窄成
+// null / undefined，但它的存储仍是联合；读取时 narrowedRead 会返回联合局部值，
+// 因此这里按存储类型处理，避免把它再包一层联合。
+func (l *lowerer) valueReadType(n *frontend.Node) (int, error) {
+	if n == nil || n.Type == nil {
+		return 0, fmt.Errorf("缺少类型摘要")
+	}
+	if n.Kind == "Identifier" && n.Target != 0 {
+		if decl, ok := l.facts.Declaration(n.Target); ok && decl.Type != nil {
+			storage, err := l.types.id(decl.Type)
+			if err == nil && l.types.unionDef(storage) != nil {
+				got, err := l.types.id(n.Type)
+				if err != nil {
+					return 0, err
+				}
+				if got == nir.TypeNull || got == nir.TypeUndefined || got == storage {
+					return storage, nil
+				}
+			}
+		}
+	}
+	return l.types.id(n.Type)
+}
+
 // typedValue 核对表达式的类型 ID。结构类型已经在类型表里去重，因此这里直接
 // 比较 ID，不再按名字判断。
 func (l *lowerer) typedValue(n *frontend.Node, want int, what string) error {
@@ -1558,6 +1725,8 @@ func (l *lowerer) typeLabel(id int) string {
 				return fmt.Sprintf("array#%d", id)
 			case nir.TypeKindTuple:
 				return fmt.Sprintf("tuple#%d", id)
+			case nir.TypeKindUnion:
+				return fmt.Sprintf("union#%d", id)
 			}
 			if def.Name != "" {
 				return def.Name

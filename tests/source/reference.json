@@ -11,6 +11,7 @@
     "string": {"comparison": "shared"},
     "object": {"comparison": "shared"},
     "array": {"comparison": "shared"},
+    "nullable": {"comparison": "shared"},
     "let-string": {"comparison": "shared"},
     "order": {"comparison": "shared"},
     "nested": {"comparison": "shared"},

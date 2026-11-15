@@ -1,6 +1,6 @@
 # Stage 2 实施计划：基础值类型、内存模型与 Runtime ABI
 
-> 状态：S2.0 已确认；NIR schema 3、S2.1 字符串最小闭环、S2.2 对象第一个切片和 S2.3 数组/元组第一个切片已实现，剩余能力待后续
+> 状态：S2.0 已确认；NIR schema 3、S2.1 字符串最小闭环、S2.2 对象第一个切片、S2.3 数组/元组第一个切片和 S2.4 可空联合第一个切片已实现，剩余能力待后续
 > 前置：Stage 1 已提交（`6df8fb3`、`5f8a3ac`、`873946a`）
 > 路线图：[ROADMAP.md](../../ROADMAP.md) Stage 2
 > 关联：[兼容性矩阵](../language/compatibility.md)、[语义索引](../language/semantics/README.md)、[ADR 0003](../decisions/0003-stage-2-value-model.md)
