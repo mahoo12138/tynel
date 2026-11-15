@@ -44,7 +44,7 @@
 
 | 命令 | 作用 |
 | --- | --- |
-| `tynel dump facts\|nir\|graph\|modules\|init <file.ts> [--root <目录>]` | 输出前端事实、NIR、依赖图、符号表或初始化计划（JSON） |
+| `tynel dump abi\|facts\|nir\|graph\|modules\|init <file.ts> [--root <目录>]` | 输出 ABI 布局快照、前端事实、NIR、依赖图、符号表或初始化计划（JSON）；`abi` 不需要源文件 |
 | `tynel build-ir <NIR> -o <路径> [--target <平台>]` | 把一份 NIR 编成原生程序，不读 TypeScript |
 | `tynel toolchain` | 列出 SDK 目录与 `go`、`compile`、`link`、`asm` 的实际路径 |
 | `tynel toolchain which <名>` | 只解析一个工具，输出绝对路径 |

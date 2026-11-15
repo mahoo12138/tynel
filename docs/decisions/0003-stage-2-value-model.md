@@ -24,7 +24,7 @@ Stage 1 已完成前端事实结构化、模块解析器扩展点、NIR schema 2
 - **泛型**：单态化；NIR 不保留运行时类型参数；首个切片只从调用点实参推断并生成具体实例，约束由 TypeScript 检查，暂不进入布局；类型实例缓存键使用结构化类型身份。
 - **NIR schema 3**：内置类型 ID 1–7 为 `number`、`bool`、`void`、`string`、`null`、`undefined`、`never`；复合类型 ID 从 8 开始；`Function.result`、`Param.type`、`Stmt.type`、`DebugLocal.type` 改为类型 ID；允许通过 ID 表达递归对象类型，验证器和消费者使用遍历预算；类型去重忽略 `name`。
 
-NIR schema 3 的详细字段、迁移和校验见[设计记录](../design/nir-schema-3-types.md)。
+NIR schema 3 的详细字段、迁移和校验见[设计记录](../design/nir-schema-3-types.md)。值布局、GC 可见指针、退出状态和跨模块规则的当前检查点见 [Runtime ABI v1](../reference/runtime-abi.md)。
 
 ## 影响
 

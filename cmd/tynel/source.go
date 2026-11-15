@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Mahoo12138/tynel/compiler/abi"
 	"github.com/Mahoo12138/tynel/compiler/capability"
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
 	"github.com/Mahoo12138/tynel/compiler/frontend"
@@ -637,16 +638,32 @@ func (a *app) run(args []string) error {
 	return nil
 }
 
-// dump 输出前端事实或 NIR，只写 JSON。
+// dump 输出前端事实、NIR 或 ABI 布局快照，只写 JSON。
 func (a *app) dump(args []string) error {
+	if len(args) < 1 {
+		return diagnostic.New(diagnostic.Usage, "cli.missing-argument", "dump 需要内容名：dump abi 或 dump facts|nir|graph|modules|init <file.ts>")
+	}
+	what := args[0]
+	if what == "abi" {
+		if len(args) != 1 {
+			return diagnostic.New(diagnostic.Usage, "cli.unexpected-argument", "dump abi 不接受源文件或其他参数")
+		}
+		data, err := abi.Encode()
+		if err != nil {
+			return diagnostic.New(diagnostic.Internal, "cli.encode-failed", "无法序列化 ABI 布局快照").WithDetail(err.Error())
+		}
+		if _, err := a.stdout.Write(data); err != nil {
+			return diagnostic.New(diagnostic.Internal, "cli.write-failed", "写出 ABI 布局快照失败").WithDetail(err.Error())
+		}
+		return nil
+	}
 	if len(args) < 2 {
 		return diagnostic.New(diagnostic.Usage, "cli.missing-argument", "dump 需要内容名和一份源文件：dump facts|nir|graph|modules|init <file.ts>")
 	}
-	what := args[0]
 	switch what {
 	case "facts", "nir", "graph", "modules", "init":
 	default:
-		return diagnostic.New(diagnostic.Usage, "cli.unknown-topic", "dump 只接受 facts、nir、graph、modules 或 init，收到 %q", what)
+		return diagnostic.New(diagnostic.Usage, "cli.unknown-topic", "dump 只接受 abi、facts、nir、graph、modules 或 init，收到 %q", what)
 	}
 	parsed, err := parseSourceArgs("dump", "TypeScript 文件", args[1:], optionSet{root: true}, false)
 	if err != nil {

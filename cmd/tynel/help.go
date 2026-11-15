@@ -22,6 +22,7 @@ const usageText = `tynel 是 TypeScript 到原生二进制的编译器，首版�
                                 编译并运行本次产物
 
 开发与调试命令（不属于用户构建流程）：
+  dump abi                      输出 ABI 布局快照（JSON）
   dump facts|nir|graph|modules|init <file.ts> [--root <目录>]
                                 输出事实、NIR、依赖图、符号表或初始化计划（JSON）
   build-ir <NIR> -o <路径> [--target <平台>]
@@ -105,15 +106,17 @@ var topicHelp = map[string]string{
 
 退出状态：编译失败时 1–5；程序启动后原样传出它的状态。
 `,
-	"dump": `tynel dump facts|nir|graph|modules|init <file.ts> [--root <目录>]
+	"dump": `tynel dump abi
+       tynel dump facts|nir|graph|modules|init <file.ts> [--root <目录>]
 
-输出前端事实、降低后的 NIR、依赖图、模块符号表或初始化计划，只有 JSON，
-没有进度日志。源码有错时退出 1，超出原生子集时退出 3，两种情况都不输出
-JSON。dump 是调试接口，不生成机器码，也不接受 -o、--json 或 --target。
+输出 ABI 布局快照、前端事实、降低后的 NIR、依赖图、模块符号表或初始化计划，
+只有 JSON，没有进度日志。dump abi 不需要源文件；其他主题在源码有错时退出 1，
+超出原生子集时退出 3，两种情况都不输出 JSON。dump 是调试接口，不生成机器码，
+也不接受 -o、--json 或 --target。
 
 参数：
-  <内容名>       facts、nir、graph、modules 或 init，必须写在源文件前面。
-  <file.ts>      入口源文件；相对 --root 解释。
+  <内容名>       abi、facts、nir、graph、modules 或 init，必须写在源文件前面。
+  <file.ts>      入口源文件；相对 --root 解释。dump abi 不使用它。
   --root <目录>  项目根。省略时使用编译器检出根。
 
 退出状态：源码错误 1，用法错误 2，能力限制 3，环境缺失 4，内部故障 5。

@@ -1,0 +1,133 @@
+{
+  "schemaVersion": 1,
+  "name": "tynel-runtime-abi",
+  "version": 1,
+  "target": "darwin/arm64",
+  "valueLayouts": [
+    {
+      "kind": "number",
+      "representation": "IEEE 754 binary64",
+      "notes": "NIR 保存 64 位位模式；bridge 使用 Go float64。"
+    },
+    {
+      "kind": "boolean",
+      "representation": "8-bit boolean",
+      "notes": "不使用数字 0/1 冒充 boolean。"
+    },
+    {
+      "kind": "string",
+      "representation": "struct { data *uint16; length int32 }",
+      "fields": [
+        {
+          "name": "data",
+          "type": "*uint16"
+        },
+        {
+          "name": "length",
+          "type": "int32"
+        }
+      ],
+      "gcVisiblePointers": [
+        "data"
+      ],
+      "notes": "UTF-16 code unit 存储；空字符串 data 为 nil、length 为 0。"
+    },
+    {
+      "kind": "object",
+      "representation": "*struct，字段按属性名排序",
+      "gcVisiblePointers": [
+        "指针类型的字段"
+      ],
+      "notes": "对象引用是 GC 可见指针，=== 比较分配地址。"
+    },
+    {
+      "kind": "array",
+      "representation": "Go 切片 []T（预览后端表示）",
+      "gcVisiblePointers": [
+        "底层数组 data"
+      ],
+      "notes": "切片头对 GC 可见；长期目标是 TynelSlice，不把 Go 切片头当公开 ABI。"
+    },
+    {
+      "kind": "tuple",
+      "representation": "*struct，字段按元组位置排列",
+      "gcVisiblePointers": [
+        "指针类型的字段"
+      ],
+      "notes": "元组值同样通过 GC 可见指针引用。"
+    },
+    {
+      "kind": "union",
+      "representation": "*struct { tag int32; payload 字段 }",
+      "fields": [
+        {
+          "name": "tag",
+          "type": "int32"
+        },
+        {
+          "name": "payload",
+          "type": "按成员类型分配"
+        }
+      ],
+      "gcVisiblePointers": [
+        "payload 中的指针字段"
+      ],
+      "notes": "null / undefined 只占标签；拆箱前检查标签，不一致退出 6。"
+    },
+    {
+      "kind": "function",
+      "representation": "Go func 值（code + environment）",
+      "gcVisiblePointers": [
+        "闭包 environment"
+      ],
+      "notes": "当前切片无捕获，environment 为 nil；Go func 只是后端表示。"
+    },
+    {
+      "kind": "void",
+      "representation": "没有值",
+      "notes": "只用于函数结果和调用语句。"
+    },
+    {
+      "kind": "null / undefined",
+      "representation": "只作为联合标签，不单独分配",
+      "notes": "单独作为局部值或输出参数会被类型规则拒绝。"
+    }
+  ],
+  "gc": {
+    "collector": "随产物分发的 Go GC（预览基座）",
+    "pointerVisibility": "对象、元组、联合 payload、数组元素和字符串 data 中的指针必须是 GC 可见指针。",
+    "hiddenPointers": "不允许用 uintptr 或无类型整数保存需要保活的对象地址。",
+    "allocation": "对象、元组、联合和字符串存储由 Go 堆分配；bridge 不手写分配器。"
+  },
+  "errorExits": [
+    {
+      "code": 0,
+      "meaning": "成功"
+    },
+    {
+      "code": 1,
+      "meaning": "源码错误"
+    },
+    {
+      "code": 2,
+      "meaning": "命令行用法错误"
+    },
+    {
+      "code": 3,
+      "meaning": "能力限制"
+    },
+    {
+      "code": 4,
+      "meaning": "环境缺失"
+    },
+    {
+      "code": 5,
+      "meaning": "内部故障"
+    },
+    {
+      "code": 6,
+      "meaning": "运行时数据错误（索引越界、联合标签不符）"
+    }
+  ],
+  "crossModule": "所有模块合并成一份 NIR 和一张类型表；跨模块值使用同一布局，不按模块切换 ABI。"
+}

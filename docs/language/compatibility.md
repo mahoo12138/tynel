@@ -191,7 +191,8 @@ Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semanti
 | 语言级异常 | `tsgo` | `未定义` | `未定义` | `deferred` | 需要决定异常、`Result` 或两者并存 |
 | Promise 与异步调度 | `tsgo` | `未定义` | `未定义` | `deferred` | 需要事件循环或调度器契约 |
 | 用户态并发 | `—` | `未定义` | `未定义` | `deferred` | Go 调度器只是实现基座，公共语义待 RFC |
-| GC 与内存管理 | `—` | `未定义` | `已验证`（实现层） | `deferred` | Preview 0 借用 Go Runtime 作为基座；长期对象布局、GC 契约与 ABI 尚未定义 |
+| GC 与内存管理 | `—` | `未定义` | `已验证` | `supported` | ABI v1 预览借用 Go GC；对象/字符串/数组指针保持 GC 可见，隐藏指针被禁止。长期独立 GC 与生产级 ABI 仍是 `deferred`。见[Runtime ABI v1](../reference/runtime-abi.md) |
+| Runtime ABI | `—` | `未定义` | `已验证` | `supported` | `tynel dump abi` 与构建记录 `runtimeABI` 固定 `tynel-runtime-abi/1`；只验证 `darwin/arm64` |
 | FFI 与 Native ABI | `—` | `未定义` | `未实现` | `planned` | 阶段 4；使用稳定 native ID，不暴露 Go 符号 |
 
 ## 9. 工具与平台
@@ -199,7 +200,7 @@ Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semanti
 | 能力 | 状态 | 说明 |
 | --- | --- | --- |
 | `version` / `check` / `build` / `run` | `supported` | 命令契约见[命令行参考](../reference/cli.md) |
-| `dump facts` / `nir` / `graph` / `modules` / `init` | `supported` | 开发调试接口 |
+| `dump abi` / `facts` / `nir` / `graph` / `modules` / `init` | `supported` | 开发调试接口；`dump abi` 输出 ABI v1 布局快照 |
 | `build-ir` 与 NIR 回放 | `supported` | 见[NIR 到机器码](../reference/bridge.md) |
 | 构建身份与构建事务 | `supported` | 见[构建身份](../reference/build-identity.md)、[构建事务](../reference/build-transactions.md) |
 | `darwin/arm64` | `supported` | 唯一已验证目标 |

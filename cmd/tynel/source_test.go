@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Mahoo12138/tynel/compiler/abi"
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
 	"github.com/Mahoo12138/tynel/compiler/frontend"
 	"github.com/Mahoo12138/tynel/compiler/nir"
@@ -334,6 +335,24 @@ func TestDumpPrintsJSONOnly(t *testing.T) {
 	}
 	if errOut.Len() != 0 {
 		t.Errorf("dump 不应写 stderr：%q", errOut.String())
+	}
+}
+
+func TestDumpABISnapshot(t *testing.T) {
+	var out, errOut bytes.Buffer
+	a := &app{stdout: &out, stderr: &errOut, runner: &fileRunner{}}
+	if err := a.dump([]string{"abi"}); err != nil {
+		t.Fatalf("dump abi 失败：%v", err)
+	}
+	var snapshot abi.Snapshot
+	if err := json.Unmarshal(out.Bytes(), &snapshot); err != nil {
+		t.Fatalf("stdout 不是合法 JSON：%v\n%s", err, out.String())
+	}
+	if snapshot.Version != abi.Version || snapshot.Name != abi.Name {
+		t.Fatalf("ABI 快照标识不符：%+v", snapshot)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("dump abi 不应写 stderr：%q", errOut.String())
 	}
 }
 

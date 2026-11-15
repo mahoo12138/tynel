@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Mahoo12138/tynel/compiler/abi"
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
 	"github.com/Mahoo12138/tynel/compiler/nir"
 	"github.com/Mahoo12138/tynel/internal/release"
@@ -77,7 +78,8 @@ type Record struct {
 		Version string `json:"version"`
 		Target  string `json:"target"`
 	} `json:"toolchain"`
-	Tools struct {
+	RuntimeABI string `json:"runtimeABI"`
+	Tools      struct {
 		Go             string `json:"go"`
 		Compiler       string `json:"compiler"`
 		CompilerSHA256 string `json:"compilerSHA256"`
@@ -383,6 +385,7 @@ func Run(opts Options, runner toolchain.Runner) (*Record, error) {
 	record.Input.Bytes = len(data)
 	record.Toolchain.Version = report.LockedVersion
 	record.Toolchain.Target = report.Target
+	record.RuntimeABI = abi.VersionString()
 	record.Tools.Go = goTool
 	record.Tools.Compiler = compiler
 	record.Tools.CompilerSHA256 = compilerSHA

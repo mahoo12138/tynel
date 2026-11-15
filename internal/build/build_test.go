@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Mahoo12138/tynel/compiler/abi"
 	"github.com/Mahoo12138/tynel/compiler/diagnostic"
 	"github.com/Mahoo12138/tynel/compiler/nir"
 	"github.com/Mahoo12138/tynel/internal/toolchain"
@@ -158,6 +159,9 @@ func TestRunPublishesArtifactAndRecord(t *testing.T) {
 	}
 	if record.Input.SHA256 != sha256Hex(currentNIR(t, exampleNIR(t))) {
 		t.Errorf("记录里的输入哈希不符")
+	}
+	if record.RuntimeABI != abi.VersionString() {
+		t.Errorf("记录里的 Runtime ABI 是 %q，期望 %q", record.RuntimeABI, abi.VersionString())
 	}
 	if _, err := os.Stat(SnapshotDirPath(root, record)); err != nil {
 		t.Errorf("快照文件不存在：%v", err)

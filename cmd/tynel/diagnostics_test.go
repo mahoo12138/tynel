@@ -348,6 +348,33 @@ func TestProjectImportsStillResolve(t *testing.T) {
 	}
 }
 
+// TestCrossModuleObjectLayout 确认导出的静态对象跨模块后仍使用同一套布局：
+// 依赖模块初始化对象，入口模块按字段读取，不复制也不按模块切换 ABI。
+func TestCrossModuleObjectLayout(t *testing.T) {
+	root := realRepoRoot(t)
+	dir, err := os.MkdirTemp(filepath.Join(root, ".work"), "cross-object-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	writeSource(t, filepath.Join(dir, "lib.ts"),
+		"export type Point = { x: number; y: number };\n"+
+			"export const point: Point = { x: 20, y: 22 };\n")
+	writeSource(t, filepath.Join(dir, "main.ts"),
+		"import { point } from \"./lib.ts\";\n"+
+			"console.log(point.x + point.y);\n")
+
+	output := filepath.Join(dir, "app")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"build", "main.ts", "--root", dir, "-o", output}, &stdout, &stderr)
+	if code != diagnostic.ExitOK {
+		t.Fatalf("构建退出状态为 %d，期望 0；stderr=%s", code, stderr.String())
+	}
+	if got := runBuilt(t, output); got != "42\n" {
+		t.Fatalf("产物输出 %q，期望 %q", got, "42\n")
+	}
+}
+
 // TestDefaultParameterIsCapabilityError 确认默认参数不管出现在入口还是依赖
 // 模块，都按能力限制拒绝。少一个实参的 add(5) 是合法 TypeScript，不能落到
 // facts.arg-count 或 lower.bad-arity 这种内部故障上。

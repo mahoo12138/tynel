@@ -613,6 +613,7 @@ func (c *checker) assignableTo(got, want *frontend.Type) bool {
 	if !ok {
 		return false
 	}
+	payload = c.facts.ResolveType(payload)
 	if g.Kind == nullish {
 		return true
 	}
@@ -1042,6 +1043,12 @@ func (c *checker) checkSameShape(value *frontend.Node, want *frontend.Type, what
 	}
 	gotType := c.facts.ResolveType(value.Type)
 	wantType := c.facts.ResolveType(want)
+	if payload, _, ok := nullableUnion(wantType); ok {
+		// 可空联合的可执行成员按同一形状检查；装箱由降低器完成。
+		if frontend.SameType(gotType, c.facts.ResolveType(payload)) {
+			return
+		}
+	}
 	if expectComposite(gotType.Kind) == "" && expectComposite(wantType.Kind) == "" {
 		return
 	}

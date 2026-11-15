@@ -275,6 +275,35 @@ func TestPrograms(t *testing.T) {
 	}
 }
 
+// TestGCVisiblePointers 用激进的 GC 设置反复分配对象、数组、元组、联合和
+// 字符串，再读取其中的指针字段。它验证 bridge 的布局没有把需要保活的对象
+// 藏进 uintptr；隐藏指针会在回收后表现为错误的数值或崩溃。
+func TestGCVisiblePointers(t *testing.T) {
+	root := repoRoot(t)
+	h := ensureHost(t, root)
+	spec := caseSpec{Name: "gc-visible", File: "gc-visible.ts", Kind: "program"}
+	record, _ := buildCase(t, root, h, spec, t.TempDir())
+
+	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, record.Output.Path)
+	cmd.Env = []string{"GOGC=1", "GOMAXPROCS=1"}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("GC 压力程序超过 %s 未结束", runTimeout)
+	}
+	if err != nil {
+		t.Fatalf("GC 压力程序运行失败：%v\n%s", err, stderr.String())
+	}
+	const want = "503500\n"
+	if stdout.String() != want {
+		t.Fatalf("GC 压力程序输出为 %q，参考为 %q", stdout.String(), want)
+	}
+}
+
 // TestErrors 检查源码错误、能力限制与环境缺失的退出状态和错误码。
 func TestErrors(t *testing.T) {
 	root := repoRoot(t)

@@ -173,6 +173,8 @@ deadlocals / escape / walk / SSA / obj / link
 
 函数值在 bridge 里直接用 Go func 值表示：`func` 返回目标 `ir.Func` 的 `Nname`，`invoke` 以它为被调用者生成 `OCALL`。无捕获函数值相当于「代码入口加空环境」；闭包环境留到后续切片。Go 的 func 类型只是后端表示，不出现在 NIR 或公共 API 里。
 
+完整的值布局、GC 可见指针和退出状态见 [Runtime ABI v1](runtime-abi.md)。`tynel dump abi` 输出机器可读快照，构建记录的 `runtimeABI` 写入同一版本标识。
+
 ## 空函数体是一个坑
 
 `gc.compile` 里有 `if len(fn.Body) == 0`：编译器把没有函数体的函数当成外部声明，只生成符号、不生成代码。NIR 的空 `void` 入口如果原样传进去，链接会报 `function main is undeclared in the main package`。
