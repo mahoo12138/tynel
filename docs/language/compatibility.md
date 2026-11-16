@@ -39,7 +39,7 @@
 
 一个能力可以同时「当前 `rejected`」和「长期 `planned`」。`planned` 和 `deferred` 行如果当前不在子集内，编译器仍会拒绝；这两个状态描述长期方向，不表示今天可以编译。`rejected` 行表示当前有明确拒绝路径，长期方向可能是 `planned`、`deferred` 或 `not-targeted`。本表不使用「部分支持」；必须说明卡在哪一层、哪些写法不支持。
 
-Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semantics/objects-arrays.md)、[联合与空值 RFC](semantics/unions-null.md)、[函数 RFC](semantics/functions.md)、[泛型 RFC](semantics/generics.md)以及 [NIR schema 3 类型表设计](../design/nir-schema-3-types.md)已经确认。字符串最小闭环（字面量、拼接、`length`、严格相等和输出）已实现并有原生回归；索引、`slice`、模板插值和字符串方法仍未实现。对象第一个切片（必填属性、字面量、字段读取和引用身份）也已实现，可选属性、字段写入和结构性放宽仍拒绝。数组与元组第一个切片（字面量、索引、`length`、常量元组索引）已实现，数组方法、展开、赋值和身份比较仍拒绝。可空联合第一个切片（`T | null` / `T | undefined`、空值比较和前端缩窄）已实现；多成员联合、`??` / `?.` 和可选属性仍拒绝。函数值第一个切片（无捕获箭头、顶层函数值、函数类型和间接调用）已实现；闭包捕获、块体箭头、`void` 箭头、函数表达式和函数值身份比较仍拒绝。泛型函数第一个切片（调用点推断与单态化）已实现；泛型接口、泛型别名、默认类型参数和约束驱动操作仍拒绝。其他 RFC 不改变本表当前的 `rejected` 状态；只有实现并通过运行时验收后，状态才会变化。
+Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semantics/objects-arrays.md)、[联合与空值 RFC](semantics/unions-null.md)、[函数 RFC](semantics/functions.md)、[泛型 RFC](semantics/generics.md)以及 [NIR schema 3 类型表设计](../design/nir-schema-3-types.md)已经确认。字符串最小闭环（字面量、拼接、`length`、严格相等和输出）已实现并有原生回归；索引、`slice`、模板插值和字符串方法仍未实现。对象第一个切片（必填属性、字面量、字段读取和引用身份）也已实现，可选属性、字段写入和结构性放宽仍拒绝。数组与元组第一个切片（字面量、索引、`length`、常量元组索引）已实现，数组方法、展开、赋值和身份比较仍拒绝。可空联合第一个切片（`T | null` / `T | undefined`、空值比较和前端缩窄）已实现；S3.1 补上 `??`，支持可空联合与非空具体类型的左侧、右侧惰性和单次求值；多成员联合、`?.` 和可选属性仍拒绝。函数值第一个切片（无捕获箭头、顶层函数值、函数类型和间接调用）已实现；闭包捕获、块体箭头、`void` 箭头、函数表达式和函数值身份比较仍拒绝。泛型函数第一个切片（调用点推断与单态化）已实现；泛型接口、泛型别名、默认类型参数和约束驱动操作仍拒绝。其他 RFC 不改变本表当前的 `rejected` 状态；只有实现并通过运行时验收后，状态才会变化。
 
 ## 2. 基线
 
@@ -68,7 +68,7 @@ Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semanti
 | `interface`（对象形状） | `tsgo` | `Tynel` | `已验证` | `supported` | 接口展开成静态对象形状；非对象接口仍按 `cap.interface` 拒绝 |
 | 数组与元组：字面量、索引、`length`、常量索引 | `tsgo` | `Tynel` | `已验证` | `supported` | 同质数组与定长元组；索引越界按数据错误退出 6，元组越界在编译期拒绝。见[对象与数组 RFC](semantics/objects-arrays.md) |
 | 数组：方法、展开、赋值、扩容、身份比较 | `tsgo` | `Tynel` | `拒绝` | `rejected` | `push` / `slice` 留到标准库阶段；`[...xs]`、`xs === xs` 暂时拒绝 |
-| 可空联合：`T \| null`、`T \| undefined` | `tsgo` | `Tynel` | `已验证` | `supported` | 空值比较与前端缩窄；多成员联合、`??` / `?.` 仍未实现 |
+| 可空联合：`T \| null`、`T \| undefined` | `tsgo` | `Tynel` | `已验证` | `supported` | 空值比较、前端缩窄与 `??`；多成员联合和 `?.` 仍未实现 |
 | 多成员联合与判别联合 | `tsgo` | `Tynel` | `拒绝` | `rejected` | 需要比单成员可空联合更广的标签与缩窄规则；`cap.bad-type` |
 | 字面量类型 | `tsgo` | `未定义` | `未实现` | `planned` | 阶段 3；需要与类型收窄一起设计 |
 | `any` / `unknown` | `tsgo` | `拒绝` | `拒绝` | `rejected` | `cap.any`；不作为原生表示目标，是否提供受控动态类型需另行 RFC |
@@ -119,7 +119,8 @@ Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semanti
 | `===` `!==` | `tsgo` | `Tynel` | `已验证` | `supported` | 两侧同为 `number`、`boolean`、`string` 或同一对象形状；对象比较引用身份；可空联合可与 `null` / `undefined` 比较；数组和元组暂不支持 |
 | `==` `!=` | `tsgo` | `拒绝` | `拒绝` | `rejected` | `cap.bad-operator`；有意不做隐式转换 |
 | `&&` / `\|\|` | `tsgo` | `Tynel` | `已验证` | `supported` | 两侧 `boolean`，短路求值。见[短路求值](../reference/short-circuit.md) |
-| `??` 与可选链 `?.` | `tsgo` | `Tynel` | `拒绝` | `rejected` | 依赖多成员联合与可选属性，留到后续切片 |
+| `??`（空值合并） | `tsgo` | `Tynel` | `已验证` | `supported` | 左侧为 `T \| null` / `T \| undefined` 或非空具体类型，右侧可赋给 `T`；左侧只求值一次，右侧惰性。多成员联合左侧仍拒绝 |
+| 可选链 `?.` | `tsgo` | `Tynel` | `拒绝` | `rejected` | 依赖可选属性和空值读取，留到后续切片 |
 | 三元式 `? :` | `tsgo` | `Tynel` | `已验证` | `supported` | 条件 `boolean`，两臂同为标量、同一对象形状、同一数组或同一元组；联合两臂仍未支持。见[三元式](../reference/ternary.md) |
 | 字符串字面量与无插值模板 | `tsgo` | `Tynel` | `已验证` | `supported` | UTF-16 code unit 存储；插值、索引、切片和方法仍拒绝 |
 | 对象字面量（静态形状） | `tsgo` | `Tynel` | `已验证` | `supported` | 必填属性、字段读取与引用身份；可选属性、字段写入和结构性放宽拒绝 |

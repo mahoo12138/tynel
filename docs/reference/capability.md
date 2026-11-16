@@ -62,7 +62,7 @@ function neverCalled(n: number): number {
 | 字符串 | 字面量、无插值模板、`+` 拼接、`===` / `!==`、`s.length` | 索引、`slice`、模板插值和字符串方法仍拒绝；`s.length` 的结果是 `number`，按 UTF-16 code unit 计数 |
 | 对象 | 静态形状的对象字面量、字段读取、对象引用相等、对象参数/返回值/常量/局部值 | 只支持必填属性；可选属性、字段写入、对象输出和结构性放宽仍拒绝；对象 `===` 比较引用身份 |
 | 数组与元组 | 同质数组字面量、索引读取、`length`、数组参数/返回值/局部值；元组字面量与常量索引 | 数组越界是运行时数据错误；数组方法、展开、赋值、扩容和身份比较仍拒绝；元组索引必须是编译期整数，空元组拒绝 |
-| 可空联合 | `T \| null`、`T \| undefined` 的赋值、参数、返回值和局部值；与空值的 `===` / `!==`；前端缩窄后的成员读取 | 多成员联合、判别联合、`??`、`?.` 和可选属性仍拒绝；联合本身不能输出 |
+| 可空联合 | `T \| null`、`T \| undefined` 的赋值、参数、返回值和局部值；与空值的 `===` / `!==`；前端缩窄后的成员读取；`??` 空值合并 | 多成员联合、判别联合、`?.` 和可选属性仍拒绝；联合本身不能输出 |
 
 `boolean` 现在是完整的标量：可以作为常量、参数、返回值和输出。`!` 只对 `boolean` 取反；TypeScript 允许 `!1`，但本阶段不把数字的真假转换带进原生后端，`!1` 按 `cap.bad-type` 拒绝。
 
@@ -74,7 +74,9 @@ function neverCalled(n: number): number {
 
 数组只支持同质元素和静态形状。数组字面量按源码顺序求值，`length` 返回当前元素个数；索引先求值数组再求值下标，运行时检查整数性和边界，越界按数据错误退出 6，而不是返回 `undefined`。`console.log(xs)`、`xs === xs`、`xs.push(3)`、`[...xs]` 和把数组当可变存储写回都不在子集内。元组索引必须是编译期非负整数；变量下标、越界和空元组都在能力检查阶段拒绝。
 
-可空联合只支持一个可执行成员加 `null` 或 `undefined`。`const x: number | null = 5` 和 `x = null` 都可以；`if (x !== null) { console.log(x + 1); }` 使用前端缩窄后的 `number`。`number | string`、`number | null | undefined` 和判别联合都会按 `cap.bad-type` 拒绝；`x ?? 0`、`x?.length` 仍不在子集内；`console.log(x)` 在未缩窄时按 `cap.bad-console-call` 拒绝。
+可空联合只支持一个可执行成员加 `null` 或 `undefined`。`const x: number | null = 5` 和 `x = null` 都可以；`if (x !== null) { console.log(x + 1); }` 使用前端缩窄后的 `number`。`number | string`、`number | null | undefined` 和判别联合都会按 `cap.bad-type` 拒绝；`console.log(x)` 在未缩窄时按 `cap.bad-console-call` 拒绝。
+
+`??` 要求左侧是可空联合或非空具体类型，右侧能赋给可执行成员，结果类型就是该成员。`const b: number | null = null; const n = b ?? 7` 合法：引用处的 `b` 已被前端缩窄成 `null`，但能力检查和降低都按存储的联合类型生成一次标签检查。左侧是多成员联合存储（如 `number | string | null`）按 `cap.bad-type` 拒绝；右侧类型放不进可执行成员（`value ?? 0` 中的 `value: string | null`）同样拒绝。`x?.length` 仍不在子集内。
 
 函数值第一个切片只支持无捕获的函数：顶层函数可以直接作为值，箭头函数必须是表达式体且只引用自己的参数和顶层函数。`const inc = (x: number): number => x + 1` 可以；`const n = 1; const inc = (x: number) => x + n` 按 `cap.closure` 拒绝；`() => { return 1; }` 按 `cap.unsupported-syntax` 拒绝，`(): void => ...` 也尚未支持。函数值可以作为参数、返回值、局部值和三元式结果，调用时按函数类型的参数表核对实参；`console.log(f)` 按 `cap.bad-console-call` 拒绝，`f === g` 按 `cap.bad-type` 拒绝。
 

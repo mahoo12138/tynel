@@ -94,10 +94,12 @@ S2.2 第一个对象切片已实现：接口和对象别名展开成静态形状
 
 S2.3 数组与元组第一个切片已实现：同质数组字面量、索引、`length`、嵌套数组、对象数组、数组参数/返回值/局部值和对象字段都能生成原生程序；元组支持字面量、常量索引、参数和返回值。数组索引先求值数组再求值下标，运行时检查整数性和边界，越界按数据错误退出 6，而不是 Go panic 或 JavaScript `undefined`；元组越界在编译期拒绝。数组方法、展开、赋值、扩容和身份比较仍拒绝。规则见[对象与数组 RFC](docs/language/semantics/objects-arrays.md)、[NIR 格式](docs/reference/nir.md)与[bridge 说明](docs/reference/bridge.md)，验收见[S2.3 验收记录](docs/validation/s2-03-arrays.md)。
 
-S2.4 可空联合第一个切片已实现：`T | null` 和 `T | undefined` 可以作为局部值、参数和返回值；`null` / `undefined` 的赋值、严格相等比较和前端控制流缩窄都能生成原生程序。bridge 用 `tag int32` 加成员 payload 表示联合，`unwrap` 前检查标签，标签不一致按数据错误退出 6。多成员联合、判别联合、`??` / `?.` 和可选属性仍拒绝。规则见[联合与空值 RFC](docs/language/semantics/unions-null.md)、[NIR 格式](docs/reference/nir.md)与[bridge 说明](docs/reference/bridge.md)，验收见[S2.4 验收记录](docs/validation/s2-04-nullable-unions.md)。
+S2.4 可空联合第一个切片已实现：`T | null` 和 `T | undefined` 可以作为局部值、参数和返回值；`null` / `undefined` 的赋值、严格相等比较和前端控制流缩窄都能生成原生程序。bridge 用 `tag int32` 加成员 payload 表示联合，`unwrap` 前检查标签，标签不一致按数据错误退出 6。多成员联合、判别联合、`?.` 和可选属性仍拒绝；`??` 已在 S3.1 落地。规则见[联合与空值 RFC](docs/language/semantics/unions-null.md)、[NIR 格式](docs/reference/nir.md)与[bridge 说明](docs/reference/bridge.md)，验收见[S2.4 验收记录](docs/validation/s2-04-nullable-unions.md)。
 
 S2.5 函数值第一个切片已实现：顶层函数可以作为值传递和返回，无捕获的表达式体箭头函数在降低时提升成合成具名函数；函数类型可以出现在参数、返回值、局部值和三元式结果里，通过函数值调用按函数类型核对实参。函数值不能输出，也还没有身份比较；闭包捕获、块体箭头和 `void` 箭头仍拒绝。规则见[函数与闭包 RFC](docs/language/semantics/functions.md)、[NIR 格式](docs/reference/nir.md)与[bridge 说明](docs/reference/bridge.md)，验收见[S2.5 验收记录](docs/validation/s2-05-function-values.md)。
 
 S2.6 泛型函数第一个切片已实现：`function identity<T>(value: T): T` 这样的泛型函数在调用点从实参推断类型实参，按具体类型单态化成 `identity$t1` 这样的独立函数；同一组类型实参复用同一个实例，NIR 的类型表和函数签名里不保留类型参数。类型参数可以出现在参数、数组、元组、对象属性和函数类型里，递归泛型调用也能收敛。泛型接口、泛型类型别名、默认类型参数和约束驱动操作仍拒绝。规则见[泛型 RFC](docs/language/semantics/generics.md)、[NIR 格式](docs/reference/nir.md)与[降低器](docs/reference/lowering.md)，验收见[S2.6 验收记录](docs/validation/s2-06-generics.md)。
 
 S2.7 Runtime ABI v1 布局快照已实现：`tynel dump abi` 输出稳定的 JSON 快照，固定 `number`、`boolean`、`string`、对象、数组、元组、可空联合和函数值的物理表示与 GC 可见指针；构建记录写入 `runtimeABI` 版本。GC 压力回归在 `GOGC=1` 下反复分配对象、数组、元组、联合和字符串，跨模块对象布局也有原生产物验证。当前只验证 `darwin/arm64`，独立 GC、闭包环境和生产级 ABI 仍是后续工作。规则见[Runtime ABI v1](docs/reference/runtime-abi.md)、[bridge 说明](docs/reference/bridge.md)与[构建身份](docs/reference/build-identity.md)，验收见[S2.7 验收记录](docs/validation/s2-07-runtime-abi.md)。
+
+S3.1 空值合并 `??` 已实现：左侧是可空联合 `T | null` / `T | undefined` 或非空具体类型，右侧必须能赋给可执行成员，结果类型是 `T`。左侧只求值一次并物化成临时值，`is` 检查空值标签，`select` 的非空分支 `unwrap`、空值分支才求值右侧；NIR 不新增操作。`const b: number | null = null; b ?? 7` 在缩窄后仍按存储联合生成一次标签检查。多成员联合左侧和 `?.` 仍拒绝。规则见[联合与空值 RFC](docs/language/semantics/unions-null.md)与[降低器](docs/reference/lowering.md)，验收见[S3.1 验收记录](docs/validation/s3-01-nullish-coalescing.md)。

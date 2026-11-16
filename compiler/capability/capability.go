@@ -406,6 +406,10 @@ func (c *checker) node(n *frontend.Node) {
 			c.report(n.Start, "cap.unsupported-syntax", "二元运算有 %d 个操作数", len(n.Children))
 			return
 		}
+		if n.Op == "??" {
+			c.nullishCoalesce(n)
+			return
+		}
 		switch {
 		case n.Op == "+" && (isStringOperand(&n.Children[0]) || isStringOperand(&n.Children[1])):
 			// string + string 是拼接；其余组合（"a" + 1）在 TypeScript 里合法
@@ -649,6 +653,19 @@ func nullableUnion(t *frontend.Type) (*frontend.Type, frontend.Kind, bool) {
 	return payload, nullish, true
 }
 
+// storageType 返回标识符声明的存储类型。引用位置的类型可能已被前端缩窄；
+// 需要判断运行时标签的检查必须看存储类型。
+func (c *checker) storageType(n *frontend.Node) *frontend.Type {
+	if n == nil || n.Kind != "Identifier" || n.Target == 0 {
+		return nil
+	}
+	decl, ok := c.facts.Declaration(n.Target)
+	if !ok || decl.Type == nil {
+		return nil
+	}
+	return c.facts.ResolveType(decl.Type)
+}
+
 // nullishKind 报告节点是不是 null / undefined 值。
 func nullishKind(n *frontend.Node) (frontend.Kind, bool) {
 	if n == nil {
@@ -706,6 +723,47 @@ func (c *checker) nullCompare(n, left, right *frontend.Node) {
 		return
 	}
 	c.node(unionNode)
+}
+
+// nullishCoalesce 检查 value ?? fallback。左侧必须是可空联合，或已经缩窄成
+// 非空具体类型；右侧必须能放进左侧的可执行成员。结果类型就是该成员，因此
+// 右侧不能是 void、函数值或多成员联合这类当前无法存储的值。
+func (c *checker) nullishCoalesce(n *frontend.Node) {
+	left, right := &n.Children[0], &n.Children[1]
+	if left.Type == nil {
+		c.report(n.Start, "cap.bad-type", "?? 的左侧缺少类型摘要")
+		return
+	}
+	payload := c.facts.ResolveType(left.Type)
+	// 标识符的存储类型可能比当前缩窄类型宽：`const b: number | null = null`
+	// 在引用处是 null，但存储仍是联合。降低按存储标签生成 select，能力检查
+	// 也必须按存储类型判断，否则多成员联合会溜到降低阶段才报内部故障。
+	if storage := c.storageType(left); storage != nil {
+		payload = storage
+	}
+	if payload.Kind == frontend.KindUnion {
+		member, _, ok := nullableUnion(payload)
+		if !ok {
+			c.report(n.Start, "cap.bad-type", "?? 的左侧需要 T | null 或 T | undefined，实际为 %s", describeType(payload))
+			return
+		}
+		payload = c.facts.ResolveType(member)
+	} else if _, nullish := nullishKind(left); nullish {
+		// 裸 null / undefined 或没有联合存储的空值：结果恒为右侧，直接拒绝，
+		// 不把「一定为空」和「可能为空」混成同一条降低路径。
+		c.report(n.Start, "cap.bad-type", "?? 的左侧已经是 %s，请直接使用右侧值", describeType(payload))
+		return
+	}
+	if right.Type == nil || !c.assignableTo(right.Type, payload) {
+		c.report(right.Start, "cap.bad-type", "?? 的右操作数是 %s，需要 %s", describeType(right.Type), describeType(payload))
+		return
+	}
+	if n.Type != nil && !frontend.SameType(c.facts.ResolveType(n.Type), payload) {
+		c.report(n.Start, "cap.bad-type", "?? 的结果类型是 %s，期望 %s", describeType(n.Type), describeType(payload))
+		return
+	}
+	c.valueNode(left, "?? 的左操作数")
+	c.valueNode(right, "?? 的右操作数")
 }
 
 // describeType 把类型摘要转成诊断里的短描述。nil 不实现 String 的判空由这里

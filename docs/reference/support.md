@@ -1,6 +1,6 @@
 # 操作支持表
 
-这张表描述当前已实现的支持范围，起点是 `mvp/06-compiler-mvp`（Tynel Language Preview 0），并包含 Stage 2 已经落地的字符串最小闭环、静态对象、数组/元组、可空联合、函数值、泛型函数第一个切片和 Runtime ABI v1 布局快照。长期方向与三层兼容状态见[语言宪章](../../LANGUAGE.md)和 [TypeScript 兼容性矩阵](../language/compatibility.md)。`支持` 表示有源码夹具和验证记录；`拒绝` 表示能力检查或 TypeScript 会明确报错；`计划` 表示尚未实现，不能靠推测当成可用。完整能力矩阵见[06.07 验收记录](../validation/06-07-mvp.md)，命令入口见[命令行参考](cli.md)。
+这张表描述当前已实现的支持范围，起点是 `mvp/06-compiler-mvp`（Tynel Language Preview 0），并包含 Stage 2 已经落地的字符串最小闭环、静态对象、数组/元组、可空联合、函数值、泛型函数第一个切片、Runtime ABI v1 布局快照，以及 Stage 3 的空值合并 `??`。长期方向与三层兼容状态见[语言宪章](../../LANGUAGE.md)和 [TypeScript 兼容性矩阵](../language/compatibility.md)。`支持` 表示有源码夹具和验证记录；`拒绝` 表示能力检查或 TypeScript 会明确报错；`计划` 表示尚未实现，不能靠推测当成可用。完整能力矩阵见[06.07 验收记录](../validation/06-07-mvp.md)，命令入口见[命令行参考](cli.md)。
 
 ## 值
 
@@ -13,7 +13,7 @@
 | 静态对象 | 部分支持 | 必填属性、对象字面量、字段读取和引用身份可用；可选属性、字段写入、对象输出和结构性放宽仍拒绝。见[对象与数组 RFC](../language/semantics/objects-arrays.md) |
 | 数组 | 部分支持 | 同质数组字面量、索引读取、`length`、参数/返回值/局部值可用；索引越界按数据错误退出 6；方法、展开、赋值、扩容和身份比较仍拒绝 |
 | 元组 | 部分支持 | 定长字面量与编译期整数索引可用；空元组、变量索引和越界拒绝。见[对象与数组 RFC](../language/semantics/objects-arrays.md) |
-| 可空联合 | 部分支持 | `T \| null` / `T \| undefined` 的赋值、参数、返回值和空值比较可用；多成员联合、判别联合、`??` / `?.` 仍拒绝。见[联合与空值 RFC](../language/semantics/unions-null.md) |
+| 可空联合 | 部分支持 | `T \| null` / `T \| undefined` 的赋值、参数、返回值、空值比较和 `??` 可用；多成员联合、判别联合和 `?.` 仍拒绝。见[联合与空值 RFC](../language/semantics/unions-null.md) |
 | 函数值 | 部分支持 | 顶层函数值、无捕获表达式体箭头、函数类型参数/返回值和间接调用可用；闭包捕获、块体箭头、`void` 箭头与函数表达式仍拒绝。见[函数与闭包 RFC](../language/semantics/functions.md) |
 | `any`、`unknown` | 拒绝 | `cap.any` |
 | 多成员联合 | 拒绝 | 可空联合之外；三元式两臂不同、`number \| string` 等声明都会报 `cap.bad-type` |
@@ -70,7 +70,8 @@
 | 空值比较与缩窄 | 支持 | `x !== null` / `x === undefined`；分支内成员读取按前端缩窄类型拆箱 |
 | 箭头函数 | 部分支持 | 无捕获、表达式体、非 `void`；捕获按 `cap.closure` 拒绝，块体按 `cap.unsupported-syntax` 拒绝 |
 | 函数类型与间接调用 | 支持 | `(x: number) => number` 作为参数、返回值和局部值；调用按函数类型核对实参 |
-| `??` 与可选链 `?.` | 拒绝 | 依赖多成员联合与可选属性，留到后续切片 |
+| `??` | 支持 | 左侧是可空联合或非空具体类型，右侧可赋给可执行成员；左侧只求值一次，右侧惰性。多成员联合左侧仍拒绝 |
+| 可选链 `?.` | 拒绝 | 依赖可选属性与空值读取，留到后续切片 |
 | 可选属性、字段写入 | 拒绝 | 可选属性等待 `undefined`；字段写入属于第二个对象切片 |
 | 模板字符串插值、字符串方法 | 拒绝 | `cap.unsupported-syntax` / `cap.unknown-callee` |
 | 赋值表达式 | 拒绝 | `cap.assignment-value`，赋值只能作为独立语句 |

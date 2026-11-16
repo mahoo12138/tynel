@@ -845,6 +845,9 @@ func (l *lowerer) expr(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir
 		if n.Op == "=" {
 			return nil, nil, l.fail(n.Start, "lower.assignment-value", "赋值只能作为独立语句，不能出现在表达式里")
 		}
+		if n.Op == "??" {
+			return l.nullish(n, sc, depth)
+		}
 		if n.Op == "&&" || n.Op == "||" {
 			return l.shortCircuit(n, sc, depth)
 		}
@@ -1401,6 +1404,128 @@ func (l *lowerer) nullCompare(n *frontend.Node, leftNode, rightNode *frontend.No
 		return &nir.Expr{Op: nir.OpNot, Operand: test, Pos: l.pos(n.Start)}, pre, nil
 	}
 	return test, pre, nil
+}
+
+// nullish 降低 value ?? fallback。左侧只求值一次并物化成临时值；select 的
+// 条件读取联合标签，只有标签是空值时才执行右侧准备语句。NIR 不需要新操作：
+// is 判断空值，unwrap 取出可执行成员，select 选择结果。
+func (l *lowerer) nullish(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir.Stmt, error) {
+	if len(n.Children) != 2 {
+		return nil, nil, l.fail(n.Start, "lower.bad-arity", "?? 有 %d 个操作数", len(n.Children))
+	}
+	leftNode, rightNode := &n.Children[0], &n.Children[1]
+	if leftNode.Type == nil || rightNode.Type == nil {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "?? 的操作数缺少类型摘要")
+	}
+	readID, err := l.valueReadType(leftNode)
+	if err != nil {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "?? 的左操作数：%v", err)
+	}
+	def := l.types.unionDef(readID)
+	if def == nil {
+		if readID == nir.TypeNull || readID == nir.TypeUndefined {
+			return nil, nil, l.fail(n.Start, "lower.bad-type", "?? 的左侧已经是空值")
+		}
+		// 左侧已缩窄成非空具体类型，右侧不会执行。
+		return l.expr(leftNode, sc, depth+1)
+	}
+	payload, nullish, ok := nullishMembers(def)
+	if !ok {
+		return nil, nil, l.fail(n.Start, "lower.bad-type", "?? 的左侧需要两成员可空联合，实际为 %s", l.typeLabel(readID))
+	}
+	left, leftPre, err := l.storageValue(leftNode, sc, depth+1)
+	if err != nil {
+		return nil, nil, err
+	}
+	name := l.tempName()
+	pre := append(leftPre, l.emitTemp(sc, name, left, l.pos(leftNode.Start), readID))
+	leftRef := localExpr(name, l.pos(leftNode.Start))
+
+	thenScope := l.childScope(sc, nir.DebugScopePrelude, leftNode)
+	elseScope := l.childScope(sc, nir.DebugScopePrelude, rightNode)
+	valueName := l.tempName()
+	l.addTempBinding(thenScope, valueName, payload, l.pos(n.Start))
+	thenPre := []nir.Stmt{{
+		Op:    nir.OpUnwrap,
+		Name:  valueName,
+		Type:  payload,
+		Value: leftRef,
+		Pos:   l.pos(n.Start),
+	}}
+	right, rightPre, err := l.valueAs(rightNode, payload, "?? 的右操作数", elseScope, depth+1)
+	if err != nil {
+		return nil, nil, err
+	}
+	resultName := l.tempName()
+	l.addTempBinding(sc, resultName, payload, l.pos(n.Start))
+	test := &nir.Expr{Op: nir.OpIs, Type: nullish, Operand: leftRef, Pos: l.pos(n.Start)}
+	pre = append(pre, nir.Stmt{
+		Op:        nir.OpSelect,
+		Name:      resultName,
+		Cond:      &nir.Expr{Op: nir.OpNot, Operand: test, Pos: l.pos(n.Start)},
+		Then:      thenPre,
+		ThenValue: localExpr(valueName, l.pos(n.Start)),
+		Else:      rightPre,
+		ElseValue: right,
+		Type:      payload,
+		Pos:       l.pos(n.Start),
+	})
+	return localExpr(resultName, l.pos(n.Start)), pre, nil
+}
+
+// storageValue 读取一个值的存储形态，不按前端缩窄拆箱。`??` 必须先看联合
+// 标签再决定是否拆箱，不能走 narrowedRead：那会在检查标签之前就把值取成
+// 成员类型，空值路径无法生成 select。
+func (l *lowerer) storageValue(n *frontend.Node, sc *scope, depth int) (*nir.Expr, []nir.Stmt, error) {
+	if n.Kind != "Identifier" || n.Target == 0 {
+		return l.expr(n, sc, depth)
+	}
+	decl, ok := l.facts.Declaration(n.Target)
+	if !ok {
+		return nil, nil, l.fail(n.Start, "lower.unknown-name", "名称 %q 不是本文件里的声明", n.Name)
+	}
+	switch decl.Kind {
+	case frontend.DeclParameter:
+		name, ok := sc.lookupParam(decl.ID)
+		if !ok {
+			return nil, nil, l.fail(n.Start, "lower.unknown-name", "参数 %q 不属于当前函数", n.Name)
+		}
+		return &nir.Expr{Op: nir.OpParam, Name: name, Pos: l.pos(n.Start)}, nil, nil
+	case frontend.DeclConst:
+		if name, ok := sc.lookup(decl.ID); ok {
+			return localExpr(name, l.pos(n.Start)), nil, nil
+		}
+		if l.inInit {
+			return nil, nil, l.fail(n.Start, "lower.unknown-name", "模块常量 %q 在初始化作用域里不可见", n.Name)
+		}
+		return nil, nil, l.fail(n.Start, "lower.module-const-in-function", "模块常量 %q 在函数内不可见", n.Name)
+	case frontend.DeclLocal, frontend.DeclLet:
+		name, ok := sc.lookup(decl.ID)
+		if !ok {
+			return nil, nil, l.fail(n.Start, "lower.unknown-name", "局部值 %q 不在当前作用域内", n.Name)
+		}
+		return localExpr(name, l.pos(n.Start)), nil, nil
+	default:
+		return nil, nil, l.fail(n.Start, "lower.unsupported-expr", "?? 的左侧存储不支持声明种类 %s", decl.Kind)
+	}
+}
+
+// nullishMembers 拆出两成员可空联合的空值成员和可执行成员。
+func nullishMembers(def *nir.TypeDef) (payload, nullish int, ok bool) {
+	for _, member := range def.Members {
+		if member == nir.TypeNull || member == nir.TypeUndefined {
+			if nullish != 0 {
+				return 0, 0, false
+			}
+			nullish = member
+			continue
+		}
+		if payload != 0 {
+			return 0, 0, false
+		}
+		payload = member
+	}
+	return payload, nullish, payload != 0 && nullish != 0
 }
 
 // nullishID 返回空值节点对应的内置类型 ID。
