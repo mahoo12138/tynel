@@ -1,6 +1,7 @@
-// 合法 TypeScript：b 是可选参数，调用时可以省略。当前阶段同样只支持必填
-// 参数，按 cap.unsupported-parameter 拒绝。
-function opt(a: number, b?: number): number {
-  return a;
+// 合法 TypeScript：泛型函数的可选参数。当前泛型单态化不支持省略实参，
+// 按 cap.unsupported-parameter 拒绝。
+function opt<T>(value: T, fallback?: T): T {
+  return value;
 }
+
 console.log(opt(1));

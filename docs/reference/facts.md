@@ -91,7 +91,7 @@ const doubled: number = scale(answer);
 
 下界取「最后一个必填参数的下标 + 1」。可省略的位置允许显式传 `undefined`：适配层把它记成 `undefined`，旧适配层和手写事实也可能用 `other`；校验在可省略位置放行这两种摘要。校验也只在实参确实给出的位置上比较类型，不再按形参数量去索引实参列表。
 
-这两个标记**不代表后端支持它们**。当前阶段只实现必填参数，带默认值或 `?` 的参数由能力检查按 `cap.unsupported-parameter` 拒绝，见[原生能力白名单](capability.md)。
+这两个标记不自动等于后端支持：`optional` 已支持，参数类型必须是 `T | undefined`，调用点省略时降低器补 `undefined`；`hasDefault` 仍由能力检查按 `cap.unsupported-parameter` 拒绝，因为事实里还没有保留初始化表达式。见[原生能力白名单](capability.md)。
 
 ## 事实里有什么
 

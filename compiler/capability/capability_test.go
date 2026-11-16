@@ -595,23 +595,26 @@ func callArityFacts(got int) *frontend.Facts {
 	return facts
 }
 
-func TestDefaultAndOptionalParametersAreRejected(t *testing.T) {
+func TestDefaultAndOptionalParametersAreChecked(t *testing.T) {
 	cases := []struct {
 		name     string
 		mutate   func(*frontend.Facts)
+		wantCode string
 		wantText string
 	}{
-		{"默认值", func(f *frontend.Facts) { f.Declarations[2].HasDefault = true }, "带默认值"},
-		{"可选参数", func(f *frontend.Facts) { f.Declarations[2].Optional = true }, "可选参数"},
+		{"默认值", func(f *frontend.Facts) { f.Declarations[2].HasDefault = true }, "cap.unsupported-parameter", "带默认值"},
+		// 可选参数必须是 T | undefined。base 的参数是 number，缺少 undefined
+		// 成员时不能再被当成普通必填参数处理。
+		{"可选参数缺少 undefined", func(f *frontend.Facts) { f.Declarations[2].Optional = true }, "cap.bad-type", "需要 T | undefined"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			facts := base()
 			c.mutate(facts)
 			findings := check(t, facts)
-			wantCode(t, findings, "cap.unsupported-parameter")
+			wantCode(t, findings, c.wantCode)
 			for _, d := range findings {
-				if d.Code == "cap.unsupported-parameter" && strings.Contains(d.Message, c.wantText) {
+				if d.Code == c.wantCode && strings.Contains(d.Message, c.wantText) {
 					return
 				}
 			}

@@ -23,7 +23,7 @@
 | 操作 | 状态 | 说明 |
 | --- | --- | --- |
 | 顶层函数声明 | 支持 | 直接调用，按函数名绑定；不能占用固定入口名 `main` |
-| 参数 | 支持 | `number`、`boolean`、`string`、静态对象、同质数组、定长元组、可空联合或函数类型 |
+| 参数 | 部分支持 | `number`、`boolean`、`string`、静态对象、同质数组、定长元组、可空联合或函数类型；尾部可选参数类型为 `T \| undefined`，省略或显式传 `undefined` 可用。默认参数和泛型函数的可选参数仍拒绝 |
 | 顶层 `const` | 支持 | 初始化表达式按源码顺序求值 |
 | 块内 `const` | 支持 | 只在当前块可见，同名遮蔽外层 |
 | 块内 `let` | 支持 | 必须带初始值；可读、可遮蔽，可变 `let` 可赋值 |
@@ -36,7 +36,7 @@
 | 对象形状的 `interface` | 支持 | 展开成静态对象属性；非对象接口仍按 `cap.interface` 拒绝 |
 | 数组与元组别名 | 支持 | `type Nums = number[]`、`type Pair = [number, string]` |
 | 可空联合别名 | 部分支持 | `type Maybe = number \| null`；多成员联合仍拒绝 |
-| 函数类型别名 | 部分支持 | `type Unary = (x: number) => number`；可选参数和不可执行成员仍拒绝 |
+| 函数类型别名 | 部分支持 | `type Unary = (x: number) => number`；函数类型里的可选参数和不可执行成员仍拒绝 |
 | 泛型函数 | 部分支持 | `function identity<T>(value: T): T`；调用点推断类型实参并单态化成 `identity$t1` 这样的实例；泛型接口、默认类型参数和约束驱动操作仍拒绝 |
 | 泛型类型别名 | 拒绝 | `cap.unsupported-syntax`；第一个泛型切片只做函数 |
 | Runtime ABI v1 | 部分支持 | `tynel dump abi` 输出布局快照；构建记录写 `runtimeABI`；GC 可见指针、退出状态和跨模块布局有回归。见[Runtime ABI v1](runtime-abi.md) |

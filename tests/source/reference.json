@@ -14,6 +14,7 @@
     "nullable": {"comparison": "shared"},
     "nullish": {"comparison": "shared"},
     "for": {"comparison": "shared"},
+    "optional": {"comparison": "shared"},
     "function-value": {"comparison": "shared"},
     "generic": {"comparison": "shared"},
     "let-string": {"comparison": "shared"},

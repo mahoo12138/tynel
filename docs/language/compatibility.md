@@ -39,7 +39,7 @@
 
 一个能力可以同时「当前 `rejected`」和「长期 `planned`」。`planned` 和 `deferred` 行如果当前不在子集内，编译器仍会拒绝；这两个状态描述长期方向，不表示今天可以编译。`rejected` 行表示当前有明确拒绝路径，长期方向可能是 `planned`、`deferred` 或 `not-targeted`。本表不使用「部分支持」；必须说明卡在哪一层、哪些写法不支持。
 
-Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semantics/objects-arrays.md)、[联合与空值 RFC](semantics/unions-null.md)、[函数 RFC](semantics/functions.md)、[泛型 RFC](semantics/generics.md)以及 [NIR schema 3 类型表设计](../design/nir-schema-3-types.md)已经确认。字符串最小闭环（字面量、拼接、`length`、严格相等和输出）已实现并有原生回归；索引、`slice`、模板插值和字符串方法仍未实现。对象第一个切片（必填属性、字面量、字段读取和引用身份）也已实现，可选属性、字段写入和结构性放宽仍拒绝。数组与元组第一个切片（字面量、索引、`length`、常量元组索引）已实现，数组方法、展开、赋值和身份比较仍拒绝。可空联合第一个切片（`T | null` / `T | undefined`、空值比较和前端缩窄）已实现；S3.1 补上 `??`，支持可空联合与非空具体类型的左侧、右侧惰性和单次求值；多成员联合、`?.` 和可选属性仍拒绝。函数值第一个切片（无捕获箭头、顶层函数值、函数类型和间接调用）已实现；闭包捕获、块体箭头、`void` 箭头、函数表达式和函数值身份比较仍拒绝。泛型函数第一个切片（调用点推断与单态化）已实现；泛型接口、泛型别名、默认类型参数和约束驱动操作仍拒绝。S3.2 补上经典 `for` 循环，循环变量作用域、`break` / `continue` 和 `return` 均可生成原生程序；`for...of` 与省略条件的写法仍拒绝。其他 RFC 不改变本表当前的 `rejected` 状态；只有实现并通过运行时验收后，状态才会变化。
+Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semantics/objects-arrays.md)、[联合与空值 RFC](semantics/unions-null.md)、[函数 RFC](semantics/functions.md)、[泛型 RFC](semantics/generics.md)以及 [NIR schema 3 类型表设计](../design/nir-schema-3-types.md)已经确认。字符串最小闭环（字面量、拼接、`length`、严格相等和输出）已实现并有原生回归；索引、`slice`、模板插值和字符串方法仍未实现。对象第一个切片（必填属性、字面量、字段读取和引用身份）也已实现，可选属性、字段写入和结构性放宽仍拒绝。数组与元组第一个切片（字面量、索引、`length`、常量元组索引）已实现，数组方法、展开、赋值和身份比较仍拒绝。可空联合第一个切片（`T | null` / `T | undefined`、空值比较和前端缩窄）已实现；S3.1 补上 `??`，支持可空联合与非空具体类型的左侧、右侧惰性和单次求值；多成员联合、`?.` 和可选属性仍拒绝。函数值第一个切片（无捕获箭头、顶层函数值、函数类型和间接调用）已实现；闭包捕获、块体箭头、`void` 箭头、函数表达式和函数值身份比较仍拒绝。泛型函数第一个切片（调用点推断与单态化）已实现；泛型接口、泛型别名、默认类型参数和约束驱动操作仍拒绝。S3.2 补上经典 `for` 循环，循环变量作用域、`break` / `continue` 和 `return` 均可生成原生程序；`for...of` 与省略条件的写法仍拒绝。S3.3 补上尾部可选参数：省略或显式传 `undefined` 都生成联合值，函数体用 `??` 或空值比较处理；默认参数仍拒绝。其他 RFC 不改变本表当前的 `rejected` 状态；只有实现并通过运行时验收后，状态才会变化。
 
 ## 2. 基线
 
@@ -91,7 +91,8 @@ Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semanti
 | 块内 `const` / 带初值 `let` | `tsgo` | `Tynel` | `已验证` | `supported` | 块级作用域，同名遮蔽。见[声明与可变存储](../reference/mutability.md) |
 | 模块级 `let` | `tsgo` | `拒绝` | `拒绝` | `rejected` | `cap.module-let`；模块变量捕获需单独设计 |
 | 函数读取模块级 `const` | `tsgo` | `拒绝` | `拒绝` | `rejected` | `module.captured-variable`；当前函数只能读取参数和局部值 |
-| 默认参数、可选参数 | `tsgo` | `拒绝` | `拒绝` | `rejected` | `cap.unsupported-parameter`；阶段 3A 计划 |
+| 尾部可选参数 | `tsgo` | `Tynel` | `已验证` | `supported` | 类型为 `T \| undefined`；省略或显式传 `undefined` 均可用，函数体按可空联合处理；泛型函数的可选参数仍拒绝 |
+| 默认参数 | `tsgo` | `拒绝` | `拒绝` | `rejected` | `cap.unsupported-parameter`；事实里还没有保留初始化表达式，留到后续切片 |
 | 剩余参数 | `tsgo` | `未定义` | `未实现` | `planned` | 阶段 3A；依赖数组与调用约定 |
 | 箭头函数：无捕获、表达式体、非 `void` | `tsgo` | `Tynel` | `已验证` | `supported` | 提升成合成具名函数，再作为函数值使用。见[函数与闭包 RFC](semantics/functions.md) |
 | 块体箭头、`void` 箭头、函数表达式 | `tsgo` | `拒绝` | `拒绝` | `rejected` | `cap.unsupported-syntax`；后续函数值切片 |

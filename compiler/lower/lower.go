@@ -1725,12 +1725,8 @@ func (l *lowerer) directCall(n, callee *frontend.Node, decl *frontend.Declaratio
 		return l.genericDirectCall(n, decl, sc, depth)
 	}
 	args := n.Children[1:]
-	// 这里要求实参与形参一一对应：后端不会合成缺省值，少一个实参就凑不出
-	// 目标函数的调用。可省略的参数在能力检查阶段已按 cap.unsupported-parameter
-	// 拒绝，所以合法程序不会走到这里；事实验证用的 frontend.Arity 允许一个
-	// 区间，是给「先判自洽、再判能力」那两步用的，不是降低器的契约。
-	if len(args) != len(decl.Parameters) {
-		return nil, nil, l.fail(n.Start, "lower.bad-arity", "调用 %q 给了 %d 个实参，声明有 %d 个参数", decl.Name, len(args), len(decl.Parameters))
+	if arity := l.facts.ArityOf(decl); !arity.Allows(len(args)) {
+		return nil, nil, l.fail(n.Start, "lower.bad-arity", "调用 %q 给了 %d 个实参，声明需要 %d 到 %d 个", decl.Name, len(args), arity.Required, arity.Total)
 	}
 	paramIDs := make([]int, 0, len(decl.Parameters))
 	for i := range decl.Parameters {
@@ -1748,7 +1744,40 @@ func (l *lowerer) directCall(n, callee *frontend.Node, decl *frontend.Declaratio
 	if err != nil {
 		return nil, nil, err
 	}
+	exprs, pre, err = l.fillOptionalArgs(decl, len(args), paramIDs, exprs, pre, sc, n.Start)
+	if err != nil {
+		return nil, nil, err
+	}
 	return &nir.Expr{Op: nir.OpCall, Function: decl.Name, Args: exprs, Pos: l.pos(n.Start)}, pre, nil
+}
+
+// fillOptionalArgs 为省略的尾部可选参数补一个 undefined，并包成参数声明的
+// 可空联合。省略的参数没有求值顺序问题，补值放在所有已给实参之后即可。
+func (l *lowerer) fillOptionalArgs(decl *frontend.Declaration, provided int, paramIDs []int, exprs []nir.Expr, pre []nir.Stmt, sc *scope, offset int) ([]nir.Expr, []nir.Stmt, error) {
+	pos := l.pos(offset)
+	for i := provided; i < len(decl.Parameters); i++ {
+		param, ok := l.facts.Declaration(decl.Parameters[i])
+		if !ok || param.Type == nil {
+			return nil, nil, l.fail(offset, "lower.unknown-param", "函数 %q 的第 %d 个参数没有类型摘要", decl.Name, i+1)
+		}
+		if !param.Optional {
+			return nil, nil, l.fail(offset, "lower.bad-arity", "调用 %q 缺少必填参数 %q", decl.Name, param.Name)
+		}
+		if !l.types.isUnionMember(paramIDs[i], nir.TypeUndefined) {
+			return nil, nil, l.fail(offset, "lower.bad-type", "可选参数 %q 的类型不是包含 undefined 的联合", param.Name)
+		}
+		name := l.tempName()
+		l.addTempBinding(sc, name, paramIDs[i], pos)
+		pre = append(pre, nir.Stmt{
+			Op:    nir.OpWrap,
+			Name:  name,
+			Type:  paramIDs[i],
+			Value: &nir.Expr{Op: nir.OpUndefined, Pos: pos},
+			Pos:   pos,
+		})
+		exprs = append(exprs, *localExpr(name, pos))
+	}
+	return exprs, pre, nil
 }
 
 // genericDirectCall 在调用点推断类型实参，取得（或创建）对应的单态化实例，

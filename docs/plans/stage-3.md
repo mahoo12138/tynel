@@ -1,6 +1,6 @@
 # Stage 3 实施计划：核心 TypeScript 语法覆盖
 
-> 状态：S3.1 空值合并 `??` 与 S3.2 经典 `for` 循环已实现并通过验收；其他工作包仅为候选顺序，尚未开始
+> 状态：S3.1 空值合并 `??`、S3.2 经典 `for` 循环与 S3.3 尾部可选参数已实现并通过验收；其他工作包仅为候选顺序，尚未开始
 > 前置：Stage 2 已提交（`0e4f412`、`bfeddc9`、`3fc9302`、`6dfcfb7`、`728d053`）
 > 路线图：[ROADMAP.md](../../ROADMAP.md) Stage 3
 > 关联：[兼容性矩阵](../language/compatibility.md)、[操作支持表](../reference/support.md)、[联合与空值 RFC](../language/semantics/unions-null.md)
@@ -33,7 +33,7 @@ Stage 3 扩展语法入口，让 Tynel 能写更接近日常 TypeScript 的程�
 | --- | --- | --- | --- | --- |
 | S3.1 | 空值合并 `??` | Stage 2；S2.4 | 可空联合与具体值上的 `??`；单次求值、右侧惰性、NIR 复用 `select` / `is` / `unwrap` | 正向/负向源码用例、原生输出、Node 对照、验收记录 |
 | S3.2 | 经典 `for` 循环 | S3.1 | `for (let i = 0; cond; i = i + 1)`；循环变量作用域；`break` / `continue` 复用现有跳转 | 循环边界、嵌套、提前返回和未实现写法的拒绝 |
-| S3.3 | 可选参数与默认参数 | S3.1 | 缺省值合成、调用点参数个数核对、可选参数类型 | 省略参数、显式 `undefined`、默认值求值顺序 |
+| S3.3 | 尾部可选参数 | S3.1 | `b?: T`、调用点省略或显式 `undefined`、可空联合参数类型 | 省略参数、显式 `undefined`、多个尾部可选参数与默认参数拒绝 |
 | S3.4 | 函数表达式与闭包 | S3.1 | 函数表达式提升、词法捕获、捕获生命周期 | 高阶函数、捕获写回和逃逸对象 |
 | S3.5 | 可选链与类型语法收束 | S3.1–S3.4 | `?.`、可选属性、字面量类型或 `typeof` 缩窄中的可落地部分 | 逐项决定 `supported` 或继续 `rejected` |
 
@@ -186,7 +186,59 @@ go test ./compiler/... ./cmd/... ./internal/... ./tests/...
 - 未实现写法给出稳定能力错误码；
 - 全量测试和 bridge 检查通过。
 
-## 6. 明确不在本阶段
+## 6. S3.3 第一个切片：尾部可选参数
+
+> 状态：已实现；实际命令、输出和边界见 [S3.3 验收记录](../validation/s3-03-optional-parameters.md)。
+
+### 6.1 范围
+
+支持：
+
+- `function f(a: number, b?: number): ...`，可选参数只能出现在必填参数之后；
+- 参数类型是 `T | undefined`，函数体用 `??` 或 `b === undefined` 处理；
+- 调用点省略尾部可选参数，降低器补 `undefined`；
+- 显式传 `undefined`，与省略等价；
+- 多个连续尾部可选参数；
+- 可选参数与 `??`、空值比较、循环和普通返回值组合。
+
+不支持：
+
+- 默认参数（`b: number = 1`）；
+- 泛型函数的可选参数；
+- 函数类型、函数值和间接调用中的可选参数；
+- 剩余参数。
+
+### 6.2 能力检查
+
+- 声明侧允许 `Optional`，但要求类型解析后是 `T | undefined`；
+- `HasDefault` 继续按 `cap.unsupported-parameter` 拒绝；
+- 泛型函数的可选参数按 `cap.unsupported-parameter` 拒绝；
+- 调用侧继续复用 `frontend.Arity`，接受「必填个数到形参总数」之间的实参。
+
+### 6.3 降低
+
+- 直接调用按 `Arity` 检查实参个数；
+- 已给实参按源码顺序降低；
+- 省略的尾部可选参数补 `wrap undefined` 临时值，类型来自参数声明的可空联合；
+- 间接调用仍要求实参个数完全匹配，因为函数类型里的可选参数尚未开放；
+- NIR 不新增操作。
+
+### 6.4 测试与文档
+
+- `tests/source/testdata/optional.ts`：省略、显式 `undefined`、多个可选参数、字符串可选参数与 `??`；
+- `errors/default-parameter.ts` 继续验证默认参数拒绝；
+- `errors/optional-parameter.ts` 改测泛型函数的可选参数；
+- 更新支持表、兼容性矩阵、能力检查、事实说明、降低器和 README；
+- 新增 `docs/validation/s3-03-optional-parameters.md`。
+
+### 6.5 完成标准
+
+- 正向输出与 Node 22 逐字节一致；
+- 省略和显式 `undefined` 生成相同结果；
+- 默认参数和泛型可选参数给出稳定能力错误码；
+- 全量测试和 bridge 检查通过。
+
+## 7. 明确不在本阶段
 
 - 类、继承、装饰器；
 - 异常、`async` / `await`、Promise；
@@ -194,7 +246,7 @@ go test ./compiler/... ./cmd/... ./internal/... ./tests/...
 - 条件类型、映射类型和高级类型运算；
 - 多后端与跨平台承诺。
 
-## 7. 主要风险
+## 8. 主要风险
 
 - `??` 与 `?.` 都要求短路；把左侧读两次会悄悄改变副作用次数；
 - 前端缩窄后的类型和存储联合类型不一致，降低必须按存储值检查标签；

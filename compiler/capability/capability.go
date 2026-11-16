@@ -30,14 +30,26 @@ func Check(snapshot *source.Snapshot, facts *frontend.Facts) ([]*diagnostic.Diag
 	if err := facts.Validate(); err != nil {
 		return nil, err
 	}
-	c := &checker{snapshot: snapshot, facts: facts, imports: valueImports(facts), typeParams: make(map[string]bool)}
+	c := &checker{
+		snapshot:      snapshot,
+		facts:         facts,
+		imports:       valueImports(facts),
+		typeParams:    make(map[string]bool),
+		genericParams: make(map[int]bool),
+	}
 	for i := range facts.Declarations {
 		decl := &facts.Declarations[i]
 		if decl.Kind != frontend.DeclFunction {
 			continue
 		}
-		for _, name := range facts.TypeParametersOf(decl) {
+		names := facts.TypeParametersOf(decl)
+		for _, name := range names {
 			c.typeParams[name] = true
+		}
+		if len(names) > 0 {
+			for _, id := range decl.Parameters {
+				c.genericParams[id] = true
+			}
 		}
 	}
 	for _, alias := range facts.Aliases {
@@ -115,16 +127,17 @@ func Check(snapshot *source.Snapshot, facts *frontend.Facts) ([]*diagnostic.Diag
 }
 
 type checker struct {
-	snapshot    *source.Snapshot
-	facts       *frontend.Facts
-	imports     map[importKey]bool
-	findings    []*diagnostic.Diagnostic
-	err         error
-	inFunction  bool
-	loopDepth   int
-	resultType  *frontend.Type
-	arrowParams []map[string]bool
-	typeParams  map[string]bool
+	snapshot      *source.Snapshot
+	facts         *frontend.Facts
+	imports       map[importKey]bool
+	findings      []*diagnostic.Diagnostic
+	err           error
+	inFunction    bool
+	loopDepth     int
+	resultType    *frontend.Type
+	arrowParams   []map[string]bool
+	typeParams    map[string]bool
+	genericParams map[int]bool
 }
 
 // importKey 是一条值导入绑定的完整身份：目标模块的解析后路径、那个模块
@@ -168,16 +181,26 @@ func (c *checker) declaration(d *frontend.Declaration) {
 		}
 		c.declaredType(d.Result, d.Start, "函数 %q 的返回类型", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple, frontend.KindUnion, frontend.KindFunction, frontend.KindVoid)
 	case frontend.DeclParameter:
-		// 默认参数与可选参数都需要后端合成缺省值，本阶段还没实现。先在这里
-		// 明确拒绝，别让合法的 add(5) 一路走到降低阶段才报内部故障；事实层
-		// 已经放宽了参数个数，所以这两条诊断是唯一挡住它们的关卡。
+		// 默认参数需要在调用点求值初始化表达式，事实里还没有保留那棵子树；
+		// 先继续拒绝。可选参数不需要合成表达式：调用点省略时传联合里的
+		// undefined，函数体按可空联合会话。
 		if d.HasDefault {
-			c.report(d.Start, "cap.unsupported-parameter", "参数 %q 带默认值，本阶段只支持必填参数", d.Name)
+			c.report(d.Start, "cap.unsupported-parameter", "参数 %q 带默认值，本阶段只支持可选参数", d.Name)
 			return
 		}
 		if d.Optional {
-			c.report(d.Start, "cap.unsupported-parameter", "参数 %q 是可选参数，本阶段只支持必填参数", d.Name)
-			return
+			if c.genericParams[d.ID] {
+				c.report(d.Start, "cap.unsupported-parameter", "泛型函数 %q 的可选参数需要调用点推断缺省类型，本阶段不支持", d.Name)
+				return
+			}
+			if d.Type == nil {
+				c.report(d.Start, "cap.bad-type", "可选参数 %q 缺少类型摘要", d.Name)
+				return
+			}
+			if _, nullish, ok := nullableUnion(c.facts.ResolveType(d.Type)); !ok || nullish != frontend.KindUndefined {
+				c.report(d.Start, "cap.bad-type", "可选参数 %q 的类型是 %s，需要 T | undefined", d.Name, describeType(d.Type))
+				return
+			}
 		}
 		c.declaredType(d.Type, d.Start, "参数 %q ", d.Name, frontend.KindNumber, frontend.KindBoolean, frontend.KindString, frontend.KindObject, frontend.KindArray, frontend.KindTuple, frontend.KindUnion, frontend.KindFunction)
 	case frontend.DeclConst:

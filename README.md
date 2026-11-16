@@ -105,3 +105,5 @@ S2.7 Runtime ABI v1 布局快照已实现：`tynel dump abi` 输出稳定的 JSO
 S3.1 空值合并 `??` 已实现：左侧是可空联合 `T | null` / `T | undefined` 或非空具体类型，右侧必须能赋给可执行成员，结果类型是 `T`。左侧只求值一次并物化成临时值，`is` 检查空值标签，`select` 的非空分支 `unwrap`、空值分支才求值右侧；NIR 不新增操作。`const b: number | null = null; b ?? 7` 在缩窄后仍按存储联合生成一次标签检查。多成员联合左侧和 `?.` 仍拒绝。规则见[联合与空值 RFC](docs/language/semantics/unions-null.md)与[降低器](docs/reference/lowering.md)，验收见[S3.1 验收记录](docs/validation/s3-01-nullish-coalescing.md)。
 
 S3.2 经典 `for` 循环第一个切片已实现：`for (let i = 0; cond; i = i + 1)` 降低成初始化 `let` 加一个 `while`；循环变量使用 `i$forN` 唯一名字，循环结束后同名局部值可以重新声明；`continue` 在跳转前补执行更新，`break` 和 `return` 跳过更新。初始化必须是单个 `let`，条件必填，更新只支持简单赋值；表达式初始化、`const` / `var`、`i++`、省略条件和 `for...of` 仍拒绝。规则见[Stage 3 计划](docs/plans/stage-3.md)与[降低器](docs/reference/lowering.md)，验收见[S3.2 验收记录](docs/validation/s3-02-for-loop.md)。
+
+S3.3 尾部可选参数第一个切片已实现：`b?: number` 的参数类型是 `number | undefined`，调用点省略或显式传 `undefined` 都由降低器补 `wrap undefined`，函数体用 `??` 或空值比较处理。多个连续尾部可选参数、字符串可选参数和循环组合都能生成原生程序。默认参数、泛型函数的可选参数、函数类型里的可选参数和剩余参数仍拒绝。规则见[能力检查](docs/reference/capability.md)与[降低器](docs/reference/lowering.md)，验收见[S3.3 验收记录](docs/validation/s3-03-optional-parameters.md)。

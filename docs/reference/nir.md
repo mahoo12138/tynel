@@ -166,7 +166,7 @@ go test ./compiler/nir -run 'Version|Replay|Type|String|Debug'
   ] }
 ```
 
-`condPre` 只接受 `let`、`short` 与 `select`，它和 `cond` 在每一轮开始时执行；`body` 在条件为真时执行，然后回到条件。循环可能零次执行。`condPre` 里的局部值只对 `cond` 可见，`body` 里的局部值不泄漏到循环外。
+`condPre` 和表达式准备块使用同一组允许操作：`let`、`short`、`select`、`object`、`array`、`tuple`、`index`、`wrap` 与 `unwrap`。它和 `cond` 在每一轮开始时执行；`body` 在条件为真时执行，然后回到条件。循环可能零次执行。`condPre` 里的局部值只对 `cond` 可见，`body` 里的局部值不泄漏到循环外。
 
 `break` 与 `continue` 用 `target` 指向循环身份：
 
