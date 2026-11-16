@@ -159,11 +159,19 @@ bridge 对这两种被丢弃的表达式处理不同：`void` 调用本身就是
 
 `while (cond) { body }` 降成 NIR 的 `while`。条件的准备语句（短路、三元式、带副作用的调用）放进 `condPre`，条件本身放进 `cond`，循环体放进 `body`。验证器每轮先执行 `condPre`，再检查 `cond`；`body` 用独立的子作用域，循环体里的 `let` 不会泄漏到循环外。
 
-循环体可以包含赋值、`if` 和嵌套 `while`。返回路径分析不把 `while` 当成“一定执行”：只有循环体里的 `return` 不算完整返回，函数末尾仍要有 `return`。`break` / `continue` 留给 04.04。
+循环体可以包含赋值、`if`、嵌套 `while` 和经典 `for`。返回路径分析不把 `while` 当成“一定执行”：只有循环体里的 `return` 不算完整返回，函数末尾仍要有 `return`。`break` / `continue` 的跳转见下一节。
+
+## for 循环
+
+`for (let i = 0; cond; update) { body }` 不新增 NIR 操作，降低成一条初始化 `let` 加一个 `while`：初始化在循环前执行一次，条件和准备语句进入 `while` 的 `condPre` / `cond`，循环体末尾追加更新语句。
+
+NIR 没有语句级块作用域包住初始化，因此循环变量使用 `i$for1` 这样的唯一名字，并在降低器的 for 作用域里登记声明身份。循环结束后 `i` 不再可见，源码里可以重新声明同名局部值，NIR 里是两个不同的名字。
+
+`continue` 在 JavaScript 里先执行更新再检查条件；NIR 的 `continue` 只回到条件检查。降低器在循环栈里记录 for 的更新表达式，遇到指向该 for 的 `continue` 时先降低一次更新再生成 `continue`。正常路径的更新只放在循环体末尾，两个位置互斥，更新每次迭代只执行一次。`break` 和 `return` 跳过更新。
 
 ## break 与 continue
 
-降低器维护一个循环栈。进入 `while` 时分配一个正整数 id 并压栈，退出时弹出；`break` / `continue` 取栈顶作为 `target`，所以它们只作用于最近循环。`continue` 不是跳到循环体末尾，而是回到条件检查；bridge 生成的 Go `continue` 也回到 `for` 的开头，条件准备因此重新执行。
+降低器维护一个循环栈。进入循环时分配一个正整数 id 并压栈，退出时弹出；`break` / `continue` 取栈顶作为 `target`，所以它们只作用于最近循环。`continue` 不是跳到循环体末尾，而是回到条件检查；bridge 生成的 Go `continue` 也回到 `for` 的开头，条件准备因此重新执行。for 的 `continue` 在回到条件检查之前补执行更新。
 
 带标签的 `break outer;` 会绕过“最近循环”的规则，能力检查按 `cap.labeled-jump` 拒绝，降低器也不会处理。循环外的跳转由 TypeScript 先报 `TS1107`；手写 NIR 里的错误目标由验证器报 `nir.loop-target`。
 
@@ -220,12 +228,12 @@ bridge 对这两种被丢弃的表达式处理不同：`void` 调用本身就是
 | 错误码 | 触发条件 |
 | --- | --- |
 | `lower.bad-type` | 操作数、实参、返回值、`let` 值或三元式分支的类型摘要与期望类型不符（标量、对象、数组、元组、可空联合或函数类型）；三元式两臂类型不同；`??` 左侧不是两成员可空联合 |
-| `lower.bad-arity` | 二元运算不是两个操作数、`return` 多个值、实参个数与形参不符、`while` 不是两个子节点 |
+| `lower.bad-arity` | 二元运算不是两个操作数、`return` 多个值、实参个数与形参不符、`while` 不是两个子节点、`for` 的子节点个数不支持 |
 | `lower.bad-operator` | 运算符不在算术、`??`、一元 `- +`、`!`、比较与短路之内（包括宽松 `==` / `!=`） |
 | `lower.bad-unary` | 防御路径：伪造事实里一元负号作用在非字面量上；合法源码应先在能力检查报 `cap.bad-unary` |
 | `lower.unknown-name` | 引用的声明不存在、参数不属于当前函数，或局部值不在当前作用域 |
 | `lower.duplicate-name` | 同一个块里重复定义局部值 |
-| `lower.bad-declaration` | 局部声明缺少声明身份、不是 `const` / `let`，或一次声明多个值 |
+| `lower.bad-declaration` | 局部声明缺少声明身份、不是 `const` / `let`，或一次声明多个值；for 的初始化不是单个 `let` |
 | `lower.assign-target` | 赋值目标不是直接名字 |
 | `lower.assign-immutable` | 赋值目标不是可变的 `let` |
 | `lower.assignment-value` | 赋值出现在表达式里 |

@@ -39,7 +39,7 @@
 
 一个能力可以同时「当前 `rejected`」和「长期 `planned`」。`planned` 和 `deferred` 行如果当前不在子集内，编译器仍会拒绝；这两个状态描述长期方向，不表示今天可以编译。`rejected` 行表示当前有明确拒绝路径，长期方向可能是 `planned`、`deferred` 或 `not-targeted`。本表不使用「部分支持」；必须说明卡在哪一层、哪些写法不支持。
 
-Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semantics/objects-arrays.md)、[联合与空值 RFC](semantics/unions-null.md)、[函数 RFC](semantics/functions.md)、[泛型 RFC](semantics/generics.md)以及 [NIR schema 3 类型表设计](../design/nir-schema-3-types.md)已经确认。字符串最小闭环（字面量、拼接、`length`、严格相等和输出）已实现并有原生回归；索引、`slice`、模板插值和字符串方法仍未实现。对象第一个切片（必填属性、字面量、字段读取和引用身份）也已实现，可选属性、字段写入和结构性放宽仍拒绝。数组与元组第一个切片（字面量、索引、`length`、常量元组索引）已实现，数组方法、展开、赋值和身份比较仍拒绝。可空联合第一个切片（`T | null` / `T | undefined`、空值比较和前端缩窄）已实现；S3.1 补上 `??`，支持可空联合与非空具体类型的左侧、右侧惰性和单次求值；多成员联合、`?.` 和可选属性仍拒绝。函数值第一个切片（无捕获箭头、顶层函数值、函数类型和间接调用）已实现；闭包捕获、块体箭头、`void` 箭头、函数表达式和函数值身份比较仍拒绝。泛型函数第一个切片（调用点推断与单态化）已实现；泛型接口、泛型别名、默认类型参数和约束驱动操作仍拒绝。其他 RFC 不改变本表当前的 `rejected` 状态；只有实现并通过运行时验收后，状态才会变化。
+Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semantics/objects-arrays.md)、[联合与空值 RFC](semantics/unions-null.md)、[函数 RFC](semantics/functions.md)、[泛型 RFC](semantics/generics.md)以及 [NIR schema 3 类型表设计](../design/nir-schema-3-types.md)已经确认。字符串最小闭环（字面量、拼接、`length`、严格相等和输出）已实现并有原生回归；索引、`slice`、模板插值和字符串方法仍未实现。对象第一个切片（必填属性、字面量、字段读取和引用身份）也已实现，可选属性、字段写入和结构性放宽仍拒绝。数组与元组第一个切片（字面量、索引、`length`、常量元组索引）已实现，数组方法、展开、赋值和身份比较仍拒绝。可空联合第一个切片（`T | null` / `T | undefined`、空值比较和前端缩窄）已实现；S3.1 补上 `??`，支持可空联合与非空具体类型的左侧、右侧惰性和单次求值；多成员联合、`?.` 和可选属性仍拒绝。函数值第一个切片（无捕获箭头、顶层函数值、函数类型和间接调用）已实现；闭包捕获、块体箭头、`void` 箭头、函数表达式和函数值身份比较仍拒绝。泛型函数第一个切片（调用点推断与单态化）已实现；泛型接口、泛型别名、默认类型参数和约束驱动操作仍拒绝。S3.2 补上经典 `for` 循环，循环变量作用域、`break` / `continue` 和 `return` 均可生成原生程序；`for...of` 与省略条件的写法仍拒绝。其他 RFC 不改变本表当前的 `rejected` 状态；只有实现并通过运行时验收后，状态才会变化。
 
 ## 2. 基线
 
@@ -147,8 +147,8 @@ Stage 2 的[字符串 RFC](semantics/strings.md)、[对象与数组 RFC](semanti
 | `while` | `tsgo` | `Tynel` | `已验证` | `supported` | 条件每轮重新检查，可能零次执行 |
 | `break` / `continue` | `tsgo` | `Tynel` | `已验证` | `supported` | 无标签，只作用于最近循环 |
 | 带标签跳转 | `tsgo` | `拒绝` | `拒绝` | `rejected` | `cap.labeled-jump` |
-| `for` | `tsgo` | `拒绝` | `拒绝` | `rejected` | 当前按 `cap.unsupported-syntax` 拒绝；阶段 3A 计划 |
-| `for...of` | `tsgo` | `未定义` | `未实现` | `planned` | 阶段 3A；依赖数组与迭代协议 |
+| 经典 `for` | `tsgo` | `Tynel` | `已验证` | `supported` | `for (let i = 0; cond; i = i + 1)`；循环变量作用域、`break` / `continue` 和 `return` 可用；表达式初始化、`const` / `var`、`i++` 和省略条件仍拒绝 |
+| `for...of` | `tsgo` | `未定义` | `未实现` | `planned` | 经典 `for` 已落地；`for...of` 依赖数组与迭代协议，留到后续切片 |
 | `for...in` | `tsgo` | `未定义` | `未实现` | `deferred` | 依赖对象属性枚举语义 |
 | `do...while` | `tsgo` | `拒绝` | `拒绝` | `rejected` | 不在当前子集内 |
 | `switch` | `tsgo` | `未定义` | `拒绝` | `rejected` | `cap.unsupported-syntax`；需要与类型收窄一起设计 |

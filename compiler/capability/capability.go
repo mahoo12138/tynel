@@ -529,7 +529,9 @@ func (c *checker) node(n *frontend.Node) {
 		return
 	case "TemplateExpression":
 		c.report(n.Start, "cap.unsupported-syntax", "模板字符串插值不在本阶段子集内")
-	case "DoStatement", "ForStatement", "ForInStatement", "ForOfStatement", "SwitchStatement", "TryStatement", "ThrowStatement":
+	case "ForStatement":
+		c.forStatement(n)
+	case "DoStatement", "ForInStatement", "ForOfStatement", "SwitchStatement", "TryStatement", "ThrowStatement":
 		c.report(n.Start, "cap.unsupported-syntax", "控制流 %s 不在本阶段子集内", n.Kind)
 	case "NewExpression":
 		c.report(n.Start, "cap.unsupported-syntax", "new 表达式不在本阶段子集内")
@@ -812,6 +814,62 @@ func (c *checker) assignment(n *frontend.Node) {
 	}
 	c.valueNode(rhs, "赋值右侧")
 	c.node(rhs)
+}
+
+// forStatement 检查经典 for。初始化必须是单个可变的 let，条件必须存在且为
+// boolean；更新可选，只支持简单赋值。`for...of`、`for...in` 和省略条件的
+// 写法仍按能力限制拒绝。
+func (c *checker) forStatement(n *frontend.Node) {
+	if !c.inFunction {
+		c.report(n.Start, "cap.unsupported-syntax", "模块级 for 不在本阶段子集内")
+		return
+	}
+	if len(n.Children) != 3 && len(n.Children) != 4 {
+		c.report(n.Start, "cap.unsupported-syntax", "for 有 %d 个子节点；需要初始化和条件", len(n.Children))
+		return
+	}
+	init := &n.Children[0]
+	if init.Kind != "VariableDeclarationList" || len(init.Children) != 1 {
+		c.report(init.Start, "cap.unsupported-syntax", "for 的初始化只支持一个 let 声明")
+		return
+	}
+	declNode := &init.Children[0]
+	if declNode.Kind != "VariableDeclaration" || declNode.Decl == 0 {
+		c.report(declNode.Start, "cap.unsupported-syntax", "for 的初始化缺少局部声明")
+		return
+	}
+	decl, ok := c.facts.Declaration(declNode.Decl)
+	if !ok || decl.Kind != frontend.DeclLet {
+		c.report(declNode.Start, "cap.unsupported-syntax", "for 的循环变量必须是可变的 let")
+		return
+	}
+	c.node(init)
+	if len(n.Children) == 3 && n.Children[1].Kind == "BinaryExpression" && n.Children[1].Op == "=" {
+		// 三个子节点既可能是「初始化、条件、循环体」，也可能是「初始化、更新、
+		// 循环体」。更新是赋值，条件要求 boolean；先按赋值把省略条件的写法
+		// 明确拒绝，避免把更新误报成类型不对的条件。
+		c.report(n.Children[1].Start, "cap.unsupported-syntax", "for 必须带条件；省略条件的无限循环不在本阶段子集内")
+		return
+	}
+	c.boolOperand(&n.Children[1], "for 的条件")
+	if len(n.Children) == 4 {
+		update := &n.Children[2]
+		switch {
+		case update.Kind == "PostfixUnaryExpression":
+			c.report(update.Start, "cap.inc-dec", "自增自减 %q 不在本阶段子集内", update.Op)
+			return
+		case update.Kind == "PrefixUnaryExpression" && (update.Op == "++" || update.Op == "--"):
+			c.report(update.Start, "cap.inc-dec", "自增自减 %q 不在本阶段子集内", update.Op)
+			return
+		case update.Kind != "BinaryExpression" || update.Op != "=":
+			c.report(update.Start, "cap.unsupported-syntax", "for 的更新表达式只支持简单赋值")
+			return
+		}
+		c.assignment(update)
+	}
+	c.loopDepth++
+	c.node(&n.Children[len(n.Children)-1])
+	c.loopDepth--
 }
 
 func (c *checker) identifier(n *frontend.Node) {

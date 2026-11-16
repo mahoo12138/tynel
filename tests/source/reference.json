@@ -13,6 +13,7 @@
     "array": {"comparison": "shared"},
     "nullable": {"comparison": "shared"},
     "nullish": {"comparison": "shared"},
+    "for": {"comparison": "shared"},
     "function-value": {"comparison": "shared"},
     "generic": {"comparison": "shared"},
     "let-string": {"comparison": "shared"},

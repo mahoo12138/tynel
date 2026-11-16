@@ -199,8 +199,9 @@ type lowerer struct {
 	result           int             // 当前正在降低的函数的返回类型 ID
 	temp             int             // 短路结果与实参物化的临时名序号
 	reserved         map[string]bool // 用户声明占用的名字，临时名必须绕开
-	loops            []int           // 当前函数内由内到外的循环 id
+	loops            []loopFrame     // 当前函数内由内到外的循环
 	nextLoop         int             // 下一个循环 id
+	nextFor          int             // 下一个 for 循环变量的 NIR 名序号
 	debug            *nir.DebugInfo  // 整个模块的调试段
 	debugFn          *nir.DebugFunction
 	nextScope        int                         // 当前函数内下一个作用域 id
@@ -208,6 +209,13 @@ type lowerer struct {
 	nextArrow        int                         // 下一个箭头函数名序号
 	arrowParams      []map[string]bool           // 正在降低的箭头函数的参数名栈
 	genericInstances map[string]*genericInstance // 单态化实例缓存
+}
+
+// loopFrame 是当前函数里的一个循环。while 没有更新表达式；for 记录更新，
+// 以便在 continue 跳转前补执行一次。
+type loopFrame struct {
+	id     int
+	update *frontend.Node
 }
 
 // genericInstance 是一次泛型函数的单态化结果。函数体可能正在降低，缓存项
@@ -593,6 +601,8 @@ func (l *lowerer) statement(stmt *frontend.Node, sc *scope) ([]nir.Stmt, error) 
 		return l.ifStatement(stmt, sc)
 	case "WhileStatement":
 		return l.whileStatement(stmt, sc)
+	case "ForStatement":
+		return l.forStatement(stmt, sc)
 	case "BreakStatement", "ContinueStatement":
 		return l.jumpStatement(stmt, sc)
 	case "VariableStatement":
@@ -658,7 +668,7 @@ func (l *lowerer) whileStatement(stmt *frontend.Node, sc *scope) ([]nir.Stmt, er
 	}
 	id := l.nextLoop + 1
 	l.nextLoop = id
-	l.loops = append(l.loops, id)
+	l.loops = append(l.loops, loopFrame{id: id})
 	body, err := l.branchStmts(bodyNode, l.childScope(sc, nir.DebugScopeLoop, bodyNode))
 	l.loops = l.loops[:len(l.loops)-1]
 	if err != nil {
@@ -674,6 +684,101 @@ func (l *lowerer) whileStatement(stmt *frontend.Node, sc *scope) ([]nir.Stmt, er
 	}}, nil
 }
 
+// forStatement 降低经典 for。初始化先执行一次，条件和准备语句进入 while 的
+// CondPre，循环体末尾追加更新；continue 的位置由 jumpStatement 补更新。
+func (l *lowerer) forStatement(stmt *frontend.Node, sc *scope) ([]nir.Stmt, error) {
+	if len(stmt.Children) != 3 && len(stmt.Children) != 4 {
+		return nil, l.fail(stmt.Start, "lower.bad-arity", "for 有 %d 个子节点；需要初始化和条件", len(stmt.Children))
+	}
+	initNode, condNode := &stmt.Children[0], &stmt.Children[1]
+	bodyNode := &stmt.Children[len(stmt.Children)-1]
+	var update *frontend.Node
+	if len(stmt.Children) == 4 {
+		update = &stmt.Children[2]
+		if update.Kind != "BinaryExpression" || update.Op != "=" {
+			return nil, l.fail(update.Start, "lower.bad-operator", "for 的更新表达式只支持简单赋值")
+		}
+	}
+	if err := l.typedOperand(condNode, frontend.KindBoolean, "for 的条件"); err != nil {
+		return nil, err
+	}
+	headerScope := l.childScope(sc, nir.DebugScopeBranch, stmt)
+	init, err := l.forInit(initNode, headerScope)
+	if err != nil {
+		return nil, err
+	}
+	condScope := l.childScope(headerScope, nir.DebugScopePrelude, condNode)
+	cond, condPre, err := l.expr(condNode, condScope, 1)
+	if err != nil {
+		return nil, err
+	}
+	id := l.nextLoop + 1
+	l.nextLoop = id
+	l.loops = append(l.loops, loopFrame{id: id, update: update})
+	bodyScope := l.childScope(headerScope, nir.DebugScopeLoop, bodyNode)
+	body, err := l.branchStmts(bodyNode, bodyScope)
+	if err == nil && update != nil {
+		var updateStmts []nir.Stmt
+		updateStmts, err = l.forUpdate(update, bodyScope)
+		body = append(body, updateStmts...)
+	}
+	l.loops = l.loops[:len(l.loops)-1]
+	if err != nil {
+		return nil, err
+	}
+	return append(init, nir.Stmt{
+		Op:      nir.OpWhile,
+		CondPre: condPre,
+		Cond:    cond,
+		Body:    body,
+		ID:      id,
+		Pos:     l.pos(stmt.Start),
+	}), nil
+}
+
+// forInit 降低 for 的初始化声明。循环变量只在 for 头部和循环体内可见；NIR
+// 没有语句级的块作用域包住初始化，所以使用带 $forN 后缀的唯一名字，循环
+// 结束后同名局部值不会与它冲突。
+func (l *lowerer) forInit(list *frontend.Node, sc *scope) ([]nir.Stmt, error) {
+	if list.Kind != "VariableDeclarationList" || len(list.Children) != 1 {
+		return nil, l.fail(list.Start, "lower.bad-declaration", "for 的初始化只支持一个 let 声明")
+	}
+	declNode := &list.Children[0]
+	if declNode.Kind != "VariableDeclaration" || declNode.Decl == 0 {
+		return nil, l.fail(declNode.Start, "lower.bad-declaration", "for 的初始化缺少声明身份")
+	}
+	decl, ok := l.facts.Declaration(declNode.Decl)
+	if !ok || decl.Kind != frontend.DeclLet {
+		return nil, l.fail(declNode.Start, "lower.bad-declaration", "for 的循环变量必须是 let")
+	}
+	wantID, err := l.valueTypeID(decl.Type)
+	if err != nil {
+		return nil, l.fail(decl.Start, "lower.bad-type", "for 的循环变量 %q：%v", decl.Name, err)
+	}
+	if len(declNode.Children) != 1 {
+		return nil, l.fail(declNode.Start, "lower.missing-value", "for 的循环变量 %q 缺少初始值", decl.Name)
+	}
+	value, pre, err := l.valueAs(&declNode.Children[0], wantID, "for 的循环变量 "+decl.Name, sc, 1)
+	if err != nil {
+		return nil, err
+	}
+	l.nextFor++
+	name := fmt.Sprintf("%s$for%d", decl.Name, l.nextFor)
+	if !sc.define(decl.ID, name, true) {
+		return nil, l.fail(decl.Start, "lower.duplicate-name", "for 的循环变量 %q 重复定义", decl.Name)
+	}
+	return append(pre, l.emitLet(sc, name, value, l.pos(declNode.Start), decl.Name, nir.DebugLocalLocal, wantID, true)), nil
+}
+
+// forUpdate 降低 for 的更新表达式。当前只接受简单赋值，与独立赋值语句共用
+// 同一套目标、可变性和类型检查。
+func (l *lowerer) forUpdate(n *frontend.Node, sc *scope) ([]nir.Stmt, error) {
+	if n.Kind != "BinaryExpression" || n.Op != "=" {
+		return nil, l.fail(n.Start, "lower.bad-operator", "for 的更新表达式只支持简单赋值")
+	}
+	return l.assignment(n, sc)
+}
+
 // jumpStatement 降低无标签 break / continue。目标永远是当前最内层循环；
 // 带标签的写法直接拒绝，循环外的跳转也拒绝。
 func (l *lowerer) jumpStatement(stmt *frontend.Node, sc *scope) ([]nir.Stmt, error) {
@@ -684,14 +789,26 @@ func (l *lowerer) jumpStatement(stmt *frontend.Node, sc *scope) ([]nir.Stmt, err
 		return nil, l.fail(stmt.Start, "lower.loop-target", "%s 不在循环里", stmt.Kind)
 	}
 	op := nir.OpBreak
+	frame := l.loops[len(l.loops)-1]
+	var out []nir.Stmt
 	if stmt.Kind == "ContinueStatement" {
 		op = nir.OpContinue
+		// JavaScript 的 continue 在跳到条件之前执行 for 的更新表达式。NIR 的
+		// continue 只回到条件检查，所以更新必须在这里补一次；每次 continue
+		// 独立降低，临时名不会和正常路径的更新冲突。
+		if frame.update != nil {
+			update, err := l.forUpdate(frame.update, sc)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, update...)
+		}
 	}
-	return []nir.Stmt{{
+	return append(out, nir.Stmt{
 		Op:     op,
-		Target: l.loops[len(l.loops)-1],
+		Target: frame.id,
 		Pos:    l.pos(stmt.Start),
-	}}, nil
+	}), nil
 }
 
 // assignment 降低 `x = value;`。目标必须是当前作用域里的可变 let；右值先
@@ -1965,7 +2082,7 @@ func (l *lowerer) liftArrow(n *frontend.Node, depth int) (*nir.Expr, []nir.Stmt,
 	return &nir.Expr{Op: nir.OpFunc, Function: name, Type: funcID, Pos: l.pos(n.Start)}, nil, nil
 }
 
-func (l *lowerer) restoreFunctionState(result int, debug *nir.DebugFunction, scope int, loops []int) {
+func (l *lowerer) restoreFunctionState(result int, debug *nir.DebugFunction, scope int, loops []loopFrame) {
 	l.result = result
 	l.debugFn = debug
 	l.nextScope = scope

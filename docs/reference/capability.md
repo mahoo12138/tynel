@@ -57,7 +57,7 @@ function neverCalled(n: number): number {
 | 调用 | 本文件内声明的函数、经值导入绑定到项目模块导出的函数，或函数类型的值；实参个数与形参一致 | 间接调用要求被调用者确实是函数类型；方法调用和标准库全局函数不支持 |
 | 函数值 | 顶层函数作为值、无捕获的表达式体箭头函数、函数类型参数/返回值/局部值、三元式两臂同签名、通过函数值调用 | 闭包捕获、块体箭头、`void` 箭头函数和函数表达式仍拒绝；函数值不能输出，也还没有身份比较 |
 | 泛型函数 | 泛型函数声明、调用点从实参推断类型实参、单态化后的具体参数和返回值 | 泛型函数未实例化不能作为值；泛型类型别名、泛型接口、无法推断的类型参数和依赖约束的运算仍拒绝 |
-| 语句 | `return`、表达式语句、语句块、`if` / `else` / `else if`、`while`、`break` / `continue`、分支内 `const` 与已初始化的 `let`、独立的简单赋值 | 表达式语句的结果被丢弃；`if` / `while` 的条件必须是 `boolean`；`break` / `continue` 只能作用于最近循环 |
+| 语句 | `return`、表达式语句、语句块、`if` / `else` / `else if`、`while`、经典 `for`、`break` / `continue`、分支内 `const` 与已初始化的 `let`、独立的简单赋值 | 表达式语句的结果被丢弃；`if` / `while` / `for` 的条件必须是 `boolean`；`for` 的初始化必须是单个 `let`，更新只支持简单赋值；`break` / `continue` 只能作用于最近循环 |
 | 输出 | `console.log(<number 或 boolean 或 string>)` | 必须是内置 `console`，见下 |
 | 字符串 | 字面量、无插值模板、`+` 拼接、`===` / `!==`、`s.length` | 索引、`slice`、模板插值和字符串方法仍拒绝；`s.length` 的结果是 `number`，按 UTF-16 code unit 计数 |
 | 对象 | 静态形状的对象字面量、字段读取、对象引用相等、对象参数/返回值/常量/局部值 | 只支持必填属性；可选属性、字段写入、对象输出和结构性放宽仍拒绝；对象 `===` 比较引用身份 |
@@ -90,7 +90,9 @@ function neverCalled(n: number): number {
 
 简单赋值只支持 `x = value;` 这种独立语句，目标必须是可变的 `let`，右值与目标同类型。给 `const`、参数或模块常量赋值报 `cap.assign-immutable`；赋值出现在表达式里报 `cap.assignment-value`；复合赋值报 `cap.compound-assignment`；`++` / `--` 报 `cap.inc-dec`。
 
-`while` 的条件必须是 `boolean`，循环体在函数体内，可以包含 `if`、赋值和嵌套 `while`。条件每轮重新求值，循环可能零次执行；模块级 `while` 报 `cap.unsupported-syntax`。`break` / `continue` 只作用于最近循环，带标签的写法报 `cap.labeled-jump`，循环外的跳转由 TypeScript 先报 `TS1107`。`for` 与 `do` 仍不在子集内。
+`while` 的条件必须是 `boolean`，循环体在函数体内，可以包含 `if`、赋值和嵌套 `while`。条件每轮重新求值，循环可能零次执行；模块级 `while` 报 `cap.unsupported-syntax`。`break` / `continue` 只作用于最近循环，带标签的写法报 `cap.labeled-jump`，循环外的跳转由 TypeScript 先报 `TS1107`。
+
+经典 `for` 只支持 `for (let i = 0; cond; i = i + 1)` 这一形状：初始化必须是单个可变的 `let` 声明，条件必须存在且为 `boolean`，更新可选且只接受简单赋值。表达式初始化（`for (i = 0; ...)`）、`const` / `var` 循环变量、一次声明多个变量和省略条件的写法按 `cap.unsupported-syntax` 拒绝；`i++` / `i--` 按 `cap.inc-dec` 拒绝；`for...of`、`for...in` 和 `do...while` 仍不在子集内。循环变量只在 `for` 头部、条件和循环体内可见，循环结束后同名局部值可以重新声明。
 
 ## 参数与实参数量
 

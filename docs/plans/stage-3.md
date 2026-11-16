@@ -1,6 +1,6 @@
 # Stage 3 实施计划：核心 TypeScript 语法覆盖
 
-> 状态：S3.1 空值合并 `??` 已实现并通过验收；其他工作包仅为候选顺序，尚未开始
+> 状态：S3.1 空值合并 `??` 与 S3.2 经典 `for` 循环已实现并通过验收；其他工作包仅为候选顺序，尚未开始
 > 前置：Stage 2 已提交（`0e4f412`、`bfeddc9`、`3fc9302`、`6dfcfb7`、`728d053`）
 > 路线图：[ROADMAP.md](../../ROADMAP.md) Stage 3
 > 关联：[兼容性矩阵](../language/compatibility.md)、[操作支持表](../reference/support.md)、[联合与空值 RFC](../language/semantics/unions-null.md)
@@ -32,7 +32,7 @@ Stage 3 扩展语法入口，让 Tynel 能写更接近日常 TypeScript 的程�
 | ID | 工作包 | 依赖 | 交付物 | 主要验收 |
 | --- | --- | --- | --- | --- |
 | S3.1 | 空值合并 `??` | Stage 2；S2.4 | 可空联合与具体值上的 `??`；单次求值、右侧惰性、NIR 复用 `select` / `is` / `unwrap` | 正向/负向源码用例、原生输出、Node 对照、验收记录 |
-| S3.2 | `for` 与 `for...of` | S3.1 | 循环语法与循环变量作用域；`break` / `continue` 复用现有跳转 | 循环边界、嵌套、提前返回和未实现写法的拒绝 |
+| S3.2 | 经典 `for` 循环 | S3.1 | `for (let i = 0; cond; i = i + 1)`；循环变量作用域；`break` / `continue` 复用现有跳转 | 循环边界、嵌套、提前返回和未实现写法的拒绝 |
 | S3.3 | 可选参数与默认参数 | S3.1 | 缺省值合成、调用点参数个数核对、可选参数类型 | 省略参数、显式 `undefined`、默认值求值顺序 |
 | S3.4 | 函数表达式与闭包 | S3.1 | 函数表达式提升、词法捕获、捕获生命周期 | 高阶函数、捕获写回和逃逸对象 |
 | S3.5 | 可选链与类型语法收束 | S3.1–S3.4 | `?.`、可选属性、字面量类型或 `typeof` 缩窄中的可落地部分 | 逐项决定 `supported` 或继续 `rejected` |
@@ -129,7 +129,64 @@ go test ./compiler/... ./cmd/... ./internal/... ./tests/...
 - 全量 Go 测试、`bridge/go/check` 和 `bridge/tsgo/check` 通过；
 - 支持表、兼容性矩阵和能力文档同步，不声称完整 TypeScript 兼容。
 
-## 5. 明确不在本阶段
+## 5. S3.2 第一个切片：经典 `for` 循环
+
+> 状态：已实现；实际命令、输出和边界见 [S3.2 验收记录](../validation/s3-02-for-loop.md)。
+
+### 5.1 范围
+
+支持：
+
+- `for (let i = 0; i < n; i = i + 1) { ... }`；
+- 初始化必须是单个 `let` 声明，并带初始值；
+- 条件必须存在且为 `boolean`；
+- 更新可选，只支持简单赋值 `i = ...`；
+- 循环变量只在 `for` 头部、条件和循环体内可见，循环结束后不可见；
+- `break` 跳过更新，`continue` 先执行更新再检查条件；
+- 嵌套 `for` / `while`，以及循环内的 `return`。
+
+不支持：
+
+- 表达式初始化（`for (i = 0; ...)`）；
+- `const` / `var` 循环变量和一次声明多个变量；
+- `i++` / `i--` 与复合赋值更新；
+- 省略条件（`for (;;)`）和省略初始化；
+- `for...of`、`for...in`；
+- 模块级 `for`。
+
+### 5.2 能力检查
+
+文件：`compiler/capability/capability.go`
+
+- 在 `ForStatement` 分支要求函数体、3 或 4 个子节点、单个 `let` 初始化、`boolean` 条件；
+- 更新存在时要求 `BinaryExpression` 的 `=`，并复用 `assignment` 检查目标可变性和类型；
+- 循环体按普通语句检查，进入和退出时维护 `loopDepth`。
+
+### 5.3 降低
+
+文件：`compiler/lower/lower.go`
+
+- 初始化降成一条 `let`，循环变量使用带 `$forN` 后缀的 NIR 名字，避免与循环后的同名局部值冲突；
+- 条件与准备语句放进 `while` 的 `Cond` / `CondPre`；
+- 循环体末尾追加更新语句；
+- 循环帧记录更新表达式；`continue` 在跳转前先降低一次更新，保证更新执行且只执行一次；
+- NIR 不新增操作。
+
+### 5.4 测试与文档
+
+- `tests/source/testdata/for.ts`：求和、跳过、提前退出、嵌套、循环后同名局部值、倒序和零次循环；
+- 负向：表达式初始化、`const` 循环变量、`i++`、一次多个声明、`for...of`；
+- 更新 `docs/reference/support.md`、`docs/language/compatibility.md`、`docs/reference/capability.md`、`docs/reference/lowering.md` 与 `README.md`；
+- 新增 `docs/validation/s3-02-for-loop.md`。
+
+### 5.5 完成标准
+
+- 正向输出与 Node 22 逐字节一致；
+- `continue` 的更新语义有原生证据；
+- 未实现写法给出稳定能力错误码；
+- 全量测试和 bridge 检查通过。
+
+## 6. 明确不在本阶段
 
 - 类、继承、装饰器；
 - 异常、`async` / `await`、Promise；
@@ -137,7 +194,7 @@ go test ./compiler/... ./cmd/... ./internal/... ./tests/...
 - 条件类型、映射类型和高级类型运算；
 - 多后端与跨平台承诺。
 
-## 6. 主要风险
+## 7. 主要风险
 
 - `??` 与 `?.` 都要求短路；把左侧读两次会悄悄改变副作用次数；
 - 前端缩窄后的类型和存储联合类型不一致，降低必须按存储值检查标签；

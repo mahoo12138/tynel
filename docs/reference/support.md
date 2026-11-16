@@ -1,6 +1,6 @@
 # 操作支持表
 
-这张表描述当前已实现的支持范围，起点是 `mvp/06-compiler-mvp`（Tynel Language Preview 0），并包含 Stage 2 已经落地的字符串最小闭环、静态对象、数组/元组、可空联合、函数值、泛型函数第一个切片、Runtime ABI v1 布局快照，以及 Stage 3 的空值合并 `??`。长期方向与三层兼容状态见[语言宪章](../../LANGUAGE.md)和 [TypeScript 兼容性矩阵](../language/compatibility.md)。`支持` 表示有源码夹具和验证记录；`拒绝` 表示能力检查或 TypeScript 会明确报错；`计划` 表示尚未实现，不能靠推测当成可用。完整能力矩阵见[06.07 验收记录](../validation/06-07-mvp.md)，命令入口见[命令行参考](cli.md)。
+这张表描述当前已实现的支持范围，起点是 `mvp/06-compiler-mvp`（Tynel Language Preview 0），并包含 Stage 2 已经落地的字符串最小闭环、静态对象、数组/元组、可空联合、函数值、泛型函数第一个切片、Runtime ABI v1 布局快照，以及 Stage 3 的空值合并 `??` 和经典 `for` 循环。长期方向与三层兼容状态见[语言宪章](../../LANGUAGE.md)和 [TypeScript 兼容性矩阵](../language/compatibility.md)。`支持` 表示有源码夹具和验证记录；`拒绝` 表示能力检查或 TypeScript 会明确报错；`计划` 表示尚未实现，不能靠推测当成可用。完整能力矩阵见[06.07 验收记录](../validation/06-07-mvp.md)，命令入口见[命令行参考](cli.md)。
 
 ## 值
 
@@ -91,7 +91,7 @@
 | `console.log(x)` | 支持 | 一个参数，`number`、`boolean` 或 `string` |
 | `while` | 支持 | 条件每轮重新检查，循环可能零次执行 |
 | `break`、`continue` | 支持 | 无标签，只作用于最近循环；带标签写法拒绝 |
-| `for` | 计划 | 未排入当前 6 个节点 |
+| 经典 `for` | 部分支持 | `for (let i = 0; cond; i = i + 1)` 可用；初始化必须是单个 `let`，条件必填，更新只支持简单赋值；`break` / `continue` 和循环变量作用域可用。表达式初始化、`const` / `var`、`i++`、省略条件和 `for...of` 仍拒绝 |
 | `switch`、`try`、`throw` | 拒绝 | `cap.unsupported-syntax` |
 | 顶层 `if` / 顶层语句块 | 拒绝 | 模块体只接受声明、`const` 和表达式语句 |
 
